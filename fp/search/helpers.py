@@ -50,6 +50,7 @@ def populate_pkmn_from_set(
     pkmn.set_spread(
         set_.pkmn_set.nature,
         ",".join(str(x) for x in set_.pkmn_set.evs),
+        ivs=",".join(str(x) for x in getattr(set_.pkmn_set, "ivs", (31,) * 6)),
     )
     if (
         set_.pkmn_set.tera_type is not None
@@ -59,15 +60,35 @@ def populate_pkmn_from_set(
         pkmn.tera_type = set_.pkmn_set.tera_type
     log_pkmn_set(pkmn, source)
 
-    # newly created moves have max PP
-    # copy over the current pp from the known moves
+    # newly created moves have max PP and are NOT disabled; carry both pieces of
+    # live per-move state over from the moves the protocol actually revealed.
+    #
+    # `disabled` matters as much as `current_pp`: Disable (and Cursed Body) mark
+    # one specific opponent move disabled in the protocol parser
+    # (fp/battle_modifier.py:1810-1817 `mv.disabled = True`), and re-populating
+    # `pkmn.moves` from a sampled set here rebuilt every Move object with
+    # `disabled = False` (fp/battle.py:981), so EVERY sampled world silently
+    # forgot the Disable and let the search pick a move PS would reject.  The
+    # `disable` volatile itself survives the deepcopy, so only this flag was
+    # lost -- which also made the volatile's duration meaningless.
+    disabled_names = {m.name for m in known_pokemon_moves if m.disabled}
     for known_move in known_pokemon_moves:
         for mv in pkmn.moves:
             if known_move.name.startswith("hiddenpower") and mv.name.startswith(
                 "hiddenpower"
             ):
                 mv.current_pp = known_move.current_pp
+                mv.disabled = mv.disabled or known_move.disabled
                 break
             elif mv.name == known_move.name:
                 mv.current_pp = known_move.current_pp
+                mv.disabled = mv.disabled or known_move.disabled
                 break
+    # a disabled move the sampled set does not contain would otherwise vanish
+    # from the world entirely; keep it, still disabled, so the state stays
+    # consistent with the protocol (`add_move` is a no-op past 4 moves is NOT
+    # true, so guard the slot count explicitly)
+    for name in disabled_names:
+        if not any(mv.name == name for mv in pkmn.moves) and len(pkmn.moves) < 4:
+            pkmn.add_move(name)
+            pkmn.moves[-1].disabled = True

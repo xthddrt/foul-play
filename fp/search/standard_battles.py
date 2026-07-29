@@ -483,11 +483,21 @@ def prepare_battles(battle: Battle, num_battles: int) -> list[(Battle, float)]:
             sample_mega_evolution(battle_copy.opponent, index)
 
         sample_pokemon(battle_copy.opponent.active)
-        for pkmn in filter(lambda x: x.is_alive(), battle_copy.opponent.reserve):
+        # fainted reserves are included so that a pkmn revived by
+        # Revival Blessing has a predicted set for the search
+        for pkmn in battle_copy.opponent.reserve:
             sample_pokemon(pkmn)
 
         if battle.generation in constants.NO_TEAM_PREVIEW_GENS:
             populate_standardbattle_unrevealed_pkmn(battle_copy)
+
+        # standard battles do not model hidden-pkmn information:
+        # every pkmn (gen1-4 fill-ins included) is treated as revealed
+        for battler in (battle_copy.user, battle_copy.opponent):
+            for pkmn in [battler.active] + battler.reserve:
+                if pkmn is not None:
+                    pkmn.revealed = True
+
         battle_copy.opponent.lock_moves()
         sampled_battles.append((battle_copy, 1 / num_battles))
 

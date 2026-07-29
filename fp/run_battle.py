@@ -13,6 +13,7 @@ from fp.battle import LastUsedMove, Pokemon, Battle
 from fp.battle_modifier import async_update_battle, process_battle_updates
 from fp.helpers import normalize_name
 from fp.search.main import find_best_move
+from fp.team_dump import dump_team_from_request_json
 
 from fp.websocket_client import PSWebsocketClient
 
@@ -79,6 +80,9 @@ def extract_battle_factory_tier_from_msg(msg):
 
 
 async def async_pick_move(battle):
+    # increment on the REAL battle (find_best_move only ever sees a copy)
+    # so the first-decision extended search applies exactly once per battle
+    battle.decisions_made = getattr(battle, "decisions_made", 0) + 1
     battle_copy = deepcopy(battle)
     if not battle_copy.team_preview:
         battle_copy.user.update_from_request_json(battle_copy.request_json)
@@ -204,6 +208,14 @@ async def start_random_battle(
 
     await get_first_request_json(ps_websocket_client, battle)
 
+    if FoulPlayConfig.dump_team_dir is not None:
+        try:
+            dump_team_from_request_json(
+                battle.request_json, pokemon_battle_type, battle.battle_tag
+            )
+        except Exception as e:
+            logger.error("Could not dump team: {}".format(e))
+
     # apply the messages that were held onto
     process_battle_updates(battle)
 
@@ -310,8 +322,8 @@ async def start_battle(ps_websocket_client, pokemon_battle_type, team_dict):
             ps_websocket_client, pokemon_battle_type, team_dict
         )
 
-    await ps_websocket_client.send_message(battle.battle_tag, ["hf"])
-    await ps_websocket_client.send_message(battle.battle_tag, ["/timer on"])
+    if not FoulPlayConfig.never_start_timer:
+        await ps_websocket_client.send_message(battle.battle_tag, ["/timer on"])
 
     return battle
 
@@ -327,7 +339,6 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type, team_dict):
                 else None
             )
             logger.info("Winner: {}".format(winner))
-            await ps_websocket_client.send_message(battle.battle_tag, ["gg"])
             if (
                 FoulPlayConfig.save_replay == SaveReplay.always
                 or (

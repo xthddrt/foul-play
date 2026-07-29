@@ -188,6 +188,7 @@ SWITCH_OUT_MOVES = {
 
 # volatile statuses
 CONFUSION = "confusion"
+DISABLE = "disable"
 LEECH_SEED = "leechseed"
 SUBSTITUTE = "substitute"
 TAUNT = "taunt"
@@ -203,10 +204,21 @@ TERASTALLIZE = "terastallize"
 TRANSFORM = "transform"
 YAWN = "yawn"
 PARTIALLY_TRAPPED = "partiallytrapped"
+MAGNET_RISE = "magnetrise"
+HEAL_BLOCK = "healblock"
+THROAT_CHOP = "throatchop"
+SYRUP_BOMB = "syrupbomb"
 
 PROTECT_VOLATILE_STATUSES = [PROTECT, BANEFUL_BUNKER, SPIKY_SHIELD, SILK_TRAP, ENDURE]
 
 TAUNT_DURATION_INCREMENT_END_OF_TURN = {"gen3", "gen4"}
+
+# gens whose legacy modeling ticks the ENCORE duration at move-use. gen5+ ticks
+# taunt/encore at end-of-turn instead, mirroring PS (encore onResidualOrder 16,
+# taunt 15 - durations decrement each residual whether or not the mon moved)
+# and the engine's end-of-turn arms (poke-engine
+# genx/generate_instructions.rs:6687-6805, gated cfg(gen5..gen9))
+TAUNT_ENCORE_DURATION_INCREMENT_ON_MOVE = {"gen1", "gen2", "gen3", "gen4"}
 
 # non-volatile statuses
 SLEEP = "slp"

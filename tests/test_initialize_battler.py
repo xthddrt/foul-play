@@ -649,3 +649,63 @@ class TestUpdateFromRequestJson(unittest.TestCase):
         self.battler.update_from_request_json(request_dict)
 
         self.assertEqual(16, rattata.get_move("tackle").current_pp)
+
+
+class TestInitializeFirstTurnUserFromJson(unittest.TestCase):
+    def setUp(self):
+        self.battler = Battler()
+
+    def test_lead_is_marked_revealed_and_reserves_are_not(self):
+        request_json = {
+            "side": {
+                "name": "BigBluePikachu",
+                "id": "p1",
+                "pokemon": [
+                    {
+                        "ident": "p1: Pikachu",
+                        "details": "Pikachu, L84, M",
+                        "condition": "152/335",
+                        "active": True,
+                        "stats": {
+                            "atk": 200,
+                            "def": 210,
+                            "spa": 220,
+                            "spd": 230,
+                            "spe": 240,
+                        },
+                        "moves": ["volttackle", "thunderbolt"],
+                        "baseAbility": "static",
+                        "item": "lightball",
+                        "ability": "static",
+                    },
+                    {
+                        "ident": "p1: Rattata",
+                        "details": "Rattata, L84, M",
+                        "condition": "255/255",
+                        "active": False,
+                        "stats": {
+                            "atk": 100,
+                            "def": 110,
+                            "spa": 120,
+                            "spd": 130,
+                            "spe": 140,
+                        },
+                        "moves": ["tackle", "tailwhip"],
+                        "baseAbility": "runaway",
+                        "item": "leftovers",
+                        "ability": "runaway",
+                    },
+                ],
+            },
+        }
+
+        self.battler.initialize_first_turn_user_from_json(request_json)
+
+        # the bot's first-turn |switch| message is dropped and never goes
+        # through `switch_or_drag`, so the lead must be revealed here
+        self.assertEqual("pikachu", self.battler.active.name)
+        self.assertTrue(self.battler.active.revealed)
+
+        # the reserve pkmn has not entered the field
+        self.assertEqual("rattata", self.battler.reserve[0].name)
+        self.assertFalse(self.battler.reserve[0].revealed)

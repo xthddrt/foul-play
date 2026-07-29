@@ -25,6 +25,7 @@ from fp.battle_modifier import (
     fieldstart,
     fieldend,
     illusion_end,
+    _switch_active_with_zoroark_from_reserves,
     drag,
     switch,
     clearboost,
@@ -36,6 +37,7 @@ from fp.battle_modifier import (
 from fp.battle_modifier import fail
 from fp.battle_modifier import terastallize
 from fp.battle_modifier import activate
+from fp.battle_modifier import anim
 from fp.battle_modifier import prepare
 from fp.battle_modifier import switch_or_drag
 from fp.battle_modifier import clearallboost
@@ -52,6 +54,7 @@ from fp.battle_modifier import curestatus
 from fp.battle_modifier import start_volatile_status
 from fp.battle_modifier import end_volatile_status
 from fp.battle_modifier import immune
+from fp.battle_modifier import miss
 from fp.battle_modifier import update_ability
 from fp.battle_modifier import form_change
 from fp.battle_modifier import zpower
@@ -64,6 +67,7 @@ from fp.battle_modifier import singleturn
 from fp.battle_modifier import transform
 from fp.battle_modifier import process_battle_updates
 from fp.battle_modifier import upkeep
+from fp.battle_modifier import turn
 from fp.battle_modifier import inactive
 
 
@@ -279,6 +283,46 @@ class TestSwitchOrDrag(unittest.TestCase):
             0.5, self.battle.user.active.hp / self.battle.user.active.max_hp
         )
 
+    def test_user_pokemon_switching_in_is_marked_revealed(self):
+        weedle = Pokemon("weedle", 100)
+        self.battle.user.reserve = [weedle]
+        self.assertFalse(weedle.revealed)
+
+        split_msg = ["", "switch", "p1a: weedle", "Weedle, L100, M", "100/100"]
+        switch_or_drag(self.battle, split_msg)
+
+        self.assertIs(weedle, self.battle.user.active)
+        self.assertTrue(weedle.revealed)
+
+    def test_user_reserve_pokemon_that_did_not_enter_the_field_stays_unrevealed(self):
+        weedle = Pokemon("weedle", 100)
+        metapod = Pokemon("metapod", 100)
+        self.battle.user.reserve = [weedle, metapod]
+
+        split_msg = ["", "switch", "p1a: weedle", "Weedle, L100, M", "100/100"]
+        switch_or_drag(self.battle, split_msg)
+
+        self.assertTrue(weedle.revealed)
+        self.assertFalse(metapod.revealed)
+
+    def test_user_pokemon_dragged_in_is_marked_revealed(self):
+        weedle = Pokemon("weedle", 100)
+        self.battle.user.reserve = [weedle]
+
+        split_msg = ["", "drag", "p1a: weedle", "Weedle, L100, M", "100/100"]
+        drag(self.battle, split_msg)
+
+        self.assertIs(weedle, self.battle.user.active)
+        self.assertTrue(weedle.revealed)
+
+    def test_opponent_pokemon_switching_in_is_marked_revealed(self):
+        # a brand-new opponent pkmn is created when it first enters the field
+        split_msg = ["", "switch", "p2a: weedle", "Weedle, L100, M", "100/100"]
+        switch_or_drag(self.battle, split_msg)
+
+        self.assertEqual("weedle", self.battle.opponent.active.name)
+        self.assertTrue(self.battle.opponent.active.revealed)
+
     def test_adds_intimidate_to_impossible_abilities_when_switching_in(self):
         split_msg = ["", "switch", "p2a: caterpie", "Caterpie, L100, M", "100/100"]
         switch_or_drag(self.battle, split_msg)
@@ -293,6 +337,40 @@ class TestSwitchOrDrag(unittest.TestCase):
 
         self.assertEqual("caterpie", self.battle.opponent.active.name)
         self.assertNotIn("sandstream", self.battle.opponent.active.impossible_abilities)
+
+    def test_switch_out_clears_disabled_moves_and_disable_duration(self):
+        # a Disabled/Cursed-Body-disabled move is restored on switch-out: PS
+        # rebuilds moveSlots from baseMoveSlots and drops the volatile WITHOUT
+        # emitting |-end|Disable (sim/pokemon.ts:1514-1541 clearVolatile), so
+        # the outgoing pkmn must not keep a phantom mv.disabled=True
+        self.opponent_active.add_move("thunderbolt")
+        self.opponent_active.add_move("dracometeor")
+        self.opponent_active.get_move("thunderbolt").disabled = True
+        self.opponent_active.volatile_statuses.append(constants.DISABLE)
+        self.opponent_active.volatile_status_durations[constants.DISABLE] = 3
+
+        split_msg = ["", "switch", "p2a: weedle", "Weedle, L100, M", "100/100"]
+        switch_or_drag(self.battle, split_msg)
+
+        self.assertFalse(
+            any(m.disabled for m in self.opponent_active.moves),
+            [(m.name, m.disabled) for m in self.opponent_active.moves],
+        )
+        self.assertEqual(
+            0, self.opponent_active.volatile_status_durations[constants.DISABLE]
+        )
+        self.assertNotIn(constants.DISABLE, self.opponent_active.volatile_statuses)
+
+    def test_user_switch_out_clears_disabled_moves(self):
+        self.battle.user.active.add_move("thunderbolt")
+        self.battle.user.active.get_move("thunderbolt").disabled = True
+        pikachu = self.battle.user.active
+        self.battle.user.reserve = [Pokemon("weedle", 100)]
+
+        split_msg = ["", "switch", "p1a: weedle", "Weedle, L100, M", "100/100"]
+        switch_or_drag(self.battle, split_msg)
+
+        self.assertFalse(pikachu.get_move("thunderbolt").disabled)
 
     def test_does_not_add_sandstream_to_impossible_abilities_if_heavy_rain_is_active(
         self,
@@ -744,9 +822,10 @@ class TestSwitchOrDrag(unittest.TestCase):
         ]
         switch_or_drag(self.battle, split_msg)
 
-        self.assertEqual(
-            self.battle.opponent.active.max_hp / 2, self.battle.opponent.active.hp
-        )
+        # `50/100` on a 352 max-HP mon means hp in [173, 176]; the midpoint of
+        # that band is 174 (see fp/hp_certificate.py -- max_hp / 2 == 176 is the
+        # band's top edge, not its centre)
+        self.assertEqual(174, self.battle.opponent.active.hp)
 
     def test_arceus_ghost_switching_in(self):
         already_seen_pokemon = Pokemon("arceus", 100)
@@ -892,6 +971,20 @@ class TestSwitchOrDrag(unittest.TestCase):
 
         self.assertEqual(["normal"], ditto.types)
 
+    def test_ditto_switching_resets_transformed_into(self):
+        ditto = Pokemon("ditto", 100)
+        ditto.transformed_into = "weedle"
+        ditto.volatile_statuses.append(constants.TRANSFORM)
+        self.battle.opponent.active = ditto
+
+        split_msg = ["", "switch", "p2a: weedle", "Weedle, L100, M", "100/100"]
+        switch_or_drag(self.battle, split_msg)
+
+        if self.battle.opponent.reserve[0] != ditto:
+            self.fail("Ditto was not moved to reserves")
+
+        self.assertIsNone(ditto.transformed_into)
+
     def test_shed_tail_switching_in_gets_shed_tailing_flag_set_to_false(self):
         self.battle.user.shed_tailing = True
 
@@ -975,6 +1068,70 @@ class TestHealOrDamage(unittest.TestCase):
             0, self.battle.opponent.side_conditions[constants.HEALING_WISH]
         )
 
+    def test_heal_from_healing_wish_clears_status(self):
+        # PS's Healing Wish slot condition heals to full AND calls
+        # `target.clearStatus()` (data/moves.ts healingwish `onSwap`), but
+        # announces only the -heal line -- there is NO -curestatus to drive the
+        # normal cure path.  synth03334 T27:
+        #   |switch|p2a: Ursaluna|Ursaluna, L79, M|72/100 brn
+        #   |-heal|p2a: Ursaluna|100/100|[from] move: Healing Wish
+        self.battle.opponent.side_conditions[constants.HEALING_WISH] = 1
+        self.battle.opponent.active.status = constants.BURN
+        self.battle.opponent.active.hp = 72
+        self.battle.opponent.active.max_hp = 100
+        split_msg = [
+            "",
+            "-heal",
+            "p2a: Caterpie",
+            "100/100",
+            "[from] move: Healing Wish",
+        ]
+        heal_or_damage(self.battle, split_msg)
+        self.assertIsNone(self.battle.opponent.active.status)
+        self.assertEqual(
+            self.battle.opponent.active.max_hp, self.battle.opponent.active.hp
+        )
+
+    def test_heal_from_healing_wish_resets_toxic_count(self):
+        self.battle.opponent.side_conditions[constants.HEALING_WISH] = 1
+        self.battle.opponent.side_conditions[constants.TOXIC_COUNT] = 4
+        self.battle.opponent.active.status = constants.TOXIC
+        split_msg = [
+            "",
+            "-heal",
+            "p2a: Caterpie",
+            "100/100",
+            "[from] move: Healing Wish",
+        ]
+        heal_or_damage(self.battle, split_msg)
+        self.assertIsNone(self.battle.opponent.active.status)
+        self.assertEqual(0, self.battle.opponent.side_conditions[constants.TOXIC_COUNT])
+
+    def test_heal_from_lunar_dance_clears_status(self):
+        # data/moves.ts lunardance does the same heal + clearStatus (plus PP)
+        self.battle.opponent.active.status = constants.PARALYZED
+        split_msg = [
+            "",
+            "-heal",
+            "p2a: Caterpie",
+            "100/100",
+            "[from] move: Lunar Dance",
+        ]
+        heal_or_damage(self.battle, split_msg)
+        self.assertIsNone(self.battle.opponent.active.status)
+
+    def test_ordinary_heal_does_not_clear_status(self):
+        self.battle.opponent.active.status = constants.BURN
+        split_msg = [
+            "",
+            "-heal",
+            "p2a: Caterpie",
+            "100/100",
+            "[from] move: Wish",
+        ]
+        heal_or_damage(self.battle, split_msg)
+        self.assertEqual(constants.BURN, self.battle.opponent.active.status)
+
     def test_sets_ability_when_the_information_is_present(self):
         split_msg = [
             "",
@@ -1049,9 +1206,15 @@ class TestHealOrDamage(unittest.TestCase):
         self.assertEqual(None, self.battle.opponent.active.item)
 
     def test_damage_sets_opponents_active_pokemon_to_correct_hp(self):
+        # `80/100` on a 200 max-HP mon means `ceil(100*hp/200) == 80`, i.e.
+        # hp in [159, 160]; the point estimate is the MIDPOINT of the band the
+        # protocol stated, not `max_hp * pct` -- that was the one-sided
+        # estimator whose checker-side `round` put APPROXIMATIONS U3's hard
+        # finding an HP OUTSIDE the band.  See fp/hp_certificate.py.
         split_msg = ["", "-damage", "p2a: Caterpie", "80/100"]
         heal_or_damage(self.battle, split_msg)
-        self.assertEqual(160, self.battle.opponent.active.hp)
+        self.assertEqual(159, self.battle.opponent.active.hp)
+        self.assertFalse(self.battle.opponent.active.hp_exact)
 
     def test_damage_sets_bots_active_pokemon_to_correct_hp(self):
         split_msg = ["", "-damage", "p1a: Caterpie", "150/250"]
@@ -1163,6 +1326,72 @@ class TestHealOrDamage(unittest.TestCase):
         heal_or_damage(self.battle, split_msg)
         self.assertEqual(amoongus_reserve.hp, int(amoongus_reserve.max_hp / 2))
 
+    def test_revivalblessing_increments_times_revived_for_opponent(self):
+        # PS's side.totalFainted is cumulative and a revive never decrements it
+        # (sim/battle.ts:2551), so the engine reconstructs it as
+        # num_fainted_pkmn() + times_revived. One `-heal ... [from] move: Revival
+        # Blessing` line is emitted per revive (sim/battle.ts:2793).
+        amoongus_reserve = Pokemon("amoonguss", 100)
+        amoongus_reserve.nickname = "Sus"
+        amoongus_reserve.hp = 0
+        amoongus_reserve.fainted = True
+        self.battle.opponent.reserve = [amoongus_reserve]
+
+        self.assertEqual(0, self.battle.opponent.times_revived)
+
+        split_msg = ["", "-heal", "p2a: Sus", "50/100", "[from] move: Revival Blessing"]
+        heal_or_damage(self.battle, split_msg)
+
+        self.assertEqual(1, self.battle.opponent.times_revived)
+        # the counter is per-side: the bot's side must be untouched
+        self.assertEqual(0, self.battle.user.times_revived)
+
+    def test_revivalblessing_increments_times_revived_for_bot(self):
+        amoongus_reserve = Pokemon("amoonguss", 100)
+        amoongus_reserve.nickname = "Sus"
+        amoongus_reserve.hp = 0
+        amoongus_reserve.fainted = True
+        self.battle.user.reserve = [amoongus_reserve]
+
+        split_msg = [
+            "",
+            "-heal",
+            "p1a: Sus",
+            "150/301",
+            "[from] move: Revival Blessing",
+        ]
+        heal_or_damage(self.battle, split_msg)
+
+        self.assertEqual(1, self.battle.user.times_revived)
+        self.assertEqual(0, self.battle.opponent.times_revived)
+
+    def test_times_revived_accumulates_and_is_never_decremented(self):
+        # totalFainted is CUMULATIVE: a second revive on the same side adds to the
+        # count, and nothing walks it back.
+        first = Pokemon("amoonguss", 100)
+        first.nickname = "Sus"
+        first.hp = 0
+        first.fainted = True
+        second = Pokemon("kingambit", 100)
+        second.nickname = "Gambit"
+        second.hp = 0
+        second.fainted = True
+        self.battle.opponent.reserve = [first, second]
+
+        heal_or_damage(
+            self.battle,
+            ["", "-heal", "p2a: Sus", "50/100", "[from] move: Revival Blessing"],
+        )
+        heal_or_damage(
+            self.battle,
+            ["", "-heal", "p2a: Gambit", "50/100", "[from] move: Revival Blessing"],
+        )
+        self.assertEqual(2, self.battle.opponent.times_revived)
+
+        # an ordinary (non-Revival-Blessing) heal must not touch the counter
+        heal_or_damage(self.battle, ["", "-heal", "p2a: Sus", "80/100"])
+        self.assertEqual(2, self.battle.opponent.times_revived)
+
     def test_gen1_pkmn_trapping_foe_releases_target_after_hitting_self_in_confusion(
         self,
     ):
@@ -1186,6 +1415,140 @@ class TestHealOrDamage(unittest.TestCase):
                 constants.PARTIALLY_TRAPPED
             ],
         )
+
+    def test_direct_move_damage_increments_times_attacked_for_user(self):
+        # a '-damage' line with no '[from]' clause is a direct move hit
+        split_msg = ["", "-damage", "p1a: Caterpie", "150/250"]
+        heal_or_damage(self.battle, split_msg)
+        self.assertEqual(1, self.battle.user.active.times_attacked)
+        self.assertEqual(0, self.battle.opponent.active.times_attacked)
+
+    def test_direct_move_damage_increments_times_attacked_for_opponent(self):
+        split_msg = ["", "-damage", "p2a: Caterpie", "80/100"]
+        heal_or_damage(self.battle, split_msg)
+        self.assertEqual(1, self.battle.opponent.active.times_attacked)
+        self.assertEqual(0, self.battle.user.active.times_attacked)
+
+    def test_direct_move_damage_accumulates_times_attacked(self):
+        split_msg = ["", "-damage", "p1a: Caterpie", "150/250"]
+        heal_or_damage(self.battle, split_msg)
+        heal_or_damage(self.battle, split_msg)
+        self.assertEqual(2, self.battle.user.active.times_attacked)
+
+    def test_direct_move_damage_causing_faint_increments_times_attacked(self):
+        split_msg = ["", "-damage", "p1a: Caterpie", "0 fnt"]
+        heal_or_damage(self.battle, split_msg)
+        self.assertEqual(1, self.battle.user.active.times_attacked)
+
+    def test_chip_damage_with_from_clause_does_not_increment_times_attacked(self):
+        for chip_msg in [
+            ["", "-damage", "p1a: Caterpie", "94/100 tox", "[from] psn"],
+            ["", "-damage", "p1a: Caterpie", "88/100", "[from] Stealth Rock"],
+            ["", "-damage", "p1a: Caterpie", "94/100", "[from] Sandstorm"],
+            ["", "-damage", "p1a: Caterpie", "90/100", "[from] item: Life Orb"],
+            ["", "-damage", "p1a: Caterpie", "80/100", "[from] Recoil"],
+            ["", "-damage", "p1a: Caterpie", "376/413", "[from] confusion"],
+            ["", "-damage", "p1a: Caterpie", "50/100", "[from] High Jump Kick"],
+            [
+                "",
+                "-damage",
+                "p1a: Caterpie",
+                "167/319",
+                "[from] ability: Iron Barbs",
+                "[of] p2a: Ferrothorn",
+            ],
+            [
+                "",
+                "-damage",
+                "p1a: Caterpie",
+                "167/319",
+                "[from] item: Rocky Helmet",
+                "[of] p2a: Ferrothorn",
+            ],
+        ]:
+            heal_or_damage(self.battle, chip_msg)
+        self.assertEqual(0, self.battle.user.active.times_attacked)
+
+    def test_heal_does_not_increment_times_attacked(self):
+        split_msg = ["", "-heal", "p1a: Caterpie", "150/250"]
+        heal_or_damage(self.battle, split_msg)
+        self.assertEqual(0, self.battle.user.active.times_attacked)
+
+
+class TestTimesAttackedSelfCostFilter(unittest.TestCase):
+    """The HP cost of Substitute/Belly Drum/ghost-Curse/Fillet Away/Shed Tail/
+    Clangorous Soul is a bare '-damage' line on the user, but PS only counts
+    timesAttacked for hits from ANOTHER pokemon's move (sim/battle-actions.ts
+    :990-996 `pokemon !== target` guards the increment), so those lines must
+    not count."""
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+
+        self.user_active = Pokemon("caterpie", 100)
+        self.opponent_active = Pokemon("caterpie", 100)
+        self.battle.opponent.active = self.opponent_active
+        self.battle.user.active = self.user_active
+
+    def test_substitute_self_cost_damage_is_not_counted(self):
+        # |move|p1a: Caterpie|Substitute -> |-start|...|Substitute -> |-damage|
+        move(self.battle, ["", "move", "p1a: Caterpie", "Substitute"])
+        heal_or_damage(self.battle, ["", "-damage", "p1a: Caterpie", "75/100"])
+        self.assertEqual(0, self.battle.user.active.times_attacked)
+
+    def test_each_self_cost_move_is_filtered(self):
+        for mv in [
+            "Belly Drum",
+            "Fillet Away",
+            "Shed Tail",
+            "Clangorous Soul",
+        ]:
+            with self.subTest(move=mv):
+                self.setUp()
+                move(self.battle, ["", "move", "p1a: Caterpie", mv])
+                heal_or_damage(
+                    self.battle, ["", "-damage", "p1a: Caterpie", "50/100"]
+                )
+                self.assertEqual(0, self.battle.user.active.times_attacked)
+
+    def test_opponent_self_cost_damage_is_not_counted(self):
+        move(self.battle, ["", "move", "p2a: Caterpie", "Belly Drum"])
+        heal_or_damage(self.battle, ["", "-damage", "p2a: Caterpie", "50/100"])
+        self.assertEqual(0, self.battle.opponent.active.times_attacked)
+
+    def test_real_hit_after_self_cost_still_counts(self):
+        # p1 belly drums (cost swallowed), then p2's move connects: the next
+        # |move| line invalidates the expectation so the hit counts
+        move(self.battle, ["", "move", "p1a: Caterpie", "Belly Drum"])
+        heal_or_damage(self.battle, ["", "-damage", "p1a: Caterpie", "50/100"])
+        move(self.battle, ["", "move", "p2a: Caterpie", "Tackle"])
+        heal_or_damage(self.battle, ["", "-damage", "p1a: Caterpie", "40/100"])
+        self.assertEqual(1, self.battle.user.active.times_attacked)
+
+    def test_ghost_curse_self_cost_is_not_counted(self):
+        # Curse only costs HP for a Ghost-type user (bare '-damage' on it)
+        self.battle.user.active = Pokemon("gengar", 100)
+        move(self.battle, ["", "move", "p1a: Gengar", "Curse"])
+        heal_or_damage(self.battle, ["", "-damage", "p1a: Gengar", "50/100"])
+        self.assertEqual(0, self.battle.user.active.times_attacked)
+
+    def test_non_ghost_curse_sets_no_expectation(self):
+        # a non-ghost Curse emits boost lines and never a cost '-damage'; a
+        # later bare '-damage' (e.g. Future Sight impact) must still count
+        move(self.battle, ["", "move", "p1a: Caterpie", "Curse"])
+        heal_or_damage(self.battle, ["", "-damage", "p1a: Caterpie", "60/100"])
+        self.assertEqual(1, self.battle.user.active.times_attacked)
+
+    def test_failed_self_cost_move_clears_the_expectation(self):
+        # Substitute below 25% HP: |-fail| arrives instead of the cost
+        # '-damage', so the expectation is dropped and a later bare
+        # '-damage' on this pokemon counts as a real hit
+        move(self.battle, ["", "move", "p1a: Caterpie", "Substitute"])
+        fail(self.battle, ["", "-fail", "p1a: Caterpie", "move: Substitute"])
+        heal_or_damage(self.battle, ["", "-damage", "p1a: Caterpie", "60/100"])
+        self.assertEqual(1, self.battle.user.active.times_attacked)
 
 
 class TestActivate(unittest.TestCase):
@@ -1320,6 +1683,21 @@ class TestActivate(unittest.TestCase):
         split_msg = ["", "-activate", "p2a: Heatran", "Substitute", "[damage]"]
         activate(self.battle, split_msg)
         self.assertTrue(self.battle.opponent.active.substitute_hit)
+
+    def test_substitute_absorbed_hit_does_not_increment_times_attacked(self):
+        # PS does not count a hit absorbed by the substitute toward Rage Fist
+        # (Substitute's onTryPrimaryHit returns HIT_SUBSTITUTE before the
+        # timesAttacked counter runs); this surviving-sub '-activate' line still
+        # sets substitute_hit but must not increment the counter
+        split_msg = ["", "-activate", "p2a: Heatran", "Substitute", "[damage]"]
+        activate(self.battle, split_msg)
+        self.assertEqual(0, self.battle.opponent.active.times_attacked)
+        self.assertEqual(0, self.battle.user.active.times_attacked)
+
+    def test_non_substitute_activate_does_not_increment_times_attacked(self):
+        split_msg = ["", "-activate", "p2a: Ferrothorn", "ability: Iron Barbs"]
+        activate(self.battle, split_msg)
+        self.assertEqual(0, self.battle.opponent.active.times_attacked)
 
 
 class TestPrepare(unittest.TestCase):
@@ -1864,7 +2242,23 @@ class TestMove(unittest.TestCase):
 
         self.assertEqual([], self.battle.opponent.active.volatile_statuses)
 
-    def test_increments_encore_duration_when_using_move_having_been_encored(self):
+    def test_does_not_increment_encore_duration_on_move_gen5plus(self):
+        # PS ticks encore at end-of-turn (data/moves.ts encore onResidualOrder
+        # 16), whether or not the encored mon moved; the engine's gen5+
+        # end-of-turn arm consumes the counter the same way
+        # (genx/generate_instructions.rs:6752-6805). Move-use must not tick.
+        self.battle.generation = "gen9"
+        self.battle.opponent.active.volatile_statuses = ["encore"]
+        self.battle.opponent.active.volatile_status_durations["encore"] = 0
+        split_msg = ["", "move", "p2a: Caterpie", "Tackle"]
+        move(self.battle, split_msg)
+        self.assertEqual(
+            0, self.battle.opponent.active.volatile_status_durations["encore"]
+        )
+
+    def test_increments_encore_duration_on_move_pre_gen5(self):
+        # legacy pre-gen5 modeling keeps the move-use tick
+        self.battle.generation = "gen4"
         self.battle.opponent.active.volatile_statuses = ["encore"]
         self.battle.opponent.active.volatile_status_durations["encore"] = 0
         split_msg = ["", "move", "p2a: Caterpie", "Tackle"]
@@ -1873,13 +2267,17 @@ class TestMove(unittest.TestCase):
             1, self.battle.opponent.active.volatile_status_durations["encore"]
         )
 
-    def test_increments_taunt_duration_when_using_move_having_been_taunted(self):
+    def test_does_not_increment_taunt_duration_on_move_gen5plus(self):
+        # PS ticks taunt at end-of-turn (data/moves.ts taunt onResidualOrder
+        # 15); gen5+ move-use must not tick (the end-of-turn tick lives in
+        # upkeep, matching genx/generate_instructions.rs:6687-6746)
+        self.battle.generation = "gen9"
         self.battle.opponent.active.volatile_statuses = [constants.TAUNT]
         self.battle.opponent.active.volatile_status_durations[constants.TAUNT] = 0
         split_msg = ["", "move", "p2a: Caterpie", "Tackle"]
         move(self.battle, split_msg)
         self.assertEqual(
-            1, self.battle.opponent.active.volatile_status_durations[constants.TAUNT]
+            0, self.battle.opponent.active.volatile_status_durations[constants.TAUNT]
         )
 
     def test_removes_destinybond_if_it_exists_in_volatiles_when_using_destinybond(self):
@@ -2399,6 +2797,28 @@ class TestWeather(unittest.TestCase):
         self.assertEqual("sunnyday", self.battle.weather)
         self.assertEqual(3, self.battle.weather_turns_remaining)
 
+    def test_weather_none_clears_weather_to_None_not_the_string_none(self):
+        # `|-weather|none` is CLEARED weather.  PS's `field.weather` is `''`
+        # there and `effectiveWeather()` returns `''`, so every truthiness test
+        # on the weather (Weather Ball's onModifyMove switch,
+        # data/moves.ts:20714-20731) must see a falsy value.  Storing the
+        # literal "none" made `battle.weather` truthy in clear weather.
+        self.battle.weather = constants.RAIN
+        self.battle.weather_source = "opponent:caterpie"
+
+        weather(self.battle, ["", "-weather", "none"])
+
+        self.assertIsNone(self.battle.weather)
+        self.assertFalse(self.battle.weather)
+        self.assertIsNone(self.battle.weather_source)
+
+    def test_weather_none_still_maps_to_the_engine_none_string(self):
+        from fp.search.poke_engine_helpers import get_weather_string
+
+        weather(self.battle, ["", "-weather", "none"])
+
+        self.assertEqual("none", get_weather_string(self.battle.weather))
+
     def test_sets_weather_ability_on_opponent_when_it_is_present(self):
         split_msg = [
             "",
@@ -2809,11 +3229,14 @@ class TestStartVolatileStatus(unittest.TestCase):
         self.battle.user.active = self.user_active
 
     def test_sets_slowstart_duration_when_slowstart_activates(self):
+        # PS slowstart onStart: effectState.counter = 5 (data/abilities.ts),
+        # decremented at each residual and ending at 0 - the engine consumes
+        # the seed as turns-remaining with the same counter=5 semantics
         split_msg = ["", "-start", "p2a: Caterpie", "Slow Start"]
         start_volatile_status(self.battle, split_msg)
 
         self.assertEqual(
-            6,
+            5,
             self.battle.opponent.active.volatile_status_durations[constants.SLOW_START],
         )
 
@@ -3034,6 +3457,196 @@ class TestStartVolatileStatus(unittest.TestCase):
         self.assertEqual(["???", "flying"], self.battle.opponent.active.types)
 
 
+class TestTypechangeIsNoOpWhileTerastallized(unittest.TestCase):
+    """PS `Pokemon#setType` (sim/pokemon.ts):
+
+        // Terastallized Pokemon cannot have their base type changed
+        // except via forme change
+        if (this.terastallized) return false;
+
+    Almost every emitter guards on that return value and so never sends the
+    line at all while terastallized (Color Change data/abilities.ts:561,
+    Protean :3494, Libero :2314, Conversion data/moves.ts:2806, Conversion 2
+    :2841, Camouflage :2176, Soak :17193, Magic Powder :10751).  Three do NOT:
+
+      * Reflect Type (data/moves.ts:14899) adds the message BEFORE setType,
+      * Burn Up (:2110-2111) and Double Shock (:3963-3964) call setType
+        unconditionally and then announce `pokemon.getTypes()`, which for a
+        terastallized mon is the TERA type,
+      * plus the per-request `[silent]` resync at sim/battle.ts:1714.
+
+    In every one of those PS leaves `pokemon.types` untouched.  Writing the
+    announced types onto `pkmn.types` destroys the pre-terastallization types
+    that decide 1.5x vs 2.0x tera STAB (damage_membership._base_types).
+
+    Live corpus repro: synthetic-corpus/battle-gen9randombattle-synth17693,
+    `|-start|p1a: Pawmot|typechange|Electric|[from] move: Double Shock` on a
+    Pawmot that had already terastallized Electric -- fp collapsed Pawmot's
+    Electric/Fighting base types to ['electric'] and its Close Combat lost STAB.
+    """
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.opponent.active = Pokemon("pawmot", 80)
+        self.battle.user.active = Pokemon("weedle", 100)
+
+    def _tera(self, tera_type="electric"):
+        self.battle.opponent.active.terastallized = True
+        self.battle.opponent.active.tera_type = tera_type
+
+    def test_double_shock_typechange_does_not_touch_base_types(self):
+        # |-start|p2a: Pawmot|typechange|Electric|[from] move: Double Shock
+        self._tera()
+        before = list(self.battle.opponent.active.types)
+        self.assertEqual(["electric", "fighting"], before)
+        start_volatile_status(
+            self.battle,
+            ["", "-start", "p2a: Pawmot", "typechange", "Electric",
+             "[from] move: Double Shock"],
+        )
+        self.assertEqual(before, self.battle.opponent.active.types)
+
+    def test_burn_up_typechange_does_not_touch_base_types(self):
+        self.battle.opponent.active = Pokemon("moltres", 80)
+        self._tera("fire")
+        before = list(self.battle.opponent.active.types)
+        start_volatile_status(
+            self.battle,
+            ["", "-start", "p2a: Moltres", "typechange", "???/Flying",
+             "[from] move: Burn Up"],
+        )
+        self.assertEqual(before, self.battle.opponent.active.types)
+
+    def test_reflect_type_typechange_does_not_touch_base_types(self):
+        # Reflect Type adds the message before setType, so PS DOES emit it for a
+        # terastallized user -- and still leaves its types alone
+        self.battle.opponent.active = Pokemon("starmie", 80)
+        self._tera("water")
+        before = list(self.battle.opponent.active.types)
+        start_volatile_status(
+            self.battle,
+            ["", "-start", "p2a: Starmie", "typechange",
+             "[from] move: Reflect Type", "[of] p1a: Dragapult"],
+        )
+        self.assertEqual(before, self.battle.opponent.active.types)
+
+    def test_silent_typechange_resync_does_not_touch_base_types(self):
+        # |-start|p2a: Cobalion|typechange|Fighting|[silent] on a Cobalion that
+        # terastallized Fighting (corpus synth15271:148/417).  sim/battle.ts:1714
+        # only refreshes the client's apparentType; it never calls setType.
+        self.battle.opponent.active = Pokemon("cobalion", 80)
+        self._tera("fighting")
+        before = list(self.battle.opponent.active.types)
+        self.assertEqual(["steel", "fighting"], before)
+        start_volatile_status(
+            self.battle,
+            ["", "-start", "p2a: Cobalion", "typechange", "Fighting", "[silent]"],
+        )
+        self.assertEqual(before, self.battle.opponent.active.types)
+
+    def test_typechange_still_applies_when_not_terastallized(self):
+        start_volatile_status(
+            self.battle,
+            ["", "-start", "p2a: Pawmot", "typechange", "Electric",
+             "[from] move: Double Shock"],
+        )
+        self.assertEqual(["electric"], self.battle.opponent.active.types)
+
+    def test_typechange_applies_after_the_mon_stops_being_terastallized(self):
+        # the guard reads the live flag, not a sticky one
+        self._tera()
+        start_volatile_status(
+            self.battle,
+            ["", "-start", "p2a: Pawmot", "typechange", "Ice"],
+        )
+        self.assertEqual(["electric", "fighting"], self.battle.opponent.active.types)
+        self.battle.opponent.active.terastallized = False
+        start_volatile_status(
+            self.battle,
+            ["", "-start", "p2a: Pawmot", "typechange", "Ice"],
+        )
+        self.assertEqual(["ice"], self.battle.opponent.active.types)
+
+
+class TestStartVolatileStatusDisable(unittest.TestCase):
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+
+        self.opponent_active = Pokemon("dragapult", 100)
+        for mv in ["dracometeor", "shadowball", "uturn", "thunderbolt"]:
+            self.opponent_active.add_move(mv)
+        self.battle.opponent.active = self.opponent_active
+
+        self.user_active = Pokemon("sableye", 100)
+        self.battle.user.active = self.user_active
+
+    def test_cursed_body_disable_marks_the_named_move_disabled(self):
+        split_msg = [
+            "",
+            "-start",
+            "p2a: Dragapult",
+            "Disable",
+            "Thunderbolt",
+            "[from] ability: Cursed Body",
+            "[of] p1a: Sableye",
+        ]
+        start_volatile_status(self.battle, split_msg)
+
+        disabled = {m.name: m.disabled for m in self.opponent_active.moves}
+        self.assertTrue(disabled["thunderbolt"])
+        self.assertFalse(disabled["dracometeor"])
+        self.assertFalse(disabled["shadowball"])
+        self.assertFalse(disabled["uturn"])
+
+    def test_disable_seeds_the_disable_duration(self):
+        split_msg = ["", "-start", "p2a: Dragapult", "Disable", "Thunderbolt"]
+        start_volatile_status(self.battle, split_msg)
+
+        self.assertEqual(
+            4,
+            self.opponent_active.volatile_status_durations[constants.DISABLE],
+        )
+        self.assertIn(constants.DISABLE, self.opponent_active.volatile_statuses)
+
+    def test_cursed_body_disable_does_not_set_opponent_ability(self):
+        # Cursed Body belongs to the bot's Sableye ([of] p1a), not the disabled
+        # opponent - the opponent's ability must stay unknown
+        split_msg = [
+            "",
+            "-start",
+            "p2a: Dragapult",
+            "Disable",
+            "Thunderbolt",
+            "[from] ability: Cursed Body",
+            "[of] p1a: Sableye",
+        ]
+        start_volatile_status(self.battle, split_msg)
+
+        self.assertIsNone(self.opponent_active.ability)
+
+    def test_end_disable_re_enables_move_and_clears_duration(self):
+        start_split = ["", "-start", "p2a: Dragapult", "Disable", "Thunderbolt"]
+        start_volatile_status(self.battle, start_split)
+
+        end_split = ["", "-end", "p2a: Dragapult", "move: Disable"]
+        end_volatile_status(self.battle, end_split)
+
+        self.assertFalse(
+            [m for m in self.opponent_active.moves if m.name == "thunderbolt"][
+                0
+            ].disabled
+        )
+        self.assertEqual(
+            0,
+            self.opponent_active.volatile_status_durations[constants.DISABLE],
+        )
+        self.assertNotIn(constants.DISABLE, self.opponent_active.volatile_statuses)
+
+
 class TestEndVolatileStatus(unittest.TestCase):
     def setUp(self):
         self.battle = Battle(None)
@@ -3046,15 +3659,56 @@ class TestEndVolatileStatus(unittest.TestCase):
         self.user_active = Pokemon("weedle", 100)
         self.battle.user.active = self.user_active
 
-    def test_removes_partiallytrapped(self):
-        self.battle.opponent.active.volatile_statuses = [constants.PARTIALLY_TRAPPED]
-        split_msg = ["", "-end", "p2a: Caterpie", "whirlpool", "[partiallytrapped]"]
+    def test_end_fallen_removes_supreme_overlord_volatile(self):
+        # PS data/abilities.ts:4727 announces Supreme Overlord's switch-in
+        # snapshot as `-start ... fallen{N} [silent]`; :4732 ends it with
+        # `-end ... fallen{N} [silent]`.
+        self.battle.opponent.active.volatile_statuses = ["fallen3"]
+        split_msg = ["", "-end", "p2a: Caterpie", "fallen3", "[silent]"]
         end_volatile_status(self.battle, split_msg)
 
         self.assertEqual([], self.battle.opponent.active.volatile_statuses)
 
-    def test_removes_partiallytrapped_silent(self):
+    def test_end_fallenundefined_is_a_noop_without_warning(self):
+        # When Supreme Overlord never activated (0 fainted allies at switch-in)
+        # PS's unguarded onEnd template (data/abilities.ts:4731-4733) emits the
+        # literal tag `fallenundefined`. There is no tracked volatile to remove
+        # and this must not be treated as a desync.
+        self.battle.opponent.active.volatile_statuses = []
+        split_msg = ["", "-end", "p2a: Caterpie", "fallenundefined", "[silent]"]
+        with self.assertNoLogs("fp.battle_modifier", level="WARNING"):
+            end_volatile_status(self.battle, split_msg)
+
+        self.assertEqual([], self.battle.opponent.active.volatile_statuses)
+
+    def test_removes_partiallytrapped(self):
+        # PS data/conditions.ts partiallytrapped onEnd:
+        # `-end ... [partiallytrapped]` when the trap is outlasted. The elapsed
+        # count reconstructed in `upkeep` must be zeroed with the volatile or a
+        # re-trap seeds the engine with a stale mid-trap count.
         self.battle.opponent.active.volatile_statuses = [constants.PARTIALLY_TRAPPED]
+        self.battle.opponent.active.volatile_status_durations[
+            constants.PARTIALLY_TRAPPED
+        ] = 3
+        split_msg = ["", "-end", "p2a: Caterpie", "whirlpool", "[partiallytrapped]"]
+        end_volatile_status(self.battle, split_msg)
+
+        self.assertEqual([], self.battle.opponent.active.volatile_statuses)
+        self.assertEqual(
+            0,
+            self.battle.opponent.active.volatile_status_durations[
+                constants.PARTIALLY_TRAPPED
+            ],
+        )
+
+    def test_removes_partiallytrapped_silent(self):
+        # PS data/conditions.ts partiallytrapped onResidual emits
+        # `-end ... [partiallytrapped] [silent]` when the trapper leaves the
+        # field; same branch, so the elapsed count must be zeroed here too.
+        self.battle.opponent.active.volatile_statuses = [constants.PARTIALLY_TRAPPED]
+        self.battle.opponent.active.volatile_status_durations[
+            constants.PARTIALLY_TRAPPED
+        ] = 2
         split_msg = [
             "",
             "-end",
@@ -3066,6 +3720,12 @@ class TestEndVolatileStatus(unittest.TestCase):
         end_volatile_status(self.battle, split_msg)
 
         self.assertEqual([], self.battle.opponent.active.volatile_statuses)
+        self.assertEqual(
+            0,
+            self.battle.opponent.active.volatile_status_durations[
+                constants.PARTIALLY_TRAPPED
+            ],
+        )
 
     def test_removes_slowstart_volatile_duration(self):
         self.battle.opponent.active.volatile_statuses = ["slowstart"]
@@ -3188,6 +3848,46 @@ class TestEndVolatileStatus(unittest.TestCase):
         split_msg = ["", "-end", "p2a: Weedle", "Substitute"]
         end_volatile_status(self.battle, split_msg)
         self.assertFalse(self.battle.opponent.active.substitute_hit)
+
+    def test_mismatched_end_zeroes_stale_confusion_duration_after_anim_removal(self):
+        # PS emits `|-anim|<mon>|Confusion|<target>` when a mon animates the
+        # MOVE named Confusion (e.g. picked by Sleep Talk); the -anim handler
+        # removes any volatile matching the animated move's name, so the
+        # CONFUSION volatile is dropped without touching its checks-survived
+        # counter. The eventual real `|-end|<mon>|confusion` (PS
+        # data/conditions.ts confusion onEnd) then lands in the
+        # mismatched-volatile warning branch, which must still zero the stale
+        # counter or the next confusion is seeded to the engine mid-aged.
+        self.battle.opponent.active.volatile_statuses = [constants.CONFUSION]
+        self.battle.opponent.active.volatile_status_durations[constants.CONFUSION] = 2
+
+        anim_split_msg = ["", "-anim", "p2a: Caterpie", "Confusion", "p1a: Weedle"]
+        anim(self.battle, anim_split_msg)
+
+        # the -anim phantom-removal dropped the volatile but left the counter
+        self.assertEqual([], self.battle.opponent.active.volatile_statuses)
+        self.assertEqual(
+            2,
+            self.battle.opponent.active.volatile_status_durations[constants.CONFUSION],
+        )
+
+        end_split_msg = ["", "-end", "p2a: Caterpie", "confusion"]
+        end_volatile_status(self.battle, end_split_msg)
+
+        self.assertEqual([], self.battle.opponent.active.volatile_statuses)
+        self.assertEqual(
+            0,
+            self.battle.opponent.active.volatile_status_durations[constants.CONFUSION],
+        )
+
+    def test_substitute_break_does_not_increment_times_attacked(self):
+        # PS does not count the sub-breaking hit toward Rage Fist either: the
+        # Substitute's onTryPrimaryHit returns HIT_SUBSTITUTE before the
+        # timesAttacked counter runs, so the '-end' line must not increment it
+        split_msg = ["", "-end", "p2a: Weedle", "Substitute"]
+        end_volatile_status(self.battle, split_msg)
+        self.assertEqual(0, self.battle.opponent.active.times_attacked)
+        self.assertEqual(0, self.battle.user.active.times_attacked)
 
 
 class TestUpdateAbility(unittest.TestCase):
@@ -3440,6 +4140,47 @@ class TestIllusionEnd(unittest.TestCase):
 
         self.assertEqual("zoroark", self.battle.opponent.active.name)
 
+    def test_newly_discovered_zoroark_is_marked_revealed(self):
+        # the zoroark object is created on the spot when it was not in the
+        # reserves, but it was on the field (disguised) so it has been seen
+        self.battle.opponent.active = Pokemon("meloetta", 100)
+        self.battle.opponent.reserve = []
+        split_msg = ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"]
+        illusion_end(self.battle, split_msg)
+
+        self.assertEqual("zoroark", self.battle.opponent.active.name)
+        self.assertTrue(self.battle.opponent.active.revealed)
+
+    def test_newly_discovered_zoroark_is_marked_illusion_broken(self):
+        self.battle.opponent.active = Pokemon("meloetta", 100)
+        self.battle.opponent.reserve = []
+        split_msg = ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"]
+        illusion_end(self.battle, split_msg)
+
+        self.assertEqual("zoroark", self.battle.opponent.active.name)
+        self.assertTrue(self.battle.opponent.active.illusion_broken)
+
+    def test_user_side_replace_marks_active_zoroark_illusion_broken(self):
+        # the user's own zoroark is always tracked truthfully, so a |replace|
+        # on the user's side only needs to stamp the flag on the active pkmn
+        self.battle.user.active = Pokemon("zoroark", 100)
+        self.assertFalse(self.battle.user.active.illusion_broken)
+        split_msg = ["", "replace", "p1a: Zoroark", "Zoroark, L82, M"]
+        illusion_end(self.battle, split_msg)
+
+        self.assertTrue(self.battle.user.active.illusion_broken)
+
+    def test_already_discovered_zoroark_replace_marks_illusion_broken(self):
+        # even when the zoroark was previously inferred (and is already the
+        # active pkmn), the |replace| message means the illusion just broke
+        self.battle.opponent.active = Pokemon("zoroark", 100)
+        self.battle.opponent.active.zoroark_disguised_as = "meloetta"
+        self.battle.opponent.reserve = [Pokemon("meloetta", 100)]
+        split_msg = ["", "replace", "p2a: Zoroark", "Zoroark, L84, F"]
+        illusion_end(self.battle, split_msg)
+
+        self.assertTrue(self.battle.opponent.active.illusion_broken)
+
     def test_pkmn_disguised_as_gets_original_hp(self):
         self.battle.opponent.active = Pokemon("meloetta", 100)
         self.battle.opponent.active.hp = 50
@@ -3462,6 +4203,67 @@ class TestIllusionEnd(unittest.TestCase):
 
         self.assertEqual("meloetta", self.battle.opponent.reserve[0].name)
         self.assertIsNone(self.battle.opponent.reserve[0].status)
+
+    def test_revealed_zoroark_inherits_the_volatiles_it_was_carrying(self):
+        # everything the disguise accumulated on the field happened to the
+        # physical zoroark, so it moves across with the swap (without this the
+        # same turn's `-end move: Heal Block` had nothing to end)
+        self.battle.opponent.active = Pokemon("meloetta", 100)
+        self.battle.opponent.active.volatile_statuses = ["healblock"]
+        self.battle.opponent.active.volatile_status_durations["healblock"] = 1
+        self.battle.opponent.reserve = []
+        illusion_end(self.battle, ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"])
+
+        zoroark = self.battle.opponent.active
+        self.assertEqual("zoroark", zoroark.name)
+        self.assertEqual(["healblock"], zoroark.volatile_statuses)
+        self.assertEqual(1, zoroark.volatile_status_durations["healblock"])
+
+    def test_revealed_zoroark_inherits_the_sleep_counters(self):
+        self.battle.opponent.active = Pokemon("meloetta", 100)
+        self.battle.opponent.active.status = constants.SLEEP
+        self.battle.opponent.active.sleep_turns = 2
+        self.battle.opponent.reserve = []
+        illusion_end(self.battle, ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"])
+
+        self.assertEqual(constants.SLEEP, self.battle.opponent.active.status)
+        self.assertEqual(2, self.battle.opponent.active.sleep_turns)
+
+    def test_disguise_keeps_its_own_sleep_counter(self):
+        # the reconstruction keeps ONE object for the disguise species, and it
+        # is also the REAL party member of that species: zeroing its sleep
+        # counter here erases the real mon's own count (synth29948 T30)
+        self.battle.opponent.active = Pokemon("meloetta", 100)
+        self.battle.opponent.active.status = constants.SLEEP
+        self.battle.opponent.active.status_at_switch_in = constants.SLEEP
+        self.battle.opponent.active.sleep_turns = 2
+        self.battle.opponent.reserve = []
+        illusion_end(self.battle, ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"])
+
+        meloetta = self.battle.opponent.reserve[0]
+        self.assertEqual("meloetta", meloetta.name)
+        self.assertEqual(2, meloetta.sleep_turns)
+
+    def test_pkmn_disguised_as_returns_to_reserve_with_cleared_volatiles(self):
+        # the confusion volatile and its checks-survived counter accrued on the
+        # field belong to the disguised zoroark, not to meloetta: when
+        # |replace| reveals the zoroark, meloetta must return to reserve with
+        # no volatiles and no duration counters, otherwise a later genuine
+        # switch-in of meloetta forwards phantom volatiles and stale age
+        # counters to the engine
+        self.battle.opponent.active = Pokemon("meloetta", 100)
+        self.battle.opponent.active.volatile_statuses = [constants.CONFUSION]
+        self.battle.opponent.active.volatile_status_durations[constants.CONFUSION] = 2
+        self.battle.opponent.reserve = []
+        split_msg = ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"]
+        illusion_end(self.battle, split_msg)
+
+        self.assertEqual("zoroark", self.battle.opponent.active.name)
+        meloetta = self.battle.opponent.reserve[0]
+        self.assertEqual("meloetta", meloetta.name)
+        self.assertEqual([], meloetta.volatile_statuses)
+        self.assertEqual({}, dict(meloetta.volatile_status_durations))
+        self.assertEqual(0, meloetta.volatile_status_durations[constants.CONFUSION])
 
     def test_zoroark_disguising_as_pokemon_results_in_that_pkmn_in_reserve(
         self,
@@ -3594,6 +4396,25 @@ class TestIllusionEnd(unittest.TestCase):
         self.assertEqual(4, len(self.battle.opponent.active.moves))
 
 
+class TestSwitchActiveWithZoroarkFromReserves(unittest.TestCase):
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.user.active = Pokemon("weedle", 100)
+
+    def test_discovered_zoroark_is_marked_revealed_and_illusion_broken(self):
+        self.battle.opponent.active = Pokemon("meloetta", 100)
+        zoroark = Pokemon("zoroark", 100)
+        self.battle.opponent.reserve = [zoroark]
+
+        _switch_active_with_zoroark_from_reserves(self.battle.opponent, zoroark)
+
+        self.assertIs(zoroark, self.battle.opponent.active)
+        self.assertTrue(zoroark.revealed)
+        self.assertTrue(zoroark.illusion_broken)
+
+
 class TestFail(unittest.TestCase):
     def setUp(self):
         self.battle = Battle(None)
@@ -3700,6 +4521,36 @@ class TestFormChange(unittest.TestCase):
         form_change(self.battle, split_msg)
 
         self.assertEqual("meloetta", self.battle.opponent.active.base_name)
+
+    def test_preserves_nature_on_forme_change(self):
+        # Regression: forme_change must recompute stats with the stored nature/EVs
+        # (Showdown setSpecies uses the set's actual nature). A Jolly Palafin-Hero must
+        # keep its +10% Speed / -10% SpA rather than being reset to a neutral spread.
+        palafin = Pokemon("palafin", 100)
+        palafin.nature = "jolly"
+        self.battle.opponent.active = palafin
+
+        split_msg = ["", "-formechange", "p2a: Palafin", "Palafin-Hero", "[msg]"]
+        form_change(self.battle, split_msg)
+
+        hero = self.battle.opponent.active
+        self.assertEqual("palafinhero", hero.name)
+
+        neutral = calculate_stats(
+            hero.base_stats, hero.level, evs=hero.evs, nature="serious"
+        )
+        jolly = calculate_stats(
+            hero.base_stats, hero.level, evs=hero.evs, nature="jolly"
+        )
+        # Recomputed stats match the Jolly spread, not the neutral one.
+        self.assertEqual(jolly[constants.SPEED], hero.stats[constants.SPEED])
+        self.assertEqual(
+            jolly[constants.SPECIAL_ATTACK], hero.stats[constants.SPECIAL_ATTACK]
+        )
+        self.assertGreater(hero.stats[constants.SPEED], neutral[constants.SPEED])
+        self.assertLess(
+            hero.stats[constants.SPECIAL_ATTACK], neutral[constants.SPECIAL_ATTACK]
+        )
 
     def test_multiple_forme_changes_does_not_ruin_base_name(self):
         self.battle.user.active = Pokemon("pikachu", 100)
@@ -4212,6 +5063,22 @@ class TestTransform(unittest.TestCase):
 
         self.assertIn(constants.TRANSFORM, self.battle.user.active.volatile_statuses)
 
+    def test_transform_sets_transformed_into_to_target_species(self):
+        # transformed_into carries the copied species identity (id/weight/
+        # base-types) through to engine conversion
+        self.assertIsNone(self.battle.opponent.active.transformed_into)
+        split_msg = [
+            "",
+            "-transform",
+            "p2a: Ditto",
+            "p1a: Weedle",
+            "[from] ability: Imposter",
+        ]
+
+        transform(self.battle, split_msg)
+
+        self.assertEqual("weedle", self.battle.opponent.active.transformed_into)
+
 
 class TestCant(unittest.TestCase):
     def setUp(self):
@@ -4250,6 +5117,35 @@ class TestCant(unittest.TestCase):
         cant(self.battle, ["", "-cant", "p1a: Weedle", "slp"])
         self.assertEqual(0, self.battle.user.active.sleep_turns)
         self.assertEqual(2, self.battle.user.active.rest_turns)
+
+    def test_interrupted_two_turn_release_drops_the_charge_volatile(self):
+        # PS: twoturnmove.onMoveAborted removes itself (data/conditions.ts:320-322)
+        # and its onEnd takes the move-named volatile with it, so a release
+        # stopped by full paralysis leaves NO charge behind
+        self.battle.user.active.status = constants.PARALYZED
+        self.battle.user.active.volatile_statuses.append("meteorbeam")
+        cant(self.battle, ["", "-cant", "p1a: Weedle", "par"])
+        self.assertNotIn("meteorbeam", self.battle.user.active.volatile_statuses)
+
+    def test_interrupted_two_turn_release_from_flinch_drops_the_charge_volatile(self):
+        self.battle.opponent.active.volatile_statuses.append("solarbeam")
+        cant(self.battle, ["", "-cant", "p2a: Caterpie", "flinch"])
+        self.assertNotIn("solarbeam", self.battle.opponent.active.volatile_statuses)
+
+    def test_cant_leaves_non_charge_volatiles_alone(self):
+        self.battle.user.active.status = constants.PARALYZED
+        self.battle.user.active.volatile_statuses.append("substitute")
+        self.battle.user.active.volatile_statuses.append("leechseed")
+        cant(self.battle, ["", "-cant", "p1a: Weedle", "par"])
+        self.assertIn("substitute", self.battle.user.active.volatile_statuses)
+        self.assertIn("leechseed", self.battle.user.active.volatile_statuses)
+
+    def test_cant_from_nopp_keeps_the_charge_volatile(self):
+        # `nopp` is emitted after BeforeMove already succeeded
+        # (sim/battle-actions.ts:283-286), so no MoveAborted runs
+        self.battle.user.active.volatile_statuses.append("meteorbeam")
+        cant(self.battle, ["", "-cant", "p1a: Weedle", "nopp"])
+        self.assertIn("meteorbeam", self.battle.user.active.volatile_statuses)
 
     def test_gen1_pkmn_trapping_foe_releases_target_after_fully_paralyzed(
         self,
@@ -4295,22 +5191,177 @@ class TestUpkeep(unittest.TestCase):
             1, self.battle.opponent.active.volatile_status_durations[constants.TAUNT]
         )
 
-    def test_gen5_does_not_increment_taunt_duration_end_of_turn(self):
+    def test_gen5_increments_taunt_duration_end_of_turn(self):
+        # gen5+ mirrors PS: taunt decrements at every residual regardless of
+        # whether the taunted mon moved (data/moves.ts taunt onResidualOrder
+        # 15). The engine counts UP and releases at counter==2
+        # (genx/generate_instructions.rs:6687-6746).
         self.battle.generation = "gen5"
         self.battle.opponent.active.volatile_statuses = [constants.TAUNT]
         self.battle.opponent.active.volatile_status_durations[constants.TAUNT] = 0
         upkeep(self.battle, "")
         self.assertEqual(
-            0, self.battle.opponent.active.volatile_status_durations[constants.TAUNT]
+            1, self.battle.opponent.active.volatile_status_durations[constants.TAUNT]
+        )
+
+    def test_gen5_taunt_duration_capped_at_engine_release_counter(self):
+        # the engine's arm releases at ==2 and a larger seed would never
+        # release (generate_instructions.rs:6710-6746): the root count must
+        # never exceed 2 (PS emits the release -end during residuals BEFORE
+        # `upkeep`, so the release turn never ticks here)
+        self.battle.generation = "gen5"
+        self.battle.opponent.active.volatile_statuses = [constants.TAUNT]
+        self.battle.opponent.active.volatile_status_durations[constants.TAUNT] = 2
+        upkeep(self.battle, "")
+        self.assertEqual(
+            2, self.battle.opponent.active.volatile_status_durations[constants.TAUNT]
+        )
+
+    def test_gen9_increments_encore_duration_end_of_turn(self):
+        # PS encore onResidualOrder 16; engine end-of-turn arm releases at
+        # counter==2 (generate_instructions.rs:6752-6805)
+        self.battle.generation = "gen9"
+        self.battle.opponent.active.volatile_statuses = ["encore"]
+        self.battle.opponent.active.volatile_status_durations["encore"] = -1
+        upkeep(self.battle, "")
+        self.assertEqual(
+            0, self.battle.opponent.active.volatile_status_durations["encore"]
+        )
+
+    def test_gen4_does_not_increment_encore_duration_end_of_turn(self):
+        # pre-gen5 keeps the legacy move-use tick; no end-of-turn tick
+        self.battle.generation = "gen4"
+        self.battle.opponent.active.volatile_statuses = ["encore"]
+        self.battle.opponent.active.volatile_status_durations["encore"] = 0
+        upkeep(self.battle, "")
+        self.assertEqual(
+            0, self.battle.opponent.active.volatile_status_durations["encore"]
         )
 
     def test_decrements_slowstart_volatile_duration(self):
+        # PS slowstart onResidual is gated on pokemon.activeTurns
+        # (data/abilities.ts:4309): a mon that has been out for at least one
+        # |turn| boundary (active_turns >= 1) ticks at every upkeep
+        self.battle.user.active.active_turns = 1
         self.battle.user.active.volatile_statuses.append(constants.SLOW_START)
         self.battle.user.active.volatile_status_durations[constants.SLOW_START] = 5
         upkeep(self.battle, "")
         self.assertEqual(
             4,
             self.battle.user.active.volatile_status_durations[constants.SLOW_START],
+        )
+
+    def test_slowstart_skips_decrement_on_entry_turn_upkeep(self):
+        # PS slowstart onResidual: `if (pokemon.activeTurns && ...)`
+        # (data/abilities.ts:4308-4315). switchIn zeroes activeTurns
+        # (sim/battle-actions.ts:137) and nextTurn increments it AFTER the
+        # residual phase (sim/battle.ts:1762), so the counter does NOT tick at
+        # the upkeep of the turn the mon entered on.
+        self.battle.user.active.active_turns = 0
+        self.battle.user.active.volatile_statuses.append(constants.SLOW_START)
+        self.battle.user.active.volatile_status_durations[constants.SLOW_START] = 5
+        upkeep(self.battle, "")
+        self.assertEqual(
+            5,
+            self.battle.user.active.volatile_status_durations[constants.SLOW_START],
+        )
+
+    def test_slowstart_lead_entry_ticks_at_first_upkeep(self):
+        # Lead timing (synth02212: lead Regigigas -start precedes |turn|1):
+        # the lead enters before |turn|1, nextTurn increments activeTurns to 1
+        # while emitting the |turn| line (sim/battle.ts:1762/1782), so turn 1's
+        # upkeep DOES tick: 5 -> 4, with the -end at turn 5's residual.
+        switch_or_drag(
+            self.battle, ["", "switch", "p2a: Regigigas", "Regigigas, L84", "100/100"]
+        )
+        start_volatile_status(
+            self.battle, ["", "-start", "p2a: Regigigas", "ability: Slow Start"]
+        )
+        self.assertEqual(0, self.battle.opponent.active.active_turns)
+        turn(self.battle, ["", "turn", "1"])
+        upkeep(self.battle, "")
+        self.assertEqual(
+            4,
+            self.battle.opponent.active.volatile_status_durations[constants.SLOW_START],
+        )
+
+    def test_slowstart_mid_battle_switch_skips_entry_turn_then_ticks(self):
+        # Mid-turn switch timing (synth00046: Regigigas switches in DURING
+        # turn 1, -end at turn 6): the entry turn's upkeep is skipped
+        # (activeTurns still 0 during that residual), the first tick comes at
+        # the next turn's upkeep.
+        self.battle.turn = 1
+        switch_or_drag(
+            self.battle, ["", "switch", "p2a: Regigigas", "Regigigas, L84", "100/100"]
+        )
+        start_volatile_status(
+            self.battle, ["", "-start", "p2a: Regigigas", "ability: Slow Start"]
+        )
+        upkeep(self.battle, "")  # entry turn's upkeep: no tick
+        self.assertEqual(
+            5,
+            self.battle.opponent.active.volatile_status_durations[constants.SLOW_START],
+        )
+        turn(self.battle, ["", "turn", "2"])
+        upkeep(self.battle, "")  # first full turn on the field: tick
+        self.assertEqual(
+            4,
+            self.battle.opponent.active.volatile_status_durations[constants.SLOW_START],
+        )
+
+    def test_slowstart_faint_replacement_ticks_first_at_next_turn_upkeep(self):
+        # Post-upkeep faint-replacement timing: the replacement enters AFTER
+        # turn N's upkeep line (PS runs the faint turn's residuals before the
+        # replacement switches in), |turn|N+1 increments its activeTurns to 1,
+        # so its first tick is turn N+1's upkeep — same 5-upkeep window as a
+        # lead, shifted to its entry point.
+        self.battle.turn = 9
+        # turn 9's upkeep already ran; replacement enters now
+        switch_or_drag(
+            self.battle, ["", "switch", "p2a: Regigigas", "Regigigas, L84", "100/100"]
+        )
+        start_volatile_status(
+            self.battle, ["", "-start", "p2a: Regigigas", "ability: Slow Start"]
+        )
+        self.assertEqual(0, self.battle.opponent.active.active_turns)
+        turn(self.battle, ["", "turn", "10"])
+        upkeep(self.battle, "")
+        self.assertEqual(
+            4,
+            self.battle.opponent.active.volatile_status_durations[constants.SLOW_START],
+        )
+
+    def test_decrements_disable_volatile_duration(self):
+        # PS ticks effect durations down at the end of every turn
+        # (sim/battle.ts:516 `handler.state.duration--`); the engine reads the
+        # seeded value as turns-remaining, so the root value must shrink each
+        # completed real turn
+        self.battle.opponent.active.volatile_statuses.append(constants.DISABLE)
+        self.battle.opponent.active.volatile_status_durations[constants.DISABLE] = 4
+        upkeep(self.battle, "")
+        self.assertEqual(
+            3,
+            self.battle.opponent.active.volatile_status_durations[constants.DISABLE],
+        )
+
+    def test_disable_duration_does_not_go_below_zero(self):
+        # PS can hold the volatile one turn longer than the 4-turn seed
+        # (data/moves.ts:3664-3674: duration 5 when the target already moved);
+        # the timer floors at 0 until |-end|Disable arrives
+        self.battle.opponent.active.volatile_statuses.append(constants.DISABLE)
+        self.battle.opponent.active.volatile_status_durations[constants.DISABLE] = 0
+        upkeep(self.battle, "")
+        self.assertEqual(
+            0,
+            self.battle.opponent.active.volatile_status_durations[constants.DISABLE],
+        )
+
+    def test_no_disable_volatile_means_no_tick(self):
+        self.battle.opponent.active.volatile_status_durations[constants.DISABLE] = 0
+        upkeep(self.battle, "")
+        self.assertEqual(
+            0,
+            self.battle.opponent.active.volatile_status_durations[constants.DISABLE],
         )
 
     def test_increments_lockedmove_end_of_turn(self):
@@ -4550,6 +5601,25 @@ class TestCheckSpeedRanges(unittest.TestCase):
         ]
         check_speed_ranges(self.battle, messages)
         self.assertEqual(300, self.battle.opponent.active.speed_range.min)  # unchanged
+
+    def test_revive_prompt_switch_selection_makes_this_check_not_happen(self):
+        # After Revival Blessing, the revive target is answered as a "switch"
+        # selection but no |switch| line is emitted (the mon is healed in the
+        # party). This must not be looked up as a move (used to KeyError)
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.opponent.active.stats[constants.SPEED] = 100
+        self.battle.user.last_selected_move = LastUsedMove(
+            "pawmot", "switch shaymin", 0
+        )
+
+        messages = [
+            "|move|p2a: Pikachu|Tackle|p1a: Caterpie",
+            "|-damage|p1a: Caterpie|1/100",
+            "|upkeep",
+            "|turn|7",
+        ]
+        check_speed_ranges(self.battle, messages)
+        self.assertEqual(0, self.battle.opponent.active.speed_range.min)  # unchanged
 
     def test_recharging_makes_this_check_not_happen(self):
         self.battle.user.active.stats[constants.SPEED] = 150
@@ -5821,8 +6891,12 @@ class TestCheckHeavyDutyBoots(unittest.TestCase):
         pikachu = Pokemon("pikachu", 100)
         pikachu.status = constants.POISON
         self.battle.opponent.reserve.append(pikachu)
+        # PS always appends the entrant's status to the |switch| line's
+        # HP STATUS field (sim/pokemon.ts:2104-2107 `getHealth`), and
+        # switch_or_drag now mirrors that field, so an already-poisoned entrant
+        # has to be announced as such for this fixture to describe a real battle
         self.battle.msg_list = [
-            "|switch|p2a: Pikachu|Pikachu, M|100/100",
+            "|switch|p2a: Pikachu|Pikachu, M|100/100 psn",
             "|move|p1a: Caterpie|Tackle",
             "|-damage|p2a: Pikachu|78/100",
         ]
@@ -6994,3 +8068,295 @@ class TestNoInit(unittest.TestCase):
         process_battle_updates(self.battle)
 
         self.assertEqual(self.battle.battle_tag, new_battle_tag)
+
+
+class TestItemTransferLines(unittest.TestCase):
+    """`|-item|` names only the RECEIVER of an item transfer.  Without the donor half the
+    reconstruction keeps handing the loser an item it no longer has (synth10305: Basculin
+    kept the Choice Band Hoopa's Magician stole; synth33779: Cyclizar's Tricked Choice
+    Band was reset to a guess and then refilled from the sidecar)."""
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.user.active = Pokemon("hoopa", 80)
+        self.battle.opponent.active = Pokemon("basculin", 80)
+
+    def test_magician_steal_empties_the_of_victim(self):
+        self.battle.opponent.active.item = "choiceband"
+
+        set_item(
+            self.battle,
+            [
+                "",
+                "-item",
+                "p1a: Hoopa",
+                "Choice Band",
+                "[from] ability: Magician",
+                "[of] p2a: Basculin",
+            ],
+        )
+
+        self.assertEqual("choiceband", self.battle.user.active.item)
+        self.assertIsNone(self.battle.opponent.active.item)
+        self.assertEqual("choiceband", self.battle.opponent.active.removed_item)
+
+    def test_frisk_is_a_reveal_and_transfers_nothing(self):
+        self.battle.opponent.active.item = "heavydutyboots"
+
+        set_item(
+            self.battle,
+            [
+                "",
+                "-item",
+                "p2a: Basculin",
+                "Heavy-Duty Boots",
+                "[from] ability: Frisk",
+                "[of] p1a: Hoopa",
+            ],
+        )
+
+        self.assertEqual("heavydutyboots", self.battle.opponent.active.item)
+        self.assertEqual(constants.UNKNOWN_ITEM, self.battle.user.active.item)
+
+    def test_trick_swapping_the_same_item_leaves_both_sides_holding_it(self):
+        """PS emits ONE `-item` per side for a Trick (data/moves.ts:19888-19899), so
+        the donor half never has to be inferred -- and inferring it broke the
+        SAME-ITEM swap that randbats produces constantly.  The old rule ("the other
+        side's active is the donor if it still holds the item just announced") fired
+        on the second line and stripped the mon the FIRST line had just given the
+        item to, leaving it item-less for the rest of the reconstruction (synth02950
+        Golduck/Espeon Choice Specs, synth00260 Choice Scarf, synth27809 Choice
+        Specs, synth39679 Leftovers)."""
+        self.battle.user.active.item = "choicespecs"
+        self.battle.opponent.active.item = "choicespecs"
+
+        set_item(
+            self.battle,
+            ["", "-item", "p2a: Basculin", "Choice Specs", "[from] move: Trick"],
+        )
+        set_item(
+            self.battle,
+            ["", "-item", "p1a: Hoopa", "Choice Specs", "[from] move: Trick"],
+        )
+
+        self.assertEqual("choicespecs", self.battle.opponent.active.item)
+        self.assertEqual("choicespecs", self.battle.user.active.item)
+
+    def test_trick_swapping_different_items_ends_with_each_side_on_the_others(self):
+        self.battle.user.active.item = "choiceband"
+        self.battle.opponent.active.item = "leftovers"
+
+        set_item(
+            self.battle,
+            ["", "-item", "p2a: Basculin", "Choice Band", "[from] move: Trick"],
+        )
+        set_item(
+            self.battle,
+            ["", "-item", "p1a: Hoopa", "Leftovers", "[from] move: Trick"],
+        )
+
+        self.assertEqual("choiceband", self.battle.opponent.active.item)
+        self.assertEqual("leftovers", self.battle.user.active.item)
+
+    def test_trick_donor_that_receives_nothing_is_cleared_by_its_own_enditem(self):
+        """The half of a Trick that ends up empty-handed is not silent: PS gives it
+        `-enditem <lost item>|[silent]|[from] move: Trick` (data/moves.ts:19892 and
+        :19898), which `remove_item` already handles.  That is why `set_item` no
+        longer has to guess a donor."""
+        self.battle.user.active.item = "choiceband"
+
+        set_item(
+            self.battle,
+            ["", "-item", "p2a: Basculin", "Choice Band", "[from] move: Trick"],
+        )
+        remove_item(
+            self.battle,
+            [
+                "",
+                "-enditem",
+                "p1a: Hoopa",
+                "Choice Band",
+                "[silent]",
+                "[from] move: Trick",
+            ],
+        )
+
+        self.assertEqual("choiceband", self.battle.opponent.active.item)
+        self.assertIsNone(self.battle.user.active.item)
+        self.assertEqual("choiceband", self.battle.user.active.removed_item)
+
+    def test_bestow_empties_the_of_giver(self):
+        """PS names the GIVER in Bestow's `[of]` tag and emits no `-enditem` for it
+        (data/moves.ts:1257), so it belongs with the steals, not the swaps."""
+        self.battle.user.active.item = "leftovers"
+
+        set_item(
+            self.battle,
+            [
+                "",
+                "-item",
+                "p2a: Basculin",
+                "Leftovers",
+                "[from] move: Bestow",
+                "[of] p1a: Hoopa",
+            ],
+        )
+
+        self.assertEqual("leftovers", self.battle.opponent.active.item)
+        self.assertIsNone(self.battle.user.active.item)
+        self.assertEqual("leftovers", self.battle.user.active.removed_item)
+
+    def test_a_protocol_item_is_no_longer_a_guess(self):
+        # the stale `item_inferred` flag let the "used two different moves" rule (and the
+        # exact-teams sidecar) overwrite a Tricked Choice Band
+        self.battle.opponent.active.item_inferred = True
+
+        set_item(
+            self.battle,
+            ["", "-item", "p2a: Basculin", "Choice Band", "[from] move: Trick"],
+        )
+
+        self.assertFalse(self.battle.opponent.active.item_inferred)
+
+
+class TestStruggleLastUsedMove(unittest.TestCase):
+    """PS calls `moveUsed()` for Struggle like any other move, and Encore reads it to
+    FAIL (struggle carries `failencore` and owns no moveSlot, data/moves.ts:18205ff and
+    :4725ff).  The handler used to return before recording it, leaving the PREVIOUS move
+    standing (synth30440 T20, synth46824 T60)."""
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.user.active = Pokemon("uxie", 83)
+        self.battle.opponent.active = Pokemon("gogoat", 80)
+        self.battle.turn = 19
+
+    def test_struggle_becomes_the_last_used_move(self):
+        self.battle.opponent.last_used_move = LastUsedMove("gogoat", "milkdrink", 18)
+
+        move(self.battle, ["", "move", "p2a: Gogoat", "Struggle", "p1a: Uxie"])
+
+        self.assertEqual("struggle", self.battle.opponent.last_used_move.move)
+        self.assertEqual(19, self.battle.opponent.last_used_move.turn)
+
+    def test_struggle_is_still_not_added_to_the_moveset(self):
+        move(self.battle, ["", "move", "p2a: Gogoat", "Struggle", "p1a: Uxie"])
+
+        self.assertNotIn(
+            "struggle", [m.name for m in self.battle.opponent.active.moves]
+        )
+
+
+class TestOncePerBattleAbilityUsed(unittest.TestCase):
+    """PS fires Intrepid Sword / Dauntless Shield / Battle Bond at most ONCE PER
+    BATTLE (data/abilities.ts:2204-2208 swordBoost, :844-848 shieldBoost,
+    :353-360 bondTriggered) and the flag survives switches. Seeing the protocol
+    line is the proof the trigger is spent; the engine binding hard-coded the
+    flag False until the binding-completeness pass, so search re-armed all three
+    at every root."""
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.opponent.active = Pokemon("zacian", 100)
+        self.battle.user.active = Pokemon("zamazenta", 100)
+
+    def test_intrepid_sword_ability_line_marks_trigger_spent(self):
+        self.assertFalse(self.battle.opponent.active.once_per_battle_ability_used)
+        update_ability(
+            self.battle, ["", "-ability", "p2a: Zacian", "Intrepid Sword", "boost"]
+        )
+        self.assertTrue(self.battle.opponent.active.once_per_battle_ability_used)
+
+    def test_dauntless_shield_ability_line_marks_trigger_spent(self):
+        update_ability(
+            self.battle, ["", "-ability", "p1a: Zamazenta", "Dauntless Shield", "boost"]
+        )
+        self.assertTrue(self.battle.user.active.once_per_battle_ability_used)
+
+    def test_battle_bond_activate_line_marks_trigger_spent(self):
+        self.battle.opponent.active = Pokemon("greninja", 100)
+        activate(
+            self.battle, ["", "-activate", "p2a: Greninja", "ability: Battle Bond"]
+        )
+        self.assertTrue(self.battle.opponent.active.once_per_battle_ability_used)
+
+    def test_other_abilities_do_not_mark_the_trigger(self):
+        update_ability(self.battle, ["", "-ability", "p2a: Zacian", "Pressure"])
+        self.assertFalse(self.battle.opponent.active.once_per_battle_ability_used)
+
+
+class TestStellarBoostedTypes(unittest.TestCase):
+    """PS spends a Stellar-tera'd pkmn's one-time per-move-type boost inside the
+    damage calculation (pokemon.stellarBoostedTypes, sim/pokemon.ts:264; pushed
+    at sim/battle-actions.ts:1778-1784). Terapagos-Stellar and Stellar-typed
+    moves never spend it, and a move that never reaches the damage calculation
+    (miss / fail / immune) does not either."""
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.opponent.active = Pokemon("caterpie", 100)
+        self.user_active = Pokemon("dragonite", 100)
+        self.user_active.terastallized = True
+        self.user_active.tera_type = "stellar"
+        self.battle.user.active = self.user_active
+
+    def test_damaging_move_spends_the_boost_for_its_type(self):
+        move(self.battle, ["", "move", "p1a: Dragonite", "Extreme Speed", "p2a: Caterpie"])
+        self.assertIn("normal", self.user_active.stellar_boosted_types)
+
+    def test_non_terastallized_pkmn_spends_nothing(self):
+        self.user_active.terastallized = False
+        move(self.battle, ["", "move", "p1a: Dragonite", "Extreme Speed", "p2a: Caterpie"])
+        self.assertEqual(set(), self.user_active.stellar_boosted_types)
+
+    def test_non_stellar_tera_spends_nothing(self):
+        self.user_active.tera_type = "normal"
+        move(self.battle, ["", "move", "p1a: Dragonite", "Extreme Speed", "p2a: Caterpie"])
+        self.assertEqual(set(), self.user_active.stellar_boosted_types)
+
+    def test_status_move_spends_nothing(self):
+        move(self.battle, ["", "move", "p1a: Dragonite", "Dragon Dance", "p2a: Caterpie"])
+        self.assertEqual(set(), self.user_active.stellar_boosted_types)
+
+    def test_terapagos_stellar_never_spends(self):
+        self.user_active = Pokemon("terapagosstellar", 100)
+        self.user_active.terastallized = True
+        self.user_active.tera_type = "stellar"
+        self.battle.user.active = self.user_active
+        move(self.battle, ["", "move", "p1a: Terapagos", "Tera Starstorm", "p2a: Caterpie"])
+        self.assertEqual(set(), self.user_active.stellar_boosted_types)
+
+    def test_miss_rolls_the_spend_back(self):
+        move(self.battle, ["", "move", "p1a: Dragonite", "Extreme Speed", "p2a: Caterpie"])
+        self.assertIn("normal", self.user_active.stellar_boosted_types)
+        miss(self.battle, ["", "-miss", "p1a: Dragonite", "p2a: Caterpie"])
+        self.assertEqual(set(), self.user_active.stellar_boosted_types)
+
+    def test_immune_target_rolls_the_spend_back(self):
+        # the -immune line names the TARGET; the spend belongs to the attacker
+        move(self.battle, ["", "move", "p1a: Dragonite", "Extreme Speed", "p2a: Caterpie"])
+        self.assertIn("normal", self.user_active.stellar_boosted_types)
+        immune(self.battle, ["", "-immune", "p2a: Caterpie"])
+        self.assertEqual(set(), self.user_active.stellar_boosted_types)
+
+    def test_fail_rolls_the_spend_back(self):
+        move(self.battle, ["", "move", "p1a: Dragonite", "Extreme Speed", "p2a: Caterpie"])
+        fail(self.battle, ["", "-fail", "p1a: Dragonite"])
+        self.assertEqual(set(), self.user_active.stellar_boosted_types)
+
+    def test_second_move_of_a_spent_type_leaves_the_set_alone(self):
+        move(self.battle, ["", "move", "p1a: Dragonite", "Extreme Speed", "p2a: Caterpie"])
+        move(self.battle, ["", "move", "p1a: Dragonite", "Body Slam", "p2a: Caterpie"])
+        self.assertEqual({"normal"}, self.user_active.stellar_boosted_types)
+        # the second (already-spent) use has nothing pending, so a later miss
+        # cannot un-spend the type
+        miss(self.battle, ["", "-miss", "p1a: Dragonite", "p2a: Caterpie"])
+        self.assertEqual({"normal"}, self.user_active.stellar_boosted_types)

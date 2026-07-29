@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import ntpath
 from dataclasses import dataclass
 
@@ -9,6 +10,7 @@ from datetime import datetime
 import os
 import json
 import logging
+import time
 import typing
 from typing import Tuple
 from typing import Optional
@@ -18,6 +20,7 @@ import constants
 from data import all_move_json, pokedex
 from fp.helpers import calculate_stats, random_battles_evs
 from fp.helpers import normalize_name
+from fp.helpers import type_effectiveness_modifier
 
 PWD = os.path.dirname(os.path.abspath(__file__))
 SMOGON_CACHE_DIR = os.path.join(PWD, "smogon_stats_cache")
@@ -45,28 +48,137 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def get_sets_file(cache_path: str, remote_url: str) -> dict:
-    if os.path.exists(cache_path):
+# 24h: pkmn/randbats regenerates whenever Showdown's generator changes
+# (~monthly, typically at dex rotations - exactly when sets shift most). A
+# 7-day TTL risked sampling week-stale sets through a meta change; the file
+# is ~466KB so a daily re-download is free. On download failure the stale
+# cache is kept (see get_sets_file), so a tight TTL cannot brick the bot.
+SETS_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+
+def _read_sets_cache_file(cache_path: str) -> Optional[dict]:
+    """Returns the cached sets, or None if the cache is missing, empty, or unreadable"""
+    if not os.path.exists(cache_path):
+        return None
+    try:
         with open(cache_path, "r") as f:
             sets = json.load(f)
-        logger.info(f"Loaded from cache: {cache_path}")
+    except (OSError, ValueError):
+        logger.warning(f"Could not read cache file: {cache_path}")
+        return None
+
+    # an empty cache file is a previously-cached failure: treat it as missing
+    if not sets:
+        return None
+
+    return sets
+
+
+def get_sets_file(cache_path: str, remote_url: str) -> dict:
+    cached_sets = _read_sets_cache_file(cache_path)
+    if cached_sets is not None:
+        cache_age_seconds = time.time() - os.path.getmtime(cache_path)
+        if cache_age_seconds <= SETS_CACHE_TTL_SECONDS:
+            logger.info(f"Loaded from cache: {cache_path}")
+            return cached_sets
+        logger.info(f"Cache is older than {SETS_CACHE_TTL_SECONDS}s: {cache_path}")
+
+    sets = {}
+    try:
+        r = requests.get(remote_url)
+        if r.status_code == 200:
+            sets = r.json()
+        else:
+            logger.warning(
+                f"Could not retrieve from remote: {remote_url} "
+                f"(status code {r.status_code})"
+            )
+    except (requests.RequestException, ValueError) as e:
+        logger.warning(f"Could not retrieve from remote: {remote_url} ({e})")
+
+    # only successful non-empty responses are cached so that failures
+    # are retried on the next call rather than persisted to disk
+    if sets:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(sets, f)
+        logger.info(f"Downloaded and cached from remote: {remote_url}")
         return sets
 
-    r = requests.get(remote_url)
-    if r.status_code == 200:
-        sets = r.json()
-    else:
-        logger.warning(
-            f"Could not retrieve from remote: {remote_url} "
-            f"(status code {r.status_code})"
-        )
-        sets = {}
+    if cached_sets is not None:
+        logger.warning(f"Falling back to stale cache: {cache_path}")
+        return cached_sets
 
-    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(sets, f)
-    logger.info(f"Downloaded and cached from remote: {remote_url}")
     return sets
+
+
+USER_SETS_INGESTED_KEY = "_ingested"
+
+
+def _strip_blitz(pkmn_mode: str) -> str:
+    if pkmn_mode.endswith("blitz"):
+        return pkmn_mode[:-5]
+    return pkmn_mode
+
+
+def user_sets_cache_path(pkmn_mode: str) -> str:
+    return os.path.join(PKMN_SETS_CACHE_DIR, f"{_strip_blitz(pkmn_mode)}_user.json")
+
+
+def make_user_set_key(level, item, ability, moves, tera_type=None) -> str:
+    """
+    Builds a set key in the same format as the randombattle sets file:
+    'level,item,ability,move1,...,moveN[,teraType]' with normalized ids
+    and moves sorted alphabetically
+    """
+    parts = [str(level), normalize_name(item or ""), normalize_name(ability or "")]
+    parts.extend(sorted(normalize_name(m) for m in moves))
+    if tera_type:
+        parts.append(normalize_name(tera_type))
+    return ",".join(parts)
+
+
+def load_user_observed_sets(pkmn_mode: str) -> dict:
+    path = user_sets_cache_path(pkmn_mode)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        logger.warning(f"Could not read user observed sets: {path}")
+        return {}
+
+
+def record_user_set_observations(
+    pkmn_mode: str,
+    observations: typing.Iterable[Tuple[str, str]],
+    ingested_marker: Optional[str] = None,
+):
+    """
+    Increments the count of each observed (pkmn_name, set_key) in the
+    user-observation overlay file for this mode
+
+    The overlay lives next to the downloaded cache but is a separate
+    file: the downloaded cache file is never modified
+
+    `ingested_marker` optionally records a source identifier (e.g. a
+    file name) under '_ingested' so backfills can be idempotent
+    """
+    overlay = load_user_observed_sets(pkmn_mode)
+    for pkmn_name, set_key in observations:
+        pkmn_observations = overlay.setdefault(pkmn_name, {})
+        pkmn_observations[set_key] = pkmn_observations.get(set_key, 0) + 1
+
+    if ingested_marker is not None:
+        ingested = overlay.setdefault(USER_SETS_INGESTED_KEY, [])
+        if ingested_marker not in ingested:
+            ingested.append(ingested_marker)
+
+    path = user_sets_cache_path(pkmn_mode)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(overlay, f)
 
 
 def get_ps_sets_file(pkmn_mode: str) -> dict:
@@ -135,6 +247,149 @@ def get_randbats_sets_file(pkmn_randbats_mode: str) -> dict:
     return get_sets_file(cache_path, remote_url)
 
 
+# moves whose damage is computed by a callback and so never read the attacker's
+# Attack stat (pokemon-showdown data/moves.ts, `damageCallback`). foul-play's
+# moves.json does not carry the `damageCallback` flag, so they are listed here.
+_DAMAGE_CALLBACK_MOVES = {
+    "comeuppance",
+    "counter",
+    "endeavor",
+    "finalgambit",
+    "guardianofalola",
+    "metalburst",
+    "mirrorcoat",
+    "naturesmadness",
+    "psywave",
+    "ruination",
+    "superfang",
+}
+
+
+def _set_uses_physical_attack_stat(moves, species_id, ability, base_stats) -> bool:
+    """
+    Inverse of pokemon-showdown teams.ts randomSet's ``noAttackStatMoves``
+    (data/random-battles/gen9/teams.ts:1567-1584): returns True when the set has
+    at least one move that reads the Attack stat, i.e. a move that is NOT purely
+    special/status/fixed-damage. Used to decide whether the flat Atk EV/IV should
+    be zeroed.
+    """
+    for mv in moves:
+        move_data = all_move_json.get(mv, {})
+        # fixed-damage moves (Seismic Toss / Night Shade / Sonic Boom / Dragon
+        # Rage) and damage-callback moves (Super Fang / Counter / ...) don't use
+        # the Attack stat
+        if move_data.get("damage") or mv in _DAMAGE_CALLBACK_MOVES:
+            continue
+        if mv == "shellsidearm":
+            return True
+        # physical Tera Blast
+        if mv == "terablast" and (
+            species_id == "porygon2"
+            or ability in ("contrary", "defiant")
+            or "shiftgear" in moves
+            or base_stats[constants.ATTACK] > base_stats[constants.SPECIAL_ATTACK]
+        ):
+            return True
+        if (
+            move_data.get(constants.CATEGORY) == constants.PHYSICAL
+            and mv not in ("bodypress", "foulplay")
+        ):
+            return True
+    return False
+
+
+def random_battle_ev_iv_spread(species_id, moves, ability, item, level):
+    """
+    Reproduce the deterministic EV/IV post-processing pokemon-showdown applies in
+    teams.ts randomSet (data/random-battles/gen9/teams.ts:1541-1589), derived from
+    a set's already-known moves/item/ability. Starts from the generator's flat
+    85 EV / 31 IV spread and applies the three singles adjustments:
+      (a) zero Atk EV+IV when the set has no physical attacking move
+      (b) zero Spe EV+IV for Gyro Ball / Trick Room sets
+      (c) shave HP EVs to hit Stealth-Rock-survival / berry breakpoints
+
+    Returns ``(evs, ivs)`` as 6-tuples ordered (hp, atk, def, spa, spd, spe).
+    """
+    evs = list(random_battles_evs())
+    ivs = [31] * 6
+
+    # only the standard 85-EV base is post-processed here; champions and any
+    # future non-standard base are left as-is
+    if evs != [85, 85, 85, 85, 85, 85]:
+        return tuple(evs), tuple(ivs)
+
+    entry = pokedex.get(species_id)
+    if entry is None:
+        return tuple(evs), tuple(ivs)
+    base_stats = entry[constants.BASESTATS]
+    types = entry[constants.TYPES]
+    moves = set(moves)
+
+    # (c) shave HP EVs to the optimal breakpoint (teams.ts:1541-1564)
+    sr_immunity = ability == "magicguard" or item == "heavydutyboots"
+    if sr_immunity:
+        sr_weakness = 0
+    else:
+        rock_mult = type_effectiveness_modifier("rock", types)
+        sr_weakness = 0 if rock_mult == 0 else round(math.log2(rock_mult))
+    # crash-damage move users want an odd HP to survive two misses
+    if moves & {"axekick", "highjumpkick", "jumpkick", "supercellslam"}:
+        sr_weakness = 2
+    while evs[0] > 1:
+        hp = math.floor(
+            math.floor(
+                2 * base_stats[constants.HITPOINTS]
+                + ivs[0]
+                + math.floor(evs[0] / 4)
+                + 100
+            )
+            * level
+            / 100
+            + 10
+        )
+        if ("substitute" in moves and item == "sitrusberry") or species_id == "minior":
+            # Two Substitutes should activate Sitrus Berry (or Minior Shields Down)
+            if hp % 4 == 0:
+                break
+        elif (moves & {"bellydrum", "filletaway", "shedtail"}) and (
+            item == "sitrusberry" or ability == "gluttony"
+        ):
+            # Belly Drum should activate Sitrus Berry
+            if hp % 2 == 0:
+                break
+        elif "substitute" in moves and "endeavor" in moves:
+            if hp % 4 > 0:
+                break
+        else:
+            # maximize the number of Stealth Rock switch-ins in singles
+            if (
+                sr_weakness <= 0
+                or ability == "regenerator"
+                or item in ("leftovers", "lifeorb")
+            ):
+                break
+            if item != "sitrusberry" and hp % (4 // sr_weakness) > 0:
+                break
+            if item == "sitrusberry" and hp % (4 // sr_weakness) == 0:
+                break
+        evs[0] -= 4
+
+    # (a) zero Atk EV+IV for sets with no physical attacking move (teams.ts:1567-1584)
+    if (
+        not _set_uses_physical_attack_stat(moves, species_id, ability, base_stats)
+        and "transform" not in moves
+    ):
+        evs[1] = 0
+        ivs[1] = 0
+
+    # (b) zero Spe EV+IV for Gyro Ball / Trick Room (teams.ts:1586-1589)
+    if "gyroball" in moves or "trickroom" in moves:
+        evs[5] = 0
+        ivs[5] = 0
+
+    return tuple(evs), tuple(ivs)
+
+
 def spreads_are_alike(s1, s2):
     if s1[0] != s2[0]:
         return False
@@ -179,6 +434,7 @@ class PokemonSet:
     nature: str
     evs: tuple[int, ...] | list[int]
     count: int
+    ivs: tuple[int, ...] | list[int] = (31, 31, 31, 31, 31, 31)
     level: Optional[int] = 100
     tera_type: Optional[str] = None
 
@@ -190,6 +446,7 @@ class PokemonSet:
         stats = calculate_stats(
             pkmn.base_stats,
             pkmn.level,
+            ivs=self.ivs,
             evs=self.evs,
             nature=self.nature,
         )
@@ -369,13 +626,31 @@ class _RandomBattleSets(PokemonSets):
         self.raw_pkmn_sets = {}
         self.pkmn_sets = {}
         self.pkmn_mode = "uninitialized"
+        self.species_sample_names = []
+        self.species_sample_weights = []
 
     def _load_raw_sets(self, pokemon_battle_mode):
-        if pokemon_battle_mode.endswith("blitz"):
-            pokemon_battle_mode = pokemon_battle_mode[:-5]
+        pokemon_battle_mode = _strip_blitz(pokemon_battle_mode)
         self.raw_pkmn_sets = get_randbats_sets_file(pokemon_battle_mode)
+        self._merge_user_observed_sets(pokemon_battle_mode)
+
+    def _merge_user_observed_sets(self, pokemon_battle_mode):
+        # sets observed on the bot's own teams supplement the downloaded
+        # data in-memory; the downloaded cache file is never modified
+        overlay = load_user_observed_sets(pokemon_battle_mode)
+        for pkmn_name, observed_sets in overlay.items():
+            if pkmn_name.startswith("_") or not isinstance(observed_sets, dict):
+                continue
+            existing_sets = self.raw_pkmn_sets.setdefault(pkmn_name, {})
+            for set_key, count in observed_sets.items():
+                existing_sets[set_key] = existing_sets.get(set_key, 0) + count
 
     def _initialize_pkmn_sets(self):
+        # gen9 full-set keys are `level,item,ability,<1-4 moves>,teraType`: the
+        # tera type is always the trailing token and the move count is variable
+        # (e.g. Ditto is `87,choicescarf,imposter,transform,ghost`). Earlier gens
+        # have no tera token and always carry four moves.
+        is_gen9 = "gen9" in self.pkmn_mode
         for pkmn, sets in self.raw_pkmn_sets.items():
             self.pkmn_sets[pkmn] = []
             for set_, count in sets.items():
@@ -383,17 +658,24 @@ class _RandomBattleSets(PokemonSets):
                 level = int(set_split[0])
                 item = set_split[1]
                 ability = set_split[2]
-                moves = set_split[3:7]
-                tera_type = None
-                if len(set_split) > 7:
-                    tera_type = set_split[7]
+                if is_gen9:
+                    tera_type = set_split[-1]
+                    moves = set_split[3:-1]
+                    evs, ivs = random_battle_ev_iv_spread(
+                        pkmn, moves, ability, item, level
+                    )
+                else:
+                    moves = set_split[3:7]
+                    tera_type = set_split[7] if len(set_split) > 7 else None
+                    evs, ivs = random_battles_evs(), (31,) * 6
                 self.pkmn_sets[pkmn].append(
                     PredictedPokemonSet(
                         pkmn_set=PokemonSet(
                             ability=ability,
                             item=item,
                             nature="serious",
-                            evs=random_battles_evs(),
+                            evs=evs,
+                            ivs=ivs,
                             count=count,
                             tera_type=tera_type,
                             level=level,
@@ -402,6 +684,14 @@ class _RandomBattleSets(PokemonSets):
                     )
                 )
             self.pkmn_sets[pkmn].sort(key=lambda x: x.pkmn_set.count, reverse=True)
+
+        # precompute per-species weights for sampling unrevealed pkmn:
+        # each species is weighted by the total count of its sets
+        self.species_sample_names = list(self.pkmn_sets.keys())
+        self.species_sample_weights = [
+            sum(s.pkmn_set.count for s in self.pkmn_sets[name])
+            for name in self.species_sample_names
+        ]
 
     def initialize(self, pkmn_mode: str, _pkmn_names=None):
         # pkmn_names unused here since randombattles don't have team preview
@@ -435,6 +725,23 @@ class _RandomBattleSets(PokemonSets):
         if not self.pkmn_sets:
             logger.warning("Called `predict_set` when pkmn_sets was empty")
             return []
+
+        # A TRANSFORMED mon (Ditto/Imposter) carries COPIED moves/ability that
+        # match no real set of its base species, so the normal filters return
+        # nothing and the true item is never sampled (forensic: transformed
+        # Ditto's Choice Scarf missing from every world -> the engine priced a
+        # lost priority mirror as a 50/50 speed tie and burned tera on it).
+        # Match the base species' sets on item knowledge only.
+        if getattr(pkmn, "transformed_into", None):
+            remaining_sets = []
+            for pkmn_set in self.get_pkmn_sets_from_pkmn_name(pkmn):
+                set_item = pkmn_set.pkmn_set.item
+                if pkmn.item != constants.UNKNOWN_ITEM and set_item != pkmn.item:
+                    continue
+                if set_item in getattr(pkmn, "impossible_items", set()):
+                    continue
+                remaining_sets.append(pkmn_set)
+            return remaining_sets
 
         remaining_sets = []
         for pkmn_set in self.get_pkmn_sets_from_pkmn_name(pkmn):

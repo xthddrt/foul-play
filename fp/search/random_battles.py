@@ -2,6 +2,7 @@ import logging
 import random
 from copy import deepcopy
 
+import constants
 from constants import BattleType
 from data import pokedex
 from fp.battle import Battle, Pokemon
@@ -54,9 +55,19 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
                 revealed_pkmn_sets[active.name],
                 weights=[s.pkmn_set.count for s in revealed_pkmn_sets[active.name]],
             )[0]
-            populate_pkmn_from_set(active, pkmn_full_set)
+            if getattr(active, "transformed_into", None):
+                # a transformed mon's moves/stats/ability are COPIES that must
+                # stay untouched; only its true item is worth sampling (the
+                # matched sets are the base species', item-filtered - see
+                # get_all_remaining_sets)
+                if active.item == constants.UNKNOWN_ITEM:
+                    active.item = pkmn_full_set.pkmn_set.item
+            else:
+                populate_pkmn_from_set(active, pkmn_full_set)
 
-        for pkmn in filter(lambda x: x.is_alive(), battle_copy.opponent.reserve):
+        # fainted reserves are included so that a pkmn revived by
+        # Revival Blessing has a predicted set for the search
+        for pkmn in battle_copy.opponent.reserve:
             if not revealed_pkmn_sets[pkmn.name]:
                 continue
             pkmn_full_set = random.choices(
@@ -92,10 +103,15 @@ def sample_randombattle_pokemon(existing_pokemon: list[Pokemon]) -> Pokemon:
     while not ok:
         sample_count += 1
         ok = True
-        pkmn_name, pkmn_sets = random.choice(
-            list(RandomBattleTeamDatasets.pkmn_sets.items())
-        )
-        pkmn_full_set = random.choice(pkmn_sets)
+        pkmn_name = random.choices(
+            RandomBattleTeamDatasets.species_sample_names,
+            weights=RandomBattleTeamDatasets.species_sample_weights,
+        )[0]
+        pkmn_sets = RandomBattleTeamDatasets.pkmn_sets[pkmn_name]
+        pkmn_full_set = random.choices(
+            pkmn_sets,
+            weights=[s.pkmn_set.count for s in pkmn_sets],
+        )[0]
         pkmn = Pokemon(pkmn_name, pkmn_full_set.pkmn_set.level)
         if pkmn_name in existing_pokemon_names:
             ok = False
@@ -117,6 +133,11 @@ def sample_randombattle_pokemon(existing_pokemon: list[Pokemon]) -> Pokemon:
             ok = False
 
     populate_pkmn_from_set(pkmn, pkmn_full_set)
+
+    # a sampled fill-in was never actually seen on the field
+    # (Pokemon.__init__ already defaults revealed to False; this is
+    # explicit because the search relies on it)
+    pkmn.revealed = False
     return pkmn
 
 

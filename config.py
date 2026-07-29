@@ -73,11 +73,24 @@ class _FoulPlayConfig:
     pokemon_format: str = ""
     smogon_stats: str = None
     search_time_ms: int
+    first_turn_search_time_ms: int | None = None
     search_threads: int
     parallelism: int
     run_count: int
     team_name: str
     team_list: str = None
+    dump_team_dir: str = None
+    switch_weight_multiplier: float = 1.0
+    losing_attack_fallback_threshold: float = 0.05
+    variance_penalty_lambda: float = 0.0
+    switch_gate_tolerance: float = 0.04
+    tera_margin_gate: float = 0.025
+    losing_upside_threshold: float = 0.15
+    losing_upside_displacement_multiplier: float = 2.0
+    significance_forfeit_alpha: float = 0.1
+    significance_forfeit_iwsd_margin: float = 0.02
+    reuse_search_pool: bool = True
+    never_start_timer: bool = False
     user_to_challenge: str
     save_replay: SaveReplay
     room_name: str
@@ -119,6 +132,13 @@ class _FoulPlayConfig:
             help="Time to search per battle in milliseconds",
         )
         parser.add_argument(
+            "--first-turn-search-time-ms",
+            type=int,
+            default=None,
+            help="Search time in milliseconds used for the battle's FIRST decision, "
+            "falling back to --search-time-ms when unset — blitz grants ~40s on turn 1",
+        )
+        parser.add_argument(
             "--search-parallelism",
             type=int,
             default=1,
@@ -149,6 +169,114 @@ class _FoulPlayConfig:
             help="A path to a text file containing a list of team names to choose from in order. Takes precedence over --team-name.",
         )
         parser.add_argument(
+            "--switch-weight-multiplier",
+            type=float,
+            default=1.0,
+            help="Multiplier applied to voluntary switch options' aggregated weights "
+            "before final move selection. Values below 1.0 reduce how often the bot "
+            "switches; 1.0 disables the correction. Forced switches are unaffected.",
+        )
+        parser.add_argument(
+            "--losing-attack-fallback-threshold",
+            type=float,
+            default=0.05,
+            help="When the best aggregated avg score falls below this, prefer the "
+            "best-scoring non-switch option - real games have crit/miss/para tails "
+            "that only pay off if you keep attacking; 0 disables.",
+        )
+        parser.add_argument(
+            "--variance-penalty-lambda",
+            type=float,
+            default=0.0,
+            help="Risk-aversion knob for move selection: each option's value is "
+            "its sample-weighted mean of per-world (visit_share x avg_score), "
+            "minus lambda x pooled_share x the std of its avg_score across "
+            "sampled worlds. Penalizes moves whose quality depends on which "
+            "hidden opponent set is real; 0 = risk-neutral per-world blend.",
+        )
+        parser.add_argument(
+            "--switch-gate-tolerance",
+            type=float,
+            default=0.04,
+            help="A voluntary switch or tera/mega option is only eligible for "
+            "selection when its aggregated avg score is within this tolerance "
+            "of the best plain move with >=5%% pooled visit share (or better). "
+            "0 requires strict score dominance.",
+        )
+        parser.add_argument(
+            "--losing-upside-threshold",
+            type=float,
+            default=0.15,
+            help="Upper activation of the losing-position upside re-rank: "
+            "below this score, options within a sliding tie band of the best "
+            "are re-ranked by their best explored outcome vs any single "
+            "opponent reply (root pair table). One LINEAR band: 0 at this "
+            "threshold, equal to the dead-zone bound at the dead-zone bound "
+            "(with defaults: (0.15,0) to (0.05,0.05), so 0.025 at 0.10) - "
+            "at and below the dead zone the band covers every option. Also "
+            "disables the significance forfeit below this score. 0 disables.",
+        )
+        parser.add_argument(
+            "--losing-upside-displacement-multiplier",
+            type=float,
+            default=2.0,
+            help="The upside challenger must exceed the incumbent pick's "
+            "upside by (this x the current tie band) to overturn it - the "
+            "deeper the position, the bigger the ceiling advantage demanded "
+            "(defaults: 0.05 at score 0.10, 0.10 at 0.05). A non-switch "
+            "challenger still displaces a switch incumbent at "
+            "equal-or-better upside.",
+        )
+        parser.add_argument(
+            "--tera-margin-gate",
+            type=float,
+            default=0.025,
+            help="A tera/mega option (a once-per-battle resource spend) is only "
+            "eligible for selection when its aggregated avg score BEATS the "
+            "best non-tera alternative by at least this margin. Stops "
+            "tie-break-level edges from spending tera (the T1 tera-Fire "
+            "Flare Blitz that won the argmax by 0.006 with five opponent "
+            "mons unrevealed). 0 disables.",
+        )
+        parser.add_argument(
+            "--significance-forfeit-alpha",
+            type=float,
+            default=0.1,
+            help="The top pick forfeits to the highest-value alternative whose "
+            "within-world score spread (iwsd) is meaningfully lower and that "
+            "the top pick cannot beat at this alpha on a paired t-test across "
+            "the sampled worlds. 0 disables.",
+        )
+        parser.add_argument(
+            "--significance-forfeit-iwsd-margin",
+            type=float,
+            default=0.02,
+            help="An alternative only qualifies as a significance-forfeit "
+            "challenger when its pooled within-world score sd is lower than "
+            "the top pick's by at least this margin.",
+        )
+        parser.add_argument(
+            "--no-search-pool-reuse",
+            action="store_true",
+            help="Recreate the search worker pool for every decision instead of "
+            "reusing it across decisions. Reuse skips ~parallelism process "
+            "spawns per move; either way a rebuilt poke_engine wheel is only "
+            "picked up after a bot restart.",
+        )
+        parser.add_argument(
+            "--dump-team-dir",
+            default=None,
+            help="If set, the bot's team in random battle formats is written to "
+            "<dump-team-dir>/<pokemon-format>/<battle-tag>.txt in Showdown export format "
+            "once it is revealed at battle start. Each team is also mirrored into "
+            "./teams/teams/<gen>/sampled/ so it can be re-used via --team-name.",
+        )
+        parser.add_argument(
+            "--never-start-timer",
+            action="store_true",
+            help="When enabled, the bot will not send '/timer on' at battle start",
+        )
+        parser.add_argument(
             "--save-replay",
             default="never",
             choices=[e.name for e in SaveReplay],
@@ -175,11 +303,26 @@ class _FoulPlayConfig:
         self.pokemon_format = args.pokemon_format
         self.smogon_stats = args.smogon_stats_format
         self.search_time_ms = args.search_time_ms
+        self.first_turn_search_time_ms = args.first_turn_search_time_ms
         self.parallelism = args.search_parallelism
         self.search_threads = args.search_threads
         self.run_count = args.run_count
         self.team_name = args.team_name or self.pokemon_format
         self.team_list = args.team_list
+        self.dump_team_dir = args.dump_team_dir
+        self.switch_weight_multiplier = args.switch_weight_multiplier
+        self.losing_attack_fallback_threshold = args.losing_attack_fallback_threshold
+        self.variance_penalty_lambda = args.variance_penalty_lambda
+        self.switch_gate_tolerance = args.switch_gate_tolerance
+        self.tera_margin_gate = args.tera_margin_gate
+        self.losing_upside_threshold = args.losing_upside_threshold
+        self.losing_upside_displacement_multiplier = (
+            args.losing_upside_displacement_multiplier
+        )
+        self.significance_forfeit_alpha = args.significance_forfeit_alpha
+        self.significance_forfeit_iwsd_margin = args.significance_forfeit_iwsd_margin
+        self.reuse_search_pool = not args.no_search_pool_reuse
+        self.never_start_timer = args.never_start_timer
         self.user_to_challenge = args.user_to_challenge
         self.save_replay = SaveReplay[args.save_replay]
         self.room_name = args.room_name
