@@ -136,8 +136,12 @@ def get_sets_file(cache_path: str, remote_url: str) -> dict:
     # are retried on the next call rather than persisted to disk
     if sets:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        with open(cache_path, "w") as f:
+        # atomic write: parallel workers racing this cache tore the file and
+        # poisoned every subsequent read (1046 warnings in one cloud sweep)
+        tmp_path = f"{cache_path}.tmp.{os.getpid()}"
+        with open(tmp_path, "w") as f:
             json.dump(sets, f)
+        os.replace(tmp_path, cache_path)
         logger.info(f"Downloaded and cached from remote: {remote_url}")
         return sets
 

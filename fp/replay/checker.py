@@ -2286,6 +2286,22 @@ def _illusion_switch_target(reveals, pid: str, turn: int, species: str | None):
     return species
 
 
+def _bearer_hold_superseded(reveals, pid, il, turn) -> bool:
+    """True when the protocol witnessed the Illusion bearer's hold CHANGE during
+    its span, strictly before `turn` -- so the bearer's roster entry (which only
+    ever carries the battle-start item) no longer describes what it is holding.
+
+    During a proven span the bearer is the only pokemon in that slot, so every
+    item line PS printed there is the bearer's own even though it is keyed by
+    the DISGUISE's species (sim/pokemon.ts:531).  A removal record whose turn
+    falls inside the span is such a line."""
+    lo = il.get("start_turn")
+    if lo is None:
+        return False
+    rec = (reveals.get("items") or {}).get((pid, il.get("disguise")))
+    return rec is not None and rec[1] is not None and lo <= rec[1] < turn
+
+
 def _apply_illusion(battler, pid, reveals, turn) -> None:
     """Substitute a disguised Zoroark's real types onto a side's active.
     When a |replace| (or the sidecar inference above) reveals the current active
@@ -2437,8 +2453,25 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
                     battler.active.level = _reserve.level
                     # Guarded so an unknown reserve item (real-corpus replays)
                     # never clobbers a known one (synth272122 T18: the bearer's
-                    # Life Orb must reach the engine for recoil + seed heal).
+                    # Life Orb must reach the engine for recoil + seed heal)...
                     _reserve_item = getattr(_reserve, "item", None)
+                    # ...and guarded on the hold still being CURRENT.  The
+                    # reserve object carries the BATTLE-START hold (sidecar /
+                    # `|-item|` reveal); every item event during the span is
+                    # printed against the DISGUISE's name and lands on the
+                    # active, so the reserve is blind to a hold the bearer
+                    # already traded away.  synth142136 T10: the disguised
+                    # Zoroark Tricks its Choice Specs onto Probopass
+                    # (`-enditem|p2a: Glimmora|Choice Specs|[silent]|[from]
+                    # move: Trick`, harvested as items[(p2, glimmora)] =
+                    # (choicespecs, 10)), so from T11 the reserve's Choice
+                    # Specs are STALE -- re-arming them gave the bearer a 1.5x
+                    # Focus Blast that KO'd Probopass in every branch, and the
+                    # `slp` + full heal of the Rest it actually used were
+                    # unreachable.  Refuse-don't-guess: leave the
+                    # reconstruction standing with whatever it has.
+                    if _bearer_hold_superseded(reveals, pid, il, turn):
+                        _reserve_item = None
                     if _reserve_item and _reserve_item != constants.UNKNOWN_ITEM:
                         battler.active.item = _reserve_item
                     break
