@@ -551,7 +551,9 @@ def _harvest_reveals(chunks: list[str]) -> dict:
     # are still inside PS's pre-`runSwitch` window (see `berry_eats`).
     switch_fresh: set[str] = set()
 
-    def _open_occupancy(slot: str, species: str, entry_turn: int, details: str) -> None:
+    def _open_occupancy(
+        slot: str, species: str, entry_turn: int, details: str, condition: str = ""
+    ) -> None:
         prev = open_occupancy.get(slot)
         if prev is not None:
             prev["end_turn"] = entry_turn
@@ -563,12 +565,29 @@ def _harvest_reveals(chunks: list[str]) -> dict:
             piece = piece.strip()
             if piece.startswith("tera:"):
                 entry_tera = normalize_name(piece[len("tera:") :])
+        # The switch line's CONDITION denominator: `getFullDetails` substitutes
+        # the illusion's details but renders the ENTRANT's real health -- the
+        # owner-side `secret` string is the absolute `${this.hp}/${this.maxhp}`
+        # (sim/pokemon.ts:544-553, :2065-2067) -- so an absolute denominator is
+        # the occupant's TRUE max HP.  A `/100` denominator is a shared-side
+        # percent rendering, indistinguishable from a real max of exactly 100,
+        # so it is refused to None (the safe direction).
+        entry_maxhp = None
+        cond = condition.split()
+        if cond and "/" in cond[0]:
+            try:
+                entry_maxhp = int(cond[0].split("/", 1)[1])
+            except ValueError:
+                entry_maxhp = None
+            if entry_maxhp == 100:
+                entry_maxhp = None
         occ = {
             "pid": slot[:2],
             "slot": slot,
             "species": species,
             "start_turn": entry_turn,
             "end_turn": entry_turn,
+            "entry_maxhp": entry_maxhp,
             "moves": set(),
             # (turn, item) the PHYSICAL occupant of this slot was PROVEN to be
             # holding.  Slot-keyed, so unlike `reveals["items"]` / `item_gains`
@@ -804,7 +823,13 @@ def _harvest_reveals(chunks: list[str]) -> dict:
                         # it re-labels the SAME occupant and must not restart the
                         # occupancy clock.
                         slot_entry_turn[slot] = turn
-                        _open_occupancy(slot, new_species, turn, parts[3])
+                        _open_occupancy(
+                            slot,
+                            new_species,
+                            turn,
+                            parts[3],
+                            parts[4] if len(parts) >= 5 else "",
+                        )
                     slot_species[slot] = new_species
                     # roster: species -> its first switch-in details ("Dondozo, L79")
                     roster.setdefault(pid, {}).setdefault(
@@ -1225,6 +1250,50 @@ def _species_keyed_event_is_reliable(reveals, pid, species, turn) -> bool:
         if il["start_turn"] <= turn <= il["end_turn"]:
             return False
     return True
+
+
+def _drop_disguise_poisoned_hp_certificates(battler, pid: str, reveals) -> None:
+    """Drop a DEFERRED display-pct HP certificate whose certifying line was
+    printed while this (pid, species) may have been a disguised Illusion
+    bearer.
+
+    The pct such a line carries is PS's display of the REAL occupant --
+    `getHealth` renders `${this.hp}/${this.maxhp}` (sim/pokemon.ts:2065-2086)
+    while the name renders through the illusion (:531) -- so it measures the
+    BEARER's hp against the BEARER's max HP.  `verify_against_exact_max` would
+    check it against the SHOWN species' exact sidecar max instead, and for a
+    genuinely-identified mon the two can never disagree (every certifying
+    chain -- Super Fang-family halving, Endeavor, Pain Split, Revival
+    Blessing -- replays to PS's own post-event hp), so each such refusal
+    indicts innocent arithmetic: g22's five `REFUSING exact-hp certificate on
+    furret ... certified hp 156/312 implies 50/100 but the protocol showed
+    51/100` lines are a halving of a FULL disguised bearer with an ODD max HP
+    (`ceil(100*ceil(m/2)/m) == 51` for every odd m >= 51, e.g.
+    Zoroark-Hisui's 219 -> 110/219 -> 51, where the even-max genuine Furret
+    shows exactly 50), re-refused on every armed turn the live certificate
+    survived.  Identity is the poisoned channel, not the certificate math, so
+    this is a LOSS OF PROVENANCE (the quiet staleness arm), never a refusal:
+    exactness degrades to the interval estimate and nothing wrong is pinned.
+    A deferred certificate on a reliably-identified mon is left alone, so a
+    REAL broken chain still refuses loudly."""
+    mons = list(battler.reserve)
+    if battler.active is not None:
+        mons.append(battler.active)
+    for pkmn in mons:
+        if getattr(pkmn, "hp_certificate_pct", None) is None:
+            continue
+        cert_turn = getattr(pkmn, "hp_certificate_turn", None)
+        if cert_turn is None:
+            continue
+        species = _species_key(pkmn.name)
+        if not _species_keyed_event_is_reliable(
+            reveals, pid, species, cert_turn
+        ) or illusion_unresolved_entry_turn(reveals, pid, cert_turn):
+            hp_certificate.clear(
+                pkmn,
+                "certifying line printed under a possible Illusion disguise "
+                "(turn {})".format(cert_turn),
+            )
 
 
 def _reattribute_disguised_item_gains(reveals) -> None:
@@ -1752,6 +1821,51 @@ def _infer_illusion_spans(reveals: dict, exact_teams) -> None:
         # selected it
         if selected & (shown - bearer_moves):
             continue
+        # THE SWITCH LINE'S OWN MAX HP DECIDES MOST OWNER-SIDE STAYS.  The
+        # occupancy's `entry_maxhp` is the ABSOLUTE denominator of its own
+        # |switch| condition -- the ENTRANT's true max HP, rendered from the
+        # real pokemon even while the name half is a disguise (getFullDetails
+        # takes `health` from `this.getHealth()` BEFORE overwriting `details`
+        # with the illusion's, sim/pokemon.ts:544-553; the owner-side secret
+        # string is `${this.hp}/${this.maxhp}`, :2065-2067).  The sidecar max
+        # HPs of the shown species and of the bearer are fixed set properties,
+        # so whenever they differ the denominator identifies the occupant
+        # exactly.  synth257619 T7: "Hypno, L95" enters at 219/219 --
+        # Zoroark-Hisui's 219, not Hypno's 315 -- is Close Combat-immune twice
+        # and pivots out untouched, so no |replace|, no move witness
+        # (focusblast is in both movesets), no item observation and no tera
+        # ever decides the stay.  Percent-rendered (opponent-side) switch
+        # lines never reach here: their denominator is 100 and `entry_maxhp`
+        # was refused to None at harvest.  The bearer verdict keeps the item
+        # arm's PS-impossibility tripwire: a stay that SURVIVED a damaging hit
+        # with no |replace| cannot be a disguise (data/abilities.ts illusion
+        # onDamagingHit -> replace), so it is refused rather than asserted.
+        entry_maxhp = occ.get("entry_maxhp")
+        if entry_maxhp:
+            team = exact_teams.get(occ["pid"]) or {}
+            shown_max = ((team.get(occ["species"]) or {}).get("stats") or {}).get("hp")
+            bearer_max = ((team.get(bearer_key) or {}).get("stats") or {}).get("hp")
+            if shown_max and bearer_max and int(shown_max) != int(bearer_max):
+                if entry_maxhp == int(shown_max):
+                    continue  # proven the genuine article
+                if entry_maxhp == int(bearer_max) and not (
+                    occ.get("survived_damaging_hit")
+                    and not occ.get("revealed_true_species")
+                ):
+                    illusions.append(
+                        {
+                            "pid": occ["pid"],
+                            "disguise": occ["species"],
+                            "true_species": occ.get("revealed_true_species")
+                            or bearer_key,
+                            "start_turn": occ["start_turn"],
+                            "end_turn": occ["end_turn"],
+                            "bearer_tera": occ["tera_during"] or occ["entry_tera"],
+                            "bearer_tera_from": _bearer_tera_from(occ),
+                            "inferred_from": ["maxhp:{}".format(entry_maxhp)],
+                        }
+                    )
+                    continue
         # THE MOVE EVIDENCE IS A COIN FLIP -- try the ITEM.
         #
         # The sidecar item is a fixed set property of exactly the same kind as
@@ -2309,6 +2423,24 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
                     battler.active.stats = dict(_reserve.stats)
                     if getattr(_reserve, "moves", None):
                         battler.active.moves = list(_reserve.moves)
+                    # ...and the LEVEL and ITEM, same object-identity reason:
+                    # the damage formula reads the real mon's level
+                    # (sim/battle-actions.ts:1855) and the held item is the
+                    # bearer's own -- Illusion substitutes only the printed
+                    # name, never the hold.  Leaving the disguise's in place
+                    # built a "Pikachu-Partner" L93 holding LIGHT BALL (2x on
+                    # Zoroark's 247 SpA, items.ts:3430 keys on the holder's
+                    # species id) where PS had an L83 Zoroark with Choice
+                    # Specs (1.5x), so Dark Pulse KO'd Bellossom in every
+                    # branch and its observed Quiver Dance boosts + Leftovers
+                    # heal were unreachable (synth278925 T7).
+                    battler.active.level = _reserve.level
+                    # Guarded so an unknown reserve item (real-corpus replays)
+                    # never clobbers a known one (synth272122 T18: the bearer's
+                    # Life Orb must reach the engine for recoil + seed heal).
+                    _reserve_item = getattr(_reserve, "item", None)
+                    if _reserve_item and _reserve_item != constants.UNKNOWN_ITEM:
+                        battler.active.item = _reserve_item
                     break
         return
 
@@ -4676,6 +4808,17 @@ def _fire_turn(
     if reveals is not None:
         try:
             _backfill_roster(snap.opponent, opp_pid, reveals)
+        except Exception:
+            pass
+    # A DEFERRED display-pct certificate is only as sound as the IDENTITY its
+    # certifying line printed: if that (pid, species, turn) may have been a
+    # disguised Illusion bearer, the pct describes the BEARER's hp/max_hp and
+    # the sidecar fill below would make `verify_against_exact_max` refuse an
+    # innocent chain (see _drop_disguise_poisoned_hp_certificates).  Drop
+    # those quietly BEFORE the exact fill makes the deferred check decidable.
+    if reveals is not None and exact_teams is not None:
+        try:
+            _drop_disguise_poisoned_hp_certificates(snap.opponent, opp_pid, reveals)
         except Exception:
             pass
     # exact full-knowledge sets (synthetic corpus sidecar) BEFORE the randbats

@@ -667,6 +667,53 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 ok = _any_branch(
                     br, lambda i: i.kind == "DamageSubstitute" and i.side == s
                 )
+            if not ok and vol in (
+                "ENCORE",
+                "TAUNT",
+                "DISABLE",
+                "YAWN",
+                "MAGNETRISE",
+                "THROATCHOP",
+                "SYRUPBOMB",
+                "SLOWSTART",
+            ):
+                # BRANCH-FOLD FAINT, not a mechanic miss.  These volatiles end at
+                # END-OF-TURN residual (PS encore onResidualOrder 16 etc.,
+                # data/moves.ts), and BOTH engines skip residual handlers for a
+                # fainted holder (PS sim/battle.ts:512; poke-engine
+                # genx/generate_instructions.rs volatile-residual loop
+                # `if side.get_active().hp == 0 { continue; }`).  poke-engine
+                # folds the 16 damage rolls of a hit into a kill arm and a
+                # survivor MEAN, so when PS's actual roll left the mon barely
+                # alive through the end-of-turn chip while the folded survivor
+                # mean dies to it, EVERY branch faints the mon and the residual
+                # (with its RemoveVolatileStatus) runs in none.  synth250868 T24:
+                # Meganium 89/290 brn, Knock Off survivor-mean arm 72 leaves 17
+                # which the capped burn chip (min(18,17)) kills, crit arm 89 is a
+                # direct KO -- while PS rolled 70, leaving 19 -> 1 after burn, and
+                # Encore ended at residual.  If running-hp arithmetic on this
+                # side's Damage/Heal instructions shows the mon fainted at the end
+                # of EVERY branch (skipped when any branch switches this side,
+                # which would break the arithmetic), the missing removal is the
+                # damage fold's roll selection, not a fidelity gap; the roll
+                # itself is separately asserted by the exact-damage membership
+                # check.  Any branch that leaves the mon alive keeps the report.
+                hp0 = ctx.side_hp.get(s)
+                if hp0 and not _any_branch(
+                    br, lambda i: i.kind == "Switch" and i.side == s
+                ):
+
+                    def _side_faints(branch):
+                        hp = hp0
+                        for i in branch:
+                            amt = i.amount() or 0
+                            if i.kind == "Damage" and i.side == s:
+                                hp -= max(0, amt)
+                            elif i.kind == "Heal" and i.side == s:
+                                hp += amt
+                        return hp <= 0
+
+                    ok = all(_side_faints(b) for b in br)
             if not ok:
                 findings.append(
                     Finding(

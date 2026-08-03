@@ -1246,11 +1246,17 @@ class Pokemon:
             return pkmn_type in self.types
 
     def forme_change(self, new_forme_switch_string):
-        current_hp_percentage = self.hp / self.max_hp
-
+        # PS's non-permanent formeChange never touches hp or max hp
+        # (sim/pokemon.ts setSpecies assigns hp only when `!this.maxhp`, i.e. at
+        # construction; max-HP-raising formes announce the gain separately), and
+        # max_hp is not reassigned here either, so hp must carry over untouched.
+        # The old `int(hp / max_hp * max_hp)` float round-trip truncated 85 -> 84
+        # (synth286069 T5: Cramorant -> Gorging), silently desyncing hp from its
+        # own display certificate -- which both made an exactly-lethal Night
+        # Shade kill in every branch AND tripped the `hp != hp_display_hp` fast
+        # path that disables the B1 band re-evaluation.
         new_pokemon = Pokemon.from_switch_string(new_forme_switch_string)
         self.name = new_pokemon.name
-        self.hp = int(current_hp_percentage * self.max_hp)
         self.hp_exact = False
         self.base_stats = new_pokemon.base_stats
         # Preserve the set's nature/EVs/IVs across the forme change (Showdown

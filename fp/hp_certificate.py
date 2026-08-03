@@ -454,6 +454,11 @@ def certify(pkmn, hp, reason: str, shown_pct=None, fraction=None, halvings=0) ->
     pkmn.hp_certificate_hp = hp
     if not max_hp_is_exact:
         pkmn.hp_certificate_pct = None if shown_pct is None else int(shown_pct)
+        # the turn the certifying line resolved on, for the checker's
+        # illusion-identity gate on the deferred check: the pct describes
+        # whoever PHYSICALLY stood in the slot on THIS turn, which under an
+        # Illusion disguise is not the species the certificate is filed under
+        pkmn.hp_certificate_turn = CONTEXT.get("turn")
     return True
 
 
