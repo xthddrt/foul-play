@@ -471,6 +471,58 @@ def _hp_gate_crossed_by_damage_arm(ctx, ev, s) -> bool:
     return best is not None and best <= gate
 
 
+def _fold_faint_blocks_volatile(ctx, s) -> bool:
+    """True when the ONLY reason no branch applies the observed volatile is that
+    the engine's COLLAPSED damage rolls faint one of the two actives in EVERY
+    branch, so the both-alive state PS actually reached is not in the branch set.
+
+    PS refuses a volatile on a fainted target outright -- `addVolatile` returns
+    false on `!this.hp` for any condition without `affectsFainted`
+    (sim/pokemon.ts:1980), and healblock's condition (data/moves.ts) declares
+    none.  The engine mirrors that gate exactly with
+    `volatile_status_can_be_applied`'s `hp == 0` check (genx/state.rs:632), and a
+    fainted attacker never gets to use the applying move at all.  poke-engine
+    folds the 16 damage rolls of each hit into a crit arm and a conditional-mean
+    non-crit arm, so when PS rolls near the bottom of a spread the engine's arms
+    can kill a mon PS left alive:
+
+      synth362661 T16 (Kingdra 156 hp; Munkidori's Psychic Noise Heal Block).
+      PS rolled Wave Crash 228 of the {225..264} set -> 75 recoil -> Kingdra 81,
+      then Psychic Noise 78 -> 3 hp, and Heal Block lands.  Engine branch 0 is
+      the non-crit MEAN 243 -> 80 recoil -> Kingdra 76, and its Psychic Noise arm
+      (capped to the remaining 76) faints Kingdra, so the hp gate swallows
+      HEALBLOCK; engine branch 1 is the crit arm, which KOs Munkidori before it
+      ever moves.  Every damage the engine used is itself a legal PS roll (243 is
+      roll index 8 of the Wave Crash set) -- only the two-arm fold cannot present
+      the surviving combination.
+
+    Requires a branch that actually faints the observed SIDE (the swallow the hp
+    gate performs) and NO branch where both actives survive; a genuine missing
+    mechanic on a turn both mons live through still fires HARD.  Only in-move
+    damage (`[move]`/`[recoil]`) counts, so an end-of-turn chip -- which lands
+    AFTER the volatile would have been applied -- can never widen the rule, and
+    an untagged (pre-provenance) wheel sums 0 and never suppresses."""
+    o = "s2" if s == "s1" else "s1"
+    hp_s, hp_o = ctx.side_hp.get(s), ctx.side_hp.get(o)
+    if not hp_s or not hp_o:
+        return False
+    fainted_s_somewhere = False
+    for b in ctx.branches:
+        net = {s: hp_s, o: hp_o}
+        for i in b:
+            if i.side not in net:
+                continue
+            if i.kind == "Damage" and i.source in ("move", "recoil"):
+                net[i.side] -= max(0, i.amount() or 0)
+            elif i.kind == "Heal":
+                net[i.side] += max(0, i.amount() or 0)
+        s_down, o_down = net[s] <= 0, net[o] <= 0
+        if not s_down and not o_down:
+            return False
+        fainted_s_somewhere = fainted_s_somewhere or s_down
+    return fainted_s_somewhere
+
+
 def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Finding]:
     """Return fidelity findings for one turn.  Empty == engine reproduced every
     hard observed effect in at least one branch."""
@@ -623,6 +675,12 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 and i.side == s
                 and _norm(i.payload) == vol,
             )
+            if not ok and _fold_faint_blocks_volatile(ctx, s):
+                # BRANCH-FOLD FAINT, not a mechanic miss: the engine's collapsed
+                # damage arms faint one of the two actives in every branch, so
+                # PS's both-alive state (in which the volatile landed) is simply
+                # not in the branch set.  See _fold_faint_blocks_volatile.
+                continue
             if not ok:
                 findings.append(
                     Finding(
@@ -1122,12 +1180,28 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 # roll itself is separately asserted by the exact-damage
                 # membership check.  Any branch that leaves the mon alive keeps
                 # the report.
+                #
+                # The same arithmetic concedes the AT-MAX-HP branch: every heal
+                # the engine models (residual Leftovers / Grassy Terrain, Wish,
+                # berries) is a no-op it correctly omits when the branch's mon
+                # has no hp deficit, so such a branch can no more carry the Heal
+                # than a fainted one.  The deficit PS observed came from damage
+                # that branch didn't carry -- an unresolved-illusion bearer's
+                # Life Orb recoil (synth347699 T21: disguised Zoroark's recoil
+                # is unmodelable, so the engine's mon sits at 290/290 and the
+                # Grassy Terrain heal is a 0-hp no-op) or the other arm of a
+                # speed-tie branch where the mon was never hit (synth350507 T19:
+                # Annihilape at full 292/292 after killing Ditto first) -- and
+                # the damage itself is the damage arms' assertion, not this
+                # one's.  Engine Heal amounts are already capped to the deficit,
+                # so the running hp is exact and can never exceed maxhp.
                 hp0 = ctx.side_hp.get(s)
+                mhp = (ctx.side_maxhp or {}).get(s)
                 if hp0 and not _any_branch(
                     br, lambda i: i.kind == "Switch" and i.side == s
                 ):
 
-                    def _side_faints(branch):
+                    def _heal_impossible(branch):
                         hp = hp0
                         for i in branch:
                             amt = i.amount() or 0
@@ -1135,9 +1209,9 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                                 hp -= max(0, amt)
                             elif i.kind == "Heal" and i.side == s:
                                 hp += amt
-                        return hp <= 0
+                        return hp <= 0 or (mhp is not None and hp >= mhp)
 
-                    ok = all(_side_faints(b) for b in br)
+                    ok = all(_heal_impossible(b) for b in br)
             if not ok:
                 findings.append(
                     Finding(
