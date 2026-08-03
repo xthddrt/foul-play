@@ -297,10 +297,41 @@ def _sidecar_species_moveset(battle, side, species):
 
 
 def _sidecar_moveset(battle, side, pkmn):
-    """`pkmn`'s TRUE 4 moves from the checker's exact-teams sidecar, or None."""
+    """`pkmn`'s TRUE 4 moves from the checker's exact-teams sidecar, or None.
+
+    Resolved through `_match_exact_mon`, NOT the raw species key, because a mon
+    whose forme has drifted mid-battle no longer carries the name the sidecar is
+    indexed under (`load_teams_sidecar` keys by the team-JSON species).  PS
+    renames Mimikyu to Mimikyu-Busted when Disguise breaks, so
+    `team.get("mimikyubusted")` misses.  A miss is indistinguishable from "no
+    ground truth", which is exactly the state `_record_used_move` treats as
+    permission to append - so a disguised Zoroark's Focus Blast landed on the
+    busted Mimikyu as a 5th move (synth236301: p1 Zoroark holds focusblast,
+    Mimikyu does not) and `poke_engine_helpers` logged "More than 4 moves" and
+    truncated.  The bearer-credit logic below was never even reached.
+    `_match_exact_mon` already does this base-forme/family resolution for every
+    other sidecar consumer; this is that same fix reaching move attribution.
+
+    Only the SHOWN pokemon is widened.  `_sidecar_species_moveset` stays an exact
+    key lookup on purpose: `_record_used_move` also probes it with the bare bearer
+    NAMES "zoroark"/"zoroarkhisui", and those two share a baseSpecies family, so
+    widening there would make the "zoroark" probe answer with a Zoroark-Hisui's
+    set, then fail `find_pokemon_in_reserves("zoroark")` and DROP a move belonging
+    to a bearer that is in fact revealed."""
     if pkmn is None:
         return None
-    return _sidecar_species_moveset(battle, side, pkmn.name)
+    try:
+        from fp.replay.damage_membership import _match_exact_mon
+    except Exception:
+        return _sidecar_species_moveset(battle, side, pkmn.name)
+    ref = getattr(battle, "exact_teams", None)
+    exact_teams = getattr(ref, "value", ref)  # fp.battle.SharedByReference
+    if not exact_teams:
+        return None
+    record = _match_exact_mon(exact_teams.get(side.name) or {}, pkmn.name)
+    if not record:
+        return None
+    return {normalize_name(m) for m in (record.get("moves") or ())} or None
 
 
 def _record_used_move(battle, side, pkmn, move_name):
@@ -2086,7 +2117,40 @@ def move(battle, split_msg):
             )
         )
     else:
-        pp_to_decrement = 2 if opposing_pkmn.ability == "pressure" else 1
+        # PRESSURE'S EXTRA PP IS PER-TARGET, NOT PER-MOVE.  PS deducts it in
+        # `useMoveInner` by running the `DeductPP` event once per entry of
+        # `pokemon.getMoveTargets(move, target).pressureTargets`
+        # (sim/battle-actions.ts:467-484), and pressure's own handler returns 1 only
+        # for a NON-ALLY target (data/abilities.ts:3431-3434 `onDeductPP(target,
+        # source) { if (target.isAlly(source)) return; return 1; }`).  A self- or
+        # ally-targeting move's only pressureTarget is the user's own side
+        # (sim/pokemon.ts:791-820: the `default:` arm pushes the resolved target,
+        # which for `target: 'self'` is the user; the allies/allySide/allyTeam arms
+        # push only allies), and a `foeSide` move's pressureTargets list is emptied
+        # outright (:853-856) -- so neither costs the extra PP.
+        #
+        # Charging it unconditionally drove tracked PP NEGATIVE: synth210836's
+        # Houndstone (Rest max_pp 8) Rested six times before T54, three of them in
+        # front of a Pressure Corviknight, and was charged 9 instead of 6 -> pp -1.
+        # The engine's Encore gate is `last_move.pp <= 0` (poke-engine
+        # genx/generate_instructions.rs:6386, mirroring data/moves.ts encore onStart
+        # `moveSlot.pp <= 0`), so it FAILED the Encore PS landed on T54
+        # (`|-start|p2a: Houndstone|Encore`) and no branch could apply it.
+        pp_to_decrement = (
+            2
+            if opposing_pkmn.ability == "pressure"
+            and all_move_json.get(move_name, {}).get("target")
+            not in (
+                "self",
+                "adjacentAlly",
+                "adjacentAllyOrSelf",
+                "allies",
+                "allySide",
+                "allyTeam",
+                "foeSide",
+            )
+            else 1
+        )
     move_object = pkmn.get_move(move_name)
     if move_object is None:
         new_move = _record_used_move(battle, side, pkmn, move_name)

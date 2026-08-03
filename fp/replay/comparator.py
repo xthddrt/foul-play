@@ -408,6 +408,68 @@ _STAT_MAP = {
     "evasion": "Evasion",
 }
 
+# Self-boost moves PS gates on the USER's own current HP, checked BEFORE the
+# self HP cut: at or below the threshold the move fails outright -- no boost and
+# no cut.  (numerator, denominator) of that threshold.
+#   clangoroussoul  hp <= maxhp * 33 / 100   data/moves.ts:2508
+#   filletaway      hp <= maxhp / 2          data/moves.ts:5285
+#   bellydrum       hp <= maxhp / 2          data/moves.ts:1226
+_HP_GATED_SELF_BOOST = {
+    "clangoroussoul": (33, 100),
+    "filletaway": (1, 2),
+    "bellydrum": (1, 2),
+}
+
+
+def _hp_gate_crossed_by_damage_arm(ctx, ev, s) -> bool:
+    """True when the ONLY reason no branch carries the boost is that the
+    engine's COLLAPSED damage roll took the boosting mon under its own move's
+    HP gate.
+
+    poke-engine folds the 16 damage rolls of an incoming hit into a kill arm
+    and a conditional-MEAN survive arm, so a hit PS rolled low lands several HP
+    lower in EVERY engine branch.  For an HP-gated self-boost move that is the
+    difference between the move working and failing outright: synth224619 t1
+    (Kommo-o 242 maxhp, gate 79 -- PS rolled Sludge Wave's minimum 154 leaving
+    88, the engine's mean arm deals 169 leaving 73) and synth222712 t53 (U-turn
+    dealt 16 leaving 80, the engine's mean arm deals 17 leaving 79).  Both
+    engines are PS-exact on the gate itself (`hp <= floor(maxhp*33/100)` and
+    `hp <= maxhp*33/100` are the same predicate for integer hp); a legal roll
+    reproduces the observed boosts, so this is the damage model's two-arm
+    approximation, not a fidelity gap.
+
+    Requires turn-start HP strictly ABOVE the gate (at or below it PS fails the
+    move too, so an observed boost there IS a real miss) and EVERY branch at or
+    below it.  Only `[move]` damage counts, so end-of-turn chip cannot widen
+    the rule; an untagged (pre-provenance) wheel sums 0 and never suppresses."""
+    own_move = (ctx.user_move if ev.side == "user" else ctx.opp_move) or ""
+    if own_move.endswith("-tera"):
+        own_move = own_move[: -len("-tera")]
+    frac = _HP_GATED_SELF_BOOST.get(own_move)
+    if frac is None:
+        return False
+    hp = ctx.side_hp.get(s)
+    maxhp = ctx.side_maxhp.get(s)
+    if not hp or not maxhp:
+        return False
+    gate = maxhp * frac[0] // frac[1]
+    if hp <= gate:
+        return False
+    best = None
+    for b in ctx.branches:
+        dealt = sum(
+            i.amount() or 0
+            for i in b
+            if i.kind == "Damage"
+            and i.side == s
+            and i.source == "move"
+            and (i.amount() or 0) > 0
+        )
+        after = hp - dealt
+        if best is None or after > best:
+            best = after
+    return best is not None and best <= gate
+
 
 def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Finding]:
     """Return fidelity findings for one turn.  Empty == engine reproduced every
@@ -511,6 +573,14 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 and i.sub == stat
                 and (i.amount() or 0) * ev.sign > 0,
             )
+            if not ok and _hp_gate_crossed_by_damage_arm(ctx, ev, s):
+                # the mon used an HP-gated self-boost move (Clangorous Soul /
+                # Fillet Away / Belly Drum) and the engine's collapsed
+                # conditional-mean damage arm put it under the gate in every
+                # branch, while the roll PS actually made left it above.  The
+                # gate is implemented exactly; a legal roll reproduces the
+                # boost.  Damage-model artifact, not a missing effect.
+                continue
             if not ok:
                 findings.append(
                     Finding(

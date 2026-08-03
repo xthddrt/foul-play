@@ -1227,6 +1227,95 @@ def _species_keyed_event_is_reliable(reveals, pid, species, turn) -> bool:
     return True
 
 
+def _reattribute_disguised_item_gains(reveals) -> None:
+    """Move an item ACQUISITION the protocol printed under an Illusion disguise
+    onto the pokemon that physically received it.
+
+    `_harvest_reveals` keys `item_gains` by (pid, SPECIES) read off the slot's
+    `|switch|` line, and PS renders a disguised slot through the illusion's name
+    (sim/pokemon.ts:531) -- so `|-item|p2a: Malamar|Leftovers|[from] move: Trick`
+    for a Zoroark wearing Malamar's face is filed under `malamar`.  Two things go
+    wrong at once:
+
+      * the BEARER's own record never CLOSES.  `_bounded_item_gains` shuts a
+        record at the next acquisition for the SAME key, and a Trick reports the
+        giver's loss only as the receiver's `|-item|`, so the zoroark's turn-1
+        Heavy-Duty Boots record ran straight through the turn it traded them
+        away and `_backfill_revealed_knowledge` re-stamped Heavy-Duty Boots over
+        the Leftovers live tracking had already written correctly.  synth231620
+        T43 and T46: five turns of `|-heal| ... [from] item: Leftovers` on the
+        revealed Zoroark with no branch that heals it.
+      * the DISGUISE species is left owning an item it never touched, which the
+        timeline then hands to the genuine pokemon when it comes back.
+        synth222884: the real Tropius reached the engine holding Leftovers
+        instead of the Sitrus Berry its Harvest had re-supplied, so T36's
+        `-enditem|p2a: Tropius|Sitrus Berry|[eat]` had no branch that removes it.
+
+    A gain inside a PROVEN span belongs to the bearer, because during the span
+    the bearer is the only pokemon in that slot.  This is the mirror of the
+    narrowing already recorded in `_backfill_revealed_knowledge` -- that one
+    refuses to OVERRIDE with a disguise-keyed record, this one puts the record
+    where it belongs and closes the bearer's window with it.
+
+    Runs AFTER `_infer_illusion_spans` on purpose: span inference reads
+    `item_gains` itself (`_item_evidence_occupant` / `_no_prior_acquisition`),
+    so the evidence must be settled before it is rewritten."""
+    gains = reveals.get("item_gains")
+    spans = reveals.get("illusions") or ()
+    bearers = reveals.get("illusion_bearers") or {}
+    stolen = reveals.setdefault("illusion_misattributed_items", {})
+    if not gains or not spans:
+        return
+    for il in spans:
+        pid = il.get("pid")
+        disguise = il.get("disguise")
+        bearer = bearers.get(pid) or _species_key(il.get("true_species") or "")
+        if not pid or not bearer or not disguise or bearer == disguise:
+            continue
+        src = gains.get((pid, disguise))
+        if not src:
+            continue
+        # inclusive at BOTH ends: an acquisition resolves DURING its turn, so the
+        # bearer is in the slot on the span's entry and reveal turns too (same
+        # convention as `_species_keyed_event_is_reliable`)
+        lo, hi = il["start_turn"], il["end_turn"]
+        moved = [r for r in src if lo <= r[0] <= hi]
+        if not moved:
+            continue
+        gains[(pid, disguise)] = [r for r in src if not (lo <= r[0] <= hi)]
+        dst = gains.setdefault((pid, bearer), [])
+        dst.extend(moved)
+        dst.sort(key=lambda r: r[0])
+        stolen.setdefault((pid, disguise), set()).update(r[1] for r in moved)
+
+
+def _undo_disguised_item_misattribution(battler, pid, reveals) -> None:
+    """Drop the live-tracked item a pokemon holds only because PS printed the
+    acquisition under its face.
+
+    `battle_modifier.set_item` writes a `|-item|` onto `side.active`, which for a
+    disguised slot is whatever the reconstruction believes is standing there --
+    so the impersonated party member picks the bearer's item up and keeps it long
+    after the disguise has gone.  Reset it to UNKNOWN so the caller's
+    `apply_exact_teams` (and the reveal fallbacks after it) refill the pokemon's
+    real hold; this is why it must run BEFORE that call.
+
+    Narrow by construction: only the exact item that
+    `_reattribute_disguised_item_gains` proved belongs to the BEARER is cleared,
+    so a pokemon that legitimately lost or swapped items is untouched."""
+    stolen = (reveals or {}).get("illusion_misattributed_items") or {}
+    if not stolen:
+        return
+    mons = list(battler.reserve)
+    if battler.active is not None:
+        mons.append(battler.active)
+    for pkmn in mons:
+        bad = stolen.get((pid, _species_key(pkmn.name)))
+        if bad and pkmn.item in bad:
+            pkmn.item = constants.UNKNOWN_ITEM
+            pkmn.item_inferred = False
+
+
 def _backfill_revealed_knowledge(battler, pid, reveals, snapshot_turn) -> None:
     """Fill still-unknown opponent ability/item fields from full-log reveals.
     Abilities apply to every snapshot; an item is only filled into snapshots
@@ -3403,6 +3492,13 @@ def check_log(
     except Exception:
         reveals.setdefault("illusions", [])
         reveals["illusion_unresolved"] = {}
+    # ...then re-file every item acquisition the protocol printed under one of
+    # those disguises against the pokemon that actually received it.  Strictly
+    # after span inference, which reads `item_gains` as evidence.
+    try:
+        _reattribute_disguised_item_gains(reveals)
+    except Exception:
+        pass
     if exact_teams is None:
         # real-ladder logs have no sidecar to prove Illusion spans with; mark
         # the protocol-undecidable ones so the turn evaluator refuses instead
@@ -4543,6 +4639,19 @@ def _fire_turn(
 
         try:
             damage_membership.apply_exact_teams(snap, user_pid, exact_teams)
+        except Exception:
+            pass
+    # ...and drop any item a pokemon holds ONLY because the protocol printed the
+    # acquisition under its face while a Zoroark wore it.  Placed after the
+    # sidecar fill so the pokemon is on the roster, and re-running the fill here
+    # is what restores its true hold (`apply_exact_team` only touches UNKNOWN).
+    if reveals is not None:
+        try:
+            _undo_disguised_item_misattribution(snap.opponent, opp_pid, reveals)
+            if exact_teams is not None:
+                from fp.replay import damage_membership
+
+                damage_membership.apply_exact_teams(snap, user_pid, exact_teams)
         except Exception:
             pass
     try:

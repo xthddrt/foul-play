@@ -594,6 +594,21 @@ def consume(
         return False
 
     if pending == "endeavor":
+        # A `-damage` line that moved NO HP is not a LANDED Endeavor.  PS prints
+        # the line from the move's own damage step even when an onDamage handler
+        # ate the entire hit: Ice Face returns 0 and the target is re-printed at
+        # its current HP (`|-activate|p1a: Eiscue|ability: Ice Face` followed by
+        # `|-damage|p1a: Eiscue|274/274`, data/abilities.ts iceface onDamage).
+        # `target.hp == attacker.hp` was therefore never established, and pinning
+        # it copies the UNTOUCHED target's HP onto the attacker.  synth211526 T6:
+        # Luvdisc was certified to Eiscue's full 274 (clamped to 248/247) while
+        # it was really at 58%, which shrank T7's Endeavor from 175 to 73 and
+        # left Eiscue above the Sitrus threshold it actually crossed -- so both
+        # the `-enditem|p1a: Eiscue|Sitrus Berry|[eat]` and its `-heal` were
+        # unreachable in every branch.  Refusing only ever gives up exactness, it
+        # can never pin a wrong value.
+        if prior_hp is not None and int(prior_hp) == int(target.hp):
+            return False
         # target.hp == attacker.hp -- symmetric, so knowledge flows either way.
         # Only an ABSOLUTE-exact side may donate: a max-relative certificate's
         # integer is a function of ITS OWN guessed max, and copying it across
