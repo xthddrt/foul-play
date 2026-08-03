@@ -1891,15 +1891,31 @@ def _apply_slot_tera(battler, pid, reveals, turn) -> None:
         active.terastallized = False
 
 
-def _entering_occupancy(reveals, pid: str, turn: int):
-    """The slot occupancy this turn's switch OPENS.  `start_turn` is the turn during
-    whose RESOLUTION the mon walked in, so `start_turn == turn` is exactly the window
-    `_occupancy_covering`'s half-open test excludes.  The LAST match wins."""
-    found = None
-    for occ in (reveals or {}).get("occupancies", ()):
-        if occ["pid"] == pid and occ["start_turn"] == turn:
-            found = occ
-    return found
+def _entering_occupancies(reveals, pid: str, turn: int):
+    """EVERY slot occupancy this turn's resolution OPENS, in protocol order.
+    `start_turn` is the turn during whose RESOLUTION the mon walked in, so
+    `start_turn == turn` is exactly the window `_occupancy_covering`'s half-open
+    test excludes.
+
+    A turn can open MORE THAN ONE occupancy on a side: the mon the turn's action
+    switches in, and -- if that mon is KO'd during the same turn -- the faint
+    replacement that walks in before `|turn|N+1`.  Returning only the last of
+    them (as this used to) hid the first entrant entirely.  synth173111 T13: p2
+    switches in a Zoroark-Hisui wearing Oranguru's face whose own |switch| line
+    carries `tera:Normal`, Superpower KOs it, and Ninetales replaces it in the
+    same block -- the Ninetales occupancy shadowed the Zoroark one, so the
+    entrant stayed un-tera'd (Normal/GHOST instead of pure Normal) and the
+    Fighting move was reconstructed as IMMUNE: no damage, and therefore none of
+    the Contrary-inverted +1 Atk / +1 Def self-boosts that were observed.
+
+    Consumers apply each occupancy to the reserve mon it names, so two entrants
+    on the same turn no longer collide; two occupancies naming the SAME mon keep
+    last-wins by virtue of iteration order."""
+    return [
+        occ
+        for occ in (reveals or {}).get("occupancies", ())
+        if occ["pid"] == pid and occ["start_turn"] == turn
+    ]
 
 
 def _apply_entrant_tera(battler, pid, reveals, turn) -> None:
@@ -1931,33 +1947,31 @@ def _apply_entrant_tera(battler, pid, reveals, turn) -> None:
     occupancy and put through `_illusion_switch_target`, so a disguised entrant lands on
     the reserve slot the engine will actually switch in (the bearer), not on the
     disguise species' real owner."""
-    occ = _entering_occupancy(reveals, pid, turn)
-    if occ is None:
-        return
-    species = _illusion_switch_target(reveals, pid, turn, occ.get("species"))
-    if not species:
-        return
-    want = _species_key(species)
-    pkmn = None
-    for cand in getattr(battler, "reserve", ()):
-        if _species_key(cand.name) == want:
-            pkmn = cand
-            break
-    if pkmn is None:
-        return
-    if occ.get("entry_tera"):
-        # `getFullDetails` appends `tera:` iff the pokemon ACTUALLY entering is
-        # terastallized (sim/pokemon.ts:544-553), so this is decisive for the entrant
-        pkmn.tera_type = occ["entry_tera"]
-        pkmn.terastallized = True
-    elif occ.get("tera_during"):
-        # the |-terastallize| lands mid-resolution, after the switch: the mon walks in
-        # un-tera'd and the engine applies the tera from the ACTION, but the type must
-        # be known for that application to resolve
-        pkmn.tera_type = occ["tera_during"]
-        pkmn.terastallized = False
-    elif (reveals or {}).get("illusion_bearers", {}).get(pid):
-        pkmn.terastallized = False
+    for occ in _entering_occupancies(reveals, pid, turn):
+        species = _illusion_switch_target(reveals, pid, turn, occ.get("species"))
+        if not species:
+            continue
+        want = _species_key(species)
+        pkmn = None
+        for cand in getattr(battler, "reserve", ()):
+            if _species_key(cand.name) == want:
+                pkmn = cand
+                break
+        if pkmn is None:
+            continue
+        if occ.get("entry_tera"):
+            # `getFullDetails` appends `tera:` iff the pokemon ACTUALLY entering is
+            # terastallized (sim/pokemon.ts:544-553), so this is decisive for the entrant
+            pkmn.tera_type = occ["entry_tera"]
+            pkmn.terastallized = True
+        elif occ.get("tera_during"):
+            # the |-terastallize| lands mid-resolution, after the switch: the mon walks in
+            # un-tera'd and the engine applies the tera from the ACTION, but the type must
+            # be known for that application to resolve
+            pkmn.tera_type = occ["tera_during"]
+            pkmn.terastallized = False
+        elif (reveals or {}).get("illusion_bearers", {}).get(pid):
+            pkmn.terastallized = False
 
 
 def illusion_unresolved_turn(reveals, pid: str, turn: int) -> bool:

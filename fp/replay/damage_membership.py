@@ -2470,6 +2470,12 @@ class DamageEvent:
     # derivation; non-empty also disables the engine cross-check, whose preview
     # call reads the same stale snapshot.
     attacker_gained_volatiles: frozenset = frozenset()
+    # This hit came from a Sleep-Talk-called move (`[from] move: Sleep Talk`): the
+    # attacker is STILL asleep at damage time, so status-reading attack modifiers
+    # (Guts, Facade, Hex, ...) apply.  Passed to the engine preview so its
+    # before_move status-hiding pass -- correct for a DIRECTLY selected move -- is
+    # bypassed exactly as it is on the engine's real Sleep Talk path.
+    sleep_talk_called: bool = False
 
     @property
     def delta(self) -> int | None:
@@ -2624,6 +2630,13 @@ def extract_direct_damage_events(
                 "move": move_id,
                 "crit": False,
                 "hits": 0,
+                # PS calls Sleep Talk's inner move with the user STILL asleep
+                # (data/moves.ts sleeptalk `sleepUsable: true`: the sleep condition's
+                # onBeforeMove returns without curing), so Guts / Facade / Quick Feet /
+                # Hex still see the status.  A move the user selected DIRECTLY can only
+                # execute after it wakes.  The engine's preview export takes only a move
+                # NAME, so it has to be told which of the two this line is.
+                "sleep_talk": "[from]" in line and "sleep talk" in line.lower(),
             }
             hitcount_ctx_id = ctx_seq
             continue
@@ -2767,6 +2780,7 @@ def extract_direct_damage_events(
                             attacker_side_faints=side_faints.get(
                                 ctx["attacker"][:2], 0
                             ),
+                            sleep_talk_called=ctx["sleep_talk"],
                         )
                     )
                     ctx["crit"] = False
@@ -3452,7 +3466,11 @@ def run_for_turn(
         ):
             try:
                 _, s2_set = calculate_damage_roll_sets(
-                    state, s1_move, s2_move, s1_first
+                    state,
+                    s1_move,
+                    s2_move,
+                    s1_first,
+                    s2_sleep_talk_move=ev.sleep_talk_called,
                 )
             except BaseException:
                 counters["damage_calc_errors"] += 1
