@@ -135,29 +135,65 @@ FP_MEMBERSHIP_REPLAY=1 .venv/bin/python check_replays.py \
 
 | Round | Corpus | Findings | Warning lines |
 |---|---|---|---|
-| 1 | A | 10 (2 hard) | 2,205 |
-| 2 | B | 16 (5 hard) | 646 |
-| 3 | C | 9 (7 hard) | 107 |
+| 1 | A (holdout2) | 10 | 2,205 |
+| 2 | B (holdout3) | 16 | 646 |
+| 3 | C (holdout4) | 9 | 107 |
+| 4 | D (holdout5) | 12 | 6 |
+| 5 | 30k diag (holdout6/7/8) | 15 | 3 |
+| 6 | gate9 + 30k diag (holdout10/11/12) | 24 | 3 |
+| 7 | gate attempt 2 (holdout13-16, 40k) | 50 | 2 |
 
-**Damage has been exact in all three: ~275,000 in-scope events, 0 diverged, every
-non-lethal one at exactly +0 HP from the nearest engine roll.** The damage kernel
-is correct; what remains is the long tail of rare effects.
+**~106 root causes fixed across 11 waves. All 101 finding games verify clean
+simultaneously.** Engine suite: 1889 passing.
 
-26 root causes fixed and verified so far (see the two fork commit messages for the
-full list). Notable classes: whole categories of injected secondaries dropped by
-Tri Attack/Dire Claw; Zoroark Illusion leaking moves AND items AND stats into the
-impersonated species; onUpdate berries (Leppa, Chesto) having no evaluation site;
-`stats_raised` wrongly treated as un-forwardable.
+**Damage has never diverged**: ~2.5M in-scope events across every sweep, one
+histogram bucket (+0 HP). The single `diverged` ever recorded was a CHECKER bug
+(a mid-battle sidecar dump carrying Minior-Meteor's stats for a Minior-Core).
+
+**Corpus A re-sweeps completely clean** (0 hard / 0 soft / 0 warnings / 0
+diverged over 10,000 games) — the first spotless 10k sweep. It does NOT count
+toward the gate (its games informed the fixes) but it proves the engine can
+produce one.
+
+**Two gate attempts have failed.** Attempt 1 (gate9): 7 findings. Attempt 2
+(40k): 50 findings — but roughly half traced to ONE self-inflicted regression
+(see below).
+
+### THE TWO PROCESS LESSONS (read these before running another wave)
+
+1. **A fix can break a NEW class, invisibly.** Wave 9 removed Judgment's plate
+   typing from `modify_choice`, correctly noting PS types it by the held plate
+   — but the plate handlers in `items.rs` run AFTER the defender-ability pass,
+   so Judgment stayed NORMAL when Levitate / Sap Sipper / Storm Drain /
+   Lightning Rod checked it. 14 immunity findings plus most boost findings, all
+   from one deletion. The 75-game targeted regression could not see it, because
+   it only re-checks games we had already found.
+   **=> After every wave, ALSO re-sweep one previously-clean 10k corpus.**
+   Costs ~$0.50 and ~15 min. It would have caught this immediately.
+
+2. **Parallel agents collide on shared code.** Twice, two agents independently
+   implemented the same fix in different places: Relic Song's forme flip (the
+   two applications CANCELLED, a net no-op) and Judgment's typing arm
+   (duplicate match arms). The `old_string`-uniqueness check in
+   `scratchpad/apply_patches.py` catches the second application, but the first
+   one has already landed.
+   **=> Give each agent explicit ownership of a file/function, or serialise
+   agents whose clusters touch the same code.**
+
+### DISK
+
+19 corpora at ~1.5 GB each filled the 228 GB disk and silently killed a
+generation run. Fixed by: deleting local tarballs (all in S3), deleting the
+local 1M-game dataset (in S3), and pruning each consumed corpus to only the
+games `verify_all.sh` replays. **Prune each corpus right after its findings
+are diagnosed** — every corpus is byte-for-byte regenerable from its seed
+range via `gen_corpus.js --start <seed>`.
 
 ### IN FLIGHT right now
 
-- **Wave 5** (workflow `wf_4a802a29-5d4`): 5 Opus agents diagnosing corpus C's 9
-  findings + 107 warnings. Clusters: White Herb self-drop trio (synth84252 t18),
-  Encore (synth86252 t8), immunity pair (synth87046 t12/t14 — NEW category,
-  suspect the just-added Trace-on-foe-switch-in interacting with immunity gates),
-  Choice Specs loss + 2 heals, and tracker warnings (Dancer move attribution +
-  one loud `survival_contradiction`).
-- **Corpora E/F/G** generating locally.
+- Gate attempt 3 corpora generating: holdout17/18/19 done (10k each),
+  holdout20 in progress. Seeds 210001-250000, all unseen.
+- Nothing else pending on Track A; all known findings are fixed and verified.
 
 ### Next actions for Track A
 
