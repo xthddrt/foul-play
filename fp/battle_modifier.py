@@ -1927,6 +1927,56 @@ def move(battle, split_msg):
             _switch_active_with_zoroark_from_reserves(side, zoroark_from_reserves)
             pkmn = zoroark_from_reserves
 
+    # SIDECAR-PROVEN disguise whose bearer is UNREVEALED.  Same two-legged
+    # proof as above, but the bearer has no reserve object yet (PS prints
+    # |replace| only when the disguise takes a damaging hit,
+    # data/abilities.ts:2066-2077), so `zoroark_from_reserves` is None and the
+    # block above cannot fire; `_record_used_move` then merely DROPS the move
+    # and leaves the disguise standing, so the whole stay's hp trajectory is
+    # banked on the real party member at switch-out.  synth399259: an
+    # unrevealed Zoroark wore Cramorant's face for a full stay and banked
+    # Cramorant at 100%; the REAL Cramorant's later re-entry at 69% read as an
+    # impossible off-field drop, was mistaken for the (by then revealed)
+    # Zoroark, and its Brave Bird was computed at the Zoroark's L83 (max roll
+    # 64 vs the true L86 set containing the observed 67) -- the first damage
+    # divergence in corpus history, plus 22 "More than 4 moves" evictions from
+    # the same object confusion.  Construct the bearer from the sidecar record
+    # (the roster IS ground truth here) and swap it in, exactly like the
+    # revealed path.
+    if (
+        is_opponent(battle, split_msg)
+        and not zoroark_inference_allowed(battle)
+        and zoroark_from_reserves is None
+        and pkmn.name not in ("zoroark", "zoroarkhisui")
+        and not getattr(pkmn, "transformed_into", None)
+        and "transform" not in pkmn.volatile_statuses
+        and "from" not in split_msg[-1]
+    ):
+        shown_moves = _sidecar_moveset(battle, side, pkmn)
+        if shown_moves is not None and move_name not in shown_moves:
+            ref = getattr(battle, "exact_teams", None)
+            exact_team = (getattr(ref, "value", ref) or {}).get(side.name) or {}
+            for bearer_name in ("zoroark", "zoroarkhisui"):
+                bearer_rec = exact_team.get(bearer_name)
+                if not bearer_rec or not bearer_rec.get("level"):
+                    continue
+                bearer_moves = {
+                    normalize_name(m) for m in (bearer_rec.get("moves") or ())
+                }
+                if move_name not in bearer_moves:
+                    continue
+                logger.info(
+                    "{} cannot own {} but the unrevealed {} can - constructing "
+                    "the bearer and swapping it in as the active".format(
+                        pkmn.name, move_name, bearer_name
+                    )
+                )
+                bearer = Pokemon(bearer_name, bearer_rec["level"])
+                side.reserve.append(bearer)
+                _switch_active_with_zoroark_from_reserves(side, bearer)
+                pkmn = bearer
+                break
+
     # in battle factory we can deduce that there is a zoroark in front of us
     # if we see a move that is not in the known moveset and a zoroark is in the reserves
     if (
@@ -2725,6 +2775,34 @@ def _exact_team_copy(battle):
     return b
 
 
+def _tracked_hp_bounds(pkmn):
+    """Inclusive bounds on `pkmn`'s TRUE current HP, or None when nothing states
+    them.
+
+    Our own side is exact from the request JSON.  The opponent's HP is only ever
+    a `pct/100` display, which PS builds with `Math.ceil(100*hp/maxhp)`
+    (sim/pokemon.ts getHealth) -- `hp_certificate.display_bounds` inverts that
+    into the closed band the protocol actually stated, which is what an honest
+    derivation must use instead of the band's midpoint estimate `pkmn.hp`.
+    Mirrors `fp/replay/checker.py:_band_candidate_values`: the band only
+    describes the current HP while nothing OTHER than that display moved it.
+    """
+    if pkmn is None:
+        return None
+    if hp_certificate.is_exact(pkmn):
+        return int(pkmn.hp), int(pkmn.hp)
+    pct = getattr(pkmn, "hp_display_pct", None)
+    disp_hp = getattr(pkmn, "hp_display_hp", None)
+    if pct is None or disp_hp is None or int(pkmn.hp) != int(disp_hp):
+        return None
+    lo, hi = hp_certificate.display_bounds(
+        pct, int(getattr(pkmn, "max_hp", 0) or 0)
+    )
+    if hi < lo or not (lo <= int(pkmn.hp) <= hi):
+        return None
+    return lo, hi
+
+
 def _substitute_absorbed_damage_interval(battle, defending_pkmn, ctx):
     """Closed bounds ``(lo, hi)`` on the damage the Substitute just absorbed, or
     None to REFUSE (named bucket already counted).
@@ -2797,6 +2875,39 @@ def _substitute_absorbed_damage_interval(battle, defending_pkmn, ctx):
     if battle.user.active is None or battle.opponent.active is None:
         return _refuse_substitute_absorb("no_active", ctx["move"])
     b = _exact_team_copy(battle)
+    if ctx["move"] == "endeavor":
+        # Endeavor has NO roll set to ask the engine for -- and that is not a
+        # gap, it is the mechanic.  PS's `getDamage` returns
+        # `move.damageCallback.call(this.battle, source, target)` at
+        # sim/battle-actions.ts:1608, BEFORE base power, crit, rolls and every
+        # modifier, and Endeavor's callback is exactly
+        # `target.getUndynamaxedHP() - pokemon.hp` (data/moves.ts:4789-4791).
+        # `calculate_damage_rolls_full` therefore returns None for that side,
+        # which used to fall through to [no_roll_set] and widen the tracked sub
+        # to [1, prior_hi] -- discarding a value that is EXACTLY derivable.
+        # The callback's `target` is the mon BEHIND the substitute, whose own HP
+        # the absorption never moves (moves.ts:18348 subtracts from
+        # `volatiles['substitute'].hp` only), so both operands are tracked state
+        # at this instant.  And PS runs `hitStepTryImmunity`
+        # (battle-actions.ts:565, 666-675) BEFORE `hitStepMoveHitLoop` (:577),
+        # so an emitted `-activate` proves Endeavor's `onTryImmunity`
+        # (`pokemon.hp < target.hp`, moves.ts:4797-4799) held -- the damage is at
+        # least 1, which is what pins synth400950 T48 to a point: Suicune's
+        # 14/100 band on max 298 is [39, 41], Luvdisc is exactly 40, and
+        # [max(1, 39-40), 41-40] = [1, 1] (sub 74 -> 73).
+        if defending_pkmn is battle.opponent.active:
+            attacker, defender = b.user.active, b.opponent.active
+        else:
+            attacker, defender = b.opponent.active, b.user.active
+        atk_bounds = _tracked_hp_bounds(attacker)
+        def_bounds = _tracked_hp_bounds(defender)
+        if atk_bounds is None or def_bounds is None:
+            # the display band no longer describes one of the two HPs, so
+            # nothing states the subtraction: REFUSE rather than guess.
+            return _refuse_substitute_absorb("no_hp_bounds", ctx["move"])
+        lo = max(1, def_bounds[0] - atk_bounds[1])
+        hi = max(lo, def_bounds[1] - atk_bounds[0])
+        return lo, hi
     if defending_pkmn is battle.opponent.active:
         # the bot attacked the opponent's substitute
         sets, _ = poke_engine_get_damage_roll_sets(b, ctx["move"], "none", True)
@@ -3876,6 +3987,17 @@ def set_item(battle, split_msg):
             pkmn = _record_revealed_item(battle, side, pkmn, item)
             if pkmn is None:
                 return
+        consumed_early = getattr(pkmn, "consumed_before_announced", None)
+        pkmn.consumed_before_announced = None
+        if consumed_early == item and any(
+            _from_tag(split_msg).startswith(t) for t in _ITEM_SWAP_FROM_TAGS
+        ):
+            logger.info(
+                "{} consumed the {} it is now announced as receiving - "
+                "not re-arming it".format(pkmn.name, item)
+            )
+            return
+
         logger.info("Setting {}'s item to {}".format(pkmn.name, item))
         pkmn.item = item
 
@@ -3924,6 +4046,28 @@ def remove_item(battle, split_msg):
     pkmn = _record_revealed_item(battle, side, side.active, item)
     if pkmn is None:
         return
+
+    # PS can CONSUME a swap-received item BEFORE announcing the swap: Trick's
+    # onHit calls `source.setItem(yourItem)` (data/moves.ts:19894) and setItem
+    # fires the incoming item's `Start` handler synchronously
+    # (sim/pokemon.ts:1889-1892), so a White Herb landing on a mon with
+    # negative boosts is used at once -- `-enditem` + `-clearnegativeboost` --
+    # and only THEN does Trick print its `-item ... [from] move: Trick`
+    # announcement (:19895).  Replayed in log order, that trailing
+    # announcement re-arms an item PS already destroyed.  An `-enditem`
+    # naming an item this mon was NOT tracked as holding is exactly that
+    # signature (the acquisition's own line has not been processed yet);
+    # remember it so `set_item` can refuse the stale announcement.
+    # synth433706 T27: Hoopa (def-dropped and Sticky-Webbed) is Tricked
+    # Minior's White Herb and consumes it on receipt; re-arming it left
+    # Hoopa item-full, so T28's Magician steal of Minior's Leftovers -- and
+    # the observed Leftovers heal -- had no branch.
+    if (
+        pkmn.item is not None
+        and pkmn.item != constants.UNKNOWN_ITEM
+        and item != pkmn.item
+    ):
+        pkmn.consumed_before_announced = item
 
     logger.info("Removing {}'s item: {}".format(pkmn.name, item))
     pkmn.item = None
@@ -4889,6 +5033,25 @@ def cant(battle, split_msg):
                     "charge volatile".format(side.active.name, _vol)
                 )
                 remove_volatile(side.active, _vol)
+
+    # An INTERRUPTED locked move drops the lock too.  PS keeps the rampage as
+    # the `lockedmove` volatile with `duration: 2`, refreshed only by actually
+    # using the move again (onRestart, data/conditions.ts:268-272); an aborted
+    # turn never calls onRestart, so the duration expires at that turn's
+    # residual and the volatile is swept -- silently when trueDuration > 1
+    # (onEnd, :278-281).  The fatigue handler in start_volatile_status only
+    # fires on a printed `[fatigue]` confusion, so without this the lock lived
+    # forever (synth434851 T9: Iron Head flinch stops the T8 Outrage; the
+    # counter reached 5 by T13 and the engine force-ended the SECOND lock,
+    # eating the Lum Berry Poltergeist actually found).
+    if constants.LOCKED_MOVE in side.active.volatile_statuses:
+        logger.info(
+            "{}'s locked move was interrupted - removing lockedmove".format(
+                side.active.name
+            )
+        )
+        remove_volatile(side.active, constants.LOCKED_MOVE)
+        side.active.volatile_status_durations[constants.LOCKED_MOVE] = 0
 
     # |cant|p1a: Slaking|ability: Truant
     if len(split_msg) == 4 and split_msg[3] == "ability: Truant":

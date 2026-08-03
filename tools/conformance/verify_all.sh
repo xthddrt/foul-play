@@ -93,4 +93,18 @@ AE=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout32
 for g in 341522 347699; do check $AC $g; done
 for g in 350507; do check $AD $g; done
 for g in 362661 360917; do check $AE $g; done
+
+echo "=== round 12 (gate attempt 7 / wave 15) ==="
+AF=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout35
+AG=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout36
+AH=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout37
+AI=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout38
+AJ=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout39
+AK=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout40
+for g in 399259 392746; do check $AF $g; done
+for g in 400950; do check $AG $g; done
+for g in 415523; do check $AH $g; done
+for g in 423879; do check $AI $g; done
+for g in 430255 434851 431604 432482 433706; do check $AJ $g; done
+for g in 444667 445774 448732; do check $AK $g; done
 echo "GRAND TOTAL NON-CLEAN: $FAIL"

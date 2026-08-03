@@ -361,6 +361,57 @@ def _action_to_move_string(action, side: str, tera_sides: set[str]) -> str | Non
     return val
 
 
+def _resolve_switch_target(battler, species: str | None) -> str | None:
+    """Map a `|switch|` line's DISPLAY species onto the party member the
+    reconstruction actually tracks.
+
+    The switch line's details field is `getFullDetails`' rendering of the mon
+    that walked in (sim/pokemon.ts:544-552), i.e. its CURRENT forme name -- and
+    for a cosmetic forme that is the colour variant, `Minior-Yellow`, never the
+    species id `minior` the object may be stored under.  The engine resolves a
+    bare species id against the side's party by name
+    (`MoveChoice::from_string`), so any mismatch is a hard
+    `ValueError: Invalid move for s1: minioryellow` and the whole turn is
+    skipped as unbuildable.
+
+    synth448732: the user's Minior is created from the opening request as
+    `minioryellow`, switches in (T5, resolves fine), `|-formechange|`s to
+    `miniormeteor` under Shields Down, and on switch-out is banked under its
+    BASE name `minior` -- so T9's second switch-in, whose line still says
+    `Minior-Yellow`, no longer names anything in the party.
+
+    Resolution is exact-name first (so nothing that already works changes),
+    then a UNIQUE forme-family match: the pokedex entry's own `name` collapses
+    cosmetic formes onto the base species (`minioryellow` -> `minior`) and
+    `_base_species_key` collapses the real formes on top of that
+    (`miniormeteor` -> `minior`).  A randbats side never holds two members of
+    one family, so a non-unique match is left alone rather than guessed at."""
+    if not species:
+        return species
+
+    def _family(name):
+        key = _species_key(name)
+        if key is None:
+            return None
+        entry = pokedex.get(key) or {}
+        if entry.get("name"):
+            key = _species_key(normalize_name(entry["name"]))
+        return _base_species_key(key)
+
+    mons = list(battler.reserve)
+    if battler.active is not None:
+        mons.append(battler.active)
+    if any(getattr(p, "name", None) == species for p in mons):
+        return species
+    want = _family(species)
+    if want is None:
+        return species
+    matches = {p.name for p in mons if _family(getattr(p, "name", None)) == want}
+    if len(matches) == 1:
+        return next(iter(matches))
+    return species
+
+
 def _active_species(battler) -> str | None:
     if battler.active is None:
         return None
@@ -2302,6 +2353,54 @@ def _bearer_hold_superseded(reveals, pid, il, turn) -> bool:
     return rec is not None and rec[1] is not None and lo <= rec[1] < turn
 
 
+def _seed_inferred_entrant_hp(battler, pid, reveals, turn, block_lines) -> None:
+    """An inferred-Illusion switch-in enters at the BEARER's own HP.
+
+    The |switch| line's condition is the physical mon's health -- getFullDetails
+    substitutes the illusion's DETAILS but prints the entrant's own
+    `this.getHealth()` (sim/pokemon.ts:544-552) -- while the reconstruction's
+    reserve entry for the bearer still shows whatever it last held under its
+    OWN name: chip taken while disguised was booked to the disguise species'
+    object, so the bearer usually sits at full.  `_illusion_switch_target`
+    already redirects the ACTION to the bearer; without re-seeding its HP the
+    engine switches in a full-HP mon and every deficit-driven end-of-turn
+    residual is a no-op it correctly omits (synth431604 T18: "Rillaboom"
+    93/100 is the Zoroark-Hisui bearer at 93% -- chipped under an earlier
+    disguise -- and its observed Grassy Terrain heal had no branch).  The
+    shown fraction is scaled onto the bearer's own max HP; an opponent-side
+    line is /100 and an owner-side one is already over the bearer's max HP,
+    so the ratio is exact either way up to PS's percent rounding, and the
+    checks this feeds are categorical (a deficit exists / crosses a
+    threshold), not exact-HP asserts.  Called for the OPPONENT side only: the
+    user's request JSON reports the bearer's exact HP already."""
+    for il in (reveals or {}).get("illusions", ()):
+        if il["pid"] != pid or il["start_turn"] != turn or not il.get("true_species"):
+            continue
+        for line in block_lines:
+            sp = line.split("|")
+            if len(sp) < 5 or sp[1] != "switch":
+                continue
+            if sp[2].split(":")[0].strip() != pid + "a":
+                continue
+            cond = sp[4].strip().split()[0] if sp[4].strip() else ""
+            if "/" not in cond:
+                return
+            try:
+                cur, den = cond.split("/", 1)
+                frac = int(cur) / int(den)
+            except (ValueError, ZeroDivisionError):
+                return
+            for _reserve in battler.reserve:
+                if _species_key(_reserve.name) == il["true_species"]:
+                    if _reserve.max_hp and 0 < frac <= 1:
+                        _reserve.hp = min(
+                            _reserve.max_hp, round(frac * _reserve.max_hp)
+                        )
+                    return
+            return
+        return
+
+
 def _apply_illusion(battler, pid, reveals, turn) -> None:
     """Substitute a disguised Zoroark's real types onto a side's active.
     When a |replace| (or the sidecar inference above) reveals the current active
@@ -2368,6 +2467,14 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
         if not (il["start_turn"] < turn <= il["end_turn"]):
             continue
         standing_as_disguise = active_key == il["disguise"]
+        # The physical mon is the Illusion bearer, so TRUANT is never in play:
+        # battle_modifier.move() keys its truant volatile on the DISGUISE's
+        # name/ability ("slaking"/truant), so a disguised Zoroark that moved
+        # last turn carries a phantom TRUANT volatile and the engine loafs the
+        # turn PS let it act (synth444667 T2: the "Slaking" Bitter Malices two
+        # turns running; synth430255 T28: Encore then Nasty Plot).
+        if "truant" in battler.active.volatile_statuses:
+            battler.active.volatile_statuses.remove("truant")
         # the bearer's tera holds only from the turn it actually terastallized
         # (`_bearer_tera_from`), not across the whole span
         bearer_tera = il.get("bearer_tera")
@@ -4768,6 +4875,13 @@ def _fire_turn(
             u_move = _illusion_switch_target(reveals, user_pid, turn, u_move)
         if o_action is not None and o_action[0] == "switch":
             o_move = _illusion_switch_target(reveals, opp_pid, turn, o_move)
+    # ...and whatever species the switch/revive names, it must be the name the
+    # party member is actually TRACKED under or the engine call is unbuildable
+    # (see _resolve_switch_target)
+    if u_action is not None and u_action[0] in ("switch", "revive"):
+        u_move = _resolve_switch_target(snap.user, u_move)
+    if o_action is not None and o_action[0] in ("switch", "revive"):
+        o_move = _resolve_switch_target(snap.opponent, o_move)
     # Phase 2: a side whose action the protocol never names is asserted by
     # MEMBERSHIP of its legal action set instead of refusing the turn.  `plan`
     # carries, per side, how that side's candidate list is built (see
@@ -4942,6 +5056,16 @@ def _fire_turn(
         for _bt, _pid in ((snap.user, user_pid), (snap.opponent, opp_pid)):
             try:
                 _apply_illusion(_bt, _pid, reveals, turn)
+            except Exception:
+                pass
+        # ...and the bearer that walks IN during this turn is still in the
+        # reserve, so _apply_illusion never sees it; seed its HP from the
+        # entry line (see _seed_inferred_entrant_hp)
+        if o_action is not None and o_action[0] == "switch":
+            try:
+                _seed_inferred_entrant_hp(
+                    snap.opponent, opp_pid, reveals, turn, block_lines
+                )
             except Exception:
                 pass
         # sleep attempts the bearer served under someone else's name (slot-counted)
@@ -5256,6 +5380,31 @@ def _fire_turn(
             stats["hp_gate_fold_drops"] = stats.get("hp_gate_fold_drops", 0) + (
                 _before - len(turn_findings)
             )
+    if illusion_capped and turn_findings:
+        # ...and an IMMUNITY finding is not merely undecidable at HARD, it is
+        # VACUOUS: the immune/not-immune verdict is a pure function of the
+        # DEFENDER'S TYPE ARRAY, and the type array is exactly what the
+        # un-evaluated hypothesis replaces -- the two candidates are a different
+        # species with a different typing (`_apply_illusion` overwrites
+        # `active.types` from the bearer's pokedex entry for precisely this
+        # reason).  So the finding carries no information about the engine at
+        # all: it says the reconstruction guessed the species, which the turn
+        # already conceded.  synth432482 T13: p2's slot shows "Plusle" for the
+        # T12-T14 stay and again for the T14-T16 stay, and no arm of
+        # `_infer_illusion_spans` can split them -- `nastyplot` is in BOTH
+        # sidecar movesets, both hold Life Orb, the opponent-side switch line is
+        # percent-rendered so `entry_maxhp` is refused, and neither ever teras.
+        # The stay is really Zoroark-Hisui (NORMAL/GHOST, so Rapid Spin's Normal
+        # STAB is GHOST-immune, PS data/abilities.ts:2045-2059 leaves it
+        # unannounced because the disguise takes no damaging hit), but the
+        # reconstruction stands the genuine Electric Plusle there and every
+        # branch damages it.  Nothing about poke-engine is being measured.
+        _imm = [f for f in turn_findings if f.category == "immunity"]
+        if _imm:
+            turn_findings = [f for f in turn_findings if f.category != "immunity"]
+            stats["illusion_immunity_drops"] = stats.get(
+                "illusion_immunity_drops", 0
+            ) + len(_imm)
     if illusion_capped and turn_findings:
         # the un-evaluated species hypothesis (see the gate above) makes every
         # finding on this turn undecidable at HARD

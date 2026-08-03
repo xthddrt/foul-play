@@ -1197,19 +1197,60 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 # so the running hp is exact and can never exceed maxhp.
                 hp0 = ctx.side_hp.get(s)
                 mhp = (ctx.side_maxhp or {}).get(s)
+                # ...and the same arithmetic concedes the BERRY-GATE branch: an
+                # observed `[from] item: <X> Berry` heal means PS's actual roll
+                # took the holder to or below the berry's HP trigger (every
+                # gen9 HEAL berry -- Sitrus, Oran, the Figy pinch family --
+                # triggers at `hp <= maxhp / 2` at its WIDEST: sitrusberry
+                # onUpdate, and the pinch family's `hp <= maxhp/4 ||
+                # (hp <= maxhp/2 && gluttony)`, data/items.ts), while the
+                # engine's folded roll left every branch's running hp strictly
+                # ABOVE maxhp/2 -- so no branch's berry check can fire, exactly
+                # like the fainted and at-max folds above.  synth423879 T11:
+                # Tropius 244/328, Harvest restores its Sitrus in-branch
+                # (`ChangeItem NONE -> SITRUSBERRY`), Draco Meteor's folded
+                # mean 74 leaves 170 > 164 in every surviving branch while PS
+                # rolled the max 80, landing EXACTLY on 164 = 328/2 -> eat +
+                # heal after upkeep.  The roll itself is the exact-damage
+                # membership check's assertion, not this one's.  Gated on a
+                # branch actually carrying the berry (a `ChangeItem` names it:
+                # the Harvest/Recycle restore or the eat itself), so an
+                # unmodelled Harvest/berry hold still reports.
+                berry = ""
+                m_berry = re.search(r"\[from\]\s*item:\s*([^|]+)", ev.raw or "")
+                if m_berry:
+                    b_norm = _norm(m_berry.group(1))
+                    if b_norm.endswith("BERRY"):
+                        berry = b_norm
+                berry_gated = bool(
+                    berry
+                    and hp0
+                    and mhp
+                    and hp0 * 2 > mhp
+                    and _any_branch(
+                        br,
+                        lambda i: i.kind == "ChangeItem"
+                        and i.side == s
+                        and berry in _norm(i.payload or ""),
+                    )
+                )
                 if hp0 and not _any_branch(
                     br, lambda i: i.kind == "Switch" and i.side == s
                 ):
 
                     def _heal_impossible(branch):
                         hp = hp0
+                        lowest = hp0
                         for i in branch:
                             amt = i.amount() or 0
                             if i.kind == "Damage" and i.side == s:
                                 hp -= max(0, amt)
                             elif i.kind == "Heal" and i.side == s:
                                 hp += amt
-                        return hp <= 0 or (mhp is not None and hp >= mhp)
+                            lowest = min(lowest, hp)
+                        if hp <= 0 or (mhp is not None and hp >= mhp):
+                            return True
+                        return berry_gated and lowest * 2 > mhp
 
                     ok = all(_heal_impossible(b) for b in br)
             if not ok:
