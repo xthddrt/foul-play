@@ -2031,6 +2031,25 @@ def _entering_occupancies(reveals, pid: str, turn: int):
     ]
 
 
+def _entering_occupancy_is_the_disguise(reveals, pid: str, turn: int, occ) -> bool:
+    """True when `occ` is the stay the Illusion span opening at `turn` is ABOUT.
+
+    A span's window CLOSES at the bearer's own exit, so the disguised occupancy never
+    outlives it -- while a faint-replacement that entered on the same turn under the same
+    species does.  (`_infer_illusion_spans` may EXTEND `end_turn` past the occupancy on the
+    user side, where the reconstruction goes on standing as the disguise after the
+    |replace|, hence `<=` rather than `==`.)"""
+    for il in (reveals or {}).get("illusions", ()):
+        if (
+            il["pid"] == pid
+            and il["start_turn"] == turn
+            and il["disguise"] == occ.get("species")
+            and il.get("true_species")
+        ):
+            return occ.get("end_turn", turn) <= il["end_turn"]
+    return False
+
+
 def _apply_entrant_tera(battler, pid, reveals, turn) -> None:
     """`_apply_slot_tera`'s missing twin for the mon that walks IN during this turn.
 
@@ -2061,7 +2080,23 @@ def _apply_entrant_tera(battler, pid, reveals, turn) -> None:
     the reserve slot the engine will actually switch in (the bearer), not on the
     disguise species' real owner."""
     for occ in _entering_occupancies(reveals, pid, turn):
-        species = _illusion_switch_target(reveals, pid, turn, occ.get("species"))
+        species = occ.get("species")
+        redirected = _illusion_switch_target(reveals, pid, turn, species)
+        if redirected != species and not _entering_occupancy_is_the_disguise(
+            reveals, pid, turn, occ
+        ):
+            # (pid, start_turn, species) is NOT an identity -- the same collision
+            # `_infer_illusion_spans` documents at :1704-1719.  When the revealed bearer
+            # FAINTS, its replacement enters in the same block, and if that replacement is
+            # the genuine mon of the disguise species the turn opens TWO occupancies that
+            # `_illusion_switch_target` cannot tell apart, so BOTH were redirected onto the
+            # bearer.  synth226284 T12: the real Dudunsparce-Three-Segment walks in after
+            # the Zoroark dies, carrying `tera:Ghost` on its own |switch| line, and that
+            # suffix was stamped onto the ZOROARK -- which then stood in T12's pre-state as
+            # a Ghost type, immune to the Crabominable Drain Punch that observably KO'd it,
+            # so the `[from] drain` heal existed in no branch.
+            redirected = species
+        species = redirected
         if not species:
             continue
         want = _species_key(species)
@@ -2093,6 +2128,18 @@ def illusion_unresolved_turn(reveals, pid: str, turn: int) -> bool:
     spans: the pre-state of the ENTRY turn still holds the previous occupant."""
     for start, end in ((reveals or {}).get("illusion_unresolved") or {}).get(pid, ()):
         if start < turn <= end:
+            return True
+    return False
+
+
+def illusion_unresolved_entry_turn(reveals, pid: str, turn: int) -> bool:
+    """True when a stay `_infer_illusion_spans` could prove neither a disguise nor genuine
+    STARTS on `turn` -- i.e. it is THIS turn's switch-in whose identity is undecided.
+
+    The companion to `illusion_unresolved_turn`, which covers the same stay's later turns
+    with the half-open window that excludes exactly this one."""
+    for start, _end in ((reveals or {}).get("illusion_unresolved") or {}).get(pid, ()):
+        if start == turn:
             return True
     return False
 
@@ -4818,6 +4865,28 @@ def _fire_turn(
     # finding on such a turn is HARD-decidable.  Sound (it can never manufacture
     # a hard finding) and strictly more coverage than a refusal, but it is a
     # PARTIAL handling of the class and is counted as one.
+    # ...but the ENTRY TURN of an unresolved stay is not merely undecidable at HARD, it is
+    # UNNAMEABLE.  For a RESOLVED span the correction happens on the ACTION -- `_apply_
+    # illusion` deliberately skips the entry turn (the pre-state still holds the previous
+    # occupant) and `_illusion_switch_target` switches the real mon in instead.  For a stay
+    # `_infer_illusion_spans` could decide NEITHER way that correction has no answer, and the
+    # two candidates are not a shade of the same call: a different species, typing, stats,
+    # ability and item walks into the slot, and every event of the turn resolves against it.
+    # Asserting under whichever one the protocol happened to print measures the guess, not
+    # the model, so the turn is refused under its own name -- the same "refuse rather than
+    # guess" `_infer_illusion_spans` states for the span itself.  synth213459 T14: p2's
+    # Zoroark-Hisui walks in wearing Tentacruel's face and is not |replace|d until T19, so
+    # the reconstruction stood the genuine Tentacruel there -- with LIQUID OOZE, which
+    # INVERTS Leech Seed's drain into damage on the seeder (PS data/abilities.ts liquidooze
+    # `onSourceTryHeal`), and Arboliva's observed `-heal ... [silent]` was in no branch.
+    if reveals is not None and (
+        illusion_unresolved_entry_turn(reveals, user_pid, turn)
+        or illusion_unresolved_entry_turn(reveals, opp_pid, turn)
+    ):
+        stats["turns_skipped"] += 1
+        _bump(stats, "skipped_illusion_unresolved_entry")
+        return
+
     illusion_capped = reveals is not None and (
         illusion_unresolved_turn(reveals, user_pid, turn)
         or illusion_unresolved_turn(reveals, opp_pid, turn)

@@ -720,6 +720,44 @@ def drag(battle, split_msg):
     switch_or_drag(battle, split_msg, switch_or_drag="drag")
 
 
+def _illusion_bearer_from_impossible_entry_hp(side, entrant, condition):
+    """The side's Illusion bearer, when `condition` -- the health field of a
+    |switch|/|drag| line whose DETAILS name `entrant` -- states an hp this side
+    of the field cannot possibly have reached while `entrant` sat on the bench.
+
+    Returns None unless every leg holds, so a fail is always "believe the line".
+    See the caller for the PS citations."""
+    if entrant is None or (entrant.hp or 0) <= 0 or (entrant.max_hp or 0) <= 0:
+        return None
+    bearer = side.find_pokemon_in_reserves(
+        "zoroark"
+    ) or side.find_pokemon_in_reserves("zoroarkhisui")
+    if bearer is None or bearer is entrant:
+        return None
+    if (bearer.hp or 0) <= 0 or (bearer.max_hp or 0) <= 0:
+        return None
+    # only the `pct/100` opponent display is in scope: an exact `hp/maxhp`
+    # display states the entrant's OWN max hp, which the bearer's would
+    # contradict outright and by a route this arithmetic does not model.
+    if hp_certificate.exact_display_hp(condition) is not None:
+        return None
+    try:
+        pct = int(condition.split("/")[0])
+    except (ValueError, IndexError):
+        return None
+    if pct <= 0:
+        return None
+    # an off-field GAIN is ordinary (Regenerator, Wish, Healing Wish) and is
+    # already handled below; only a DROP is impossible.
+    if hp_certificate.display_contains(entrant, pct, entrant.hp):
+        return None
+    if pct * entrant.max_hp >= entrant.hp * 100:
+        return None
+    if not hp_certificate.display_contains(bearer, pct, bearer.hp):
+        return None
+    return bearer
+
+
 def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
     if is_opponent(battle, split_msg):
         side_name = "opponent"
@@ -980,6 +1018,36 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
     nickname = split_msg[2]
     temp_pkmn = Pokemon.from_switch_string(split_msg[3], nickname=nickname)
     pkmn = side.find_pokemon_in_reserves(temp_pkmn.name)
+
+    # ILLUSION THAT THE PROTOCOL NEVER ANNOUNCES.  PS prints `|replace|` only from
+    # Illusion's onEnd, and onEnd is reached only from onDamagingHit
+    # (data/abilities.ts:2061-2065); onFaint just nulls the illusion silently
+    # (:2078-2080).  A bearer that enters disguised and dies to entry hazards or a
+    # residual -- never hit by a damaging move -- is therefore NEVER revealed, and
+    # the reconstruction kills the impersonated party member instead.
+    # The one field of the |switch| line that still tells the truth is the HEALTH:
+    # `getFullDetails` takes `details` from `pokemon.illusion` but `health` from
+    # `this.getHealth()`, i.e. the REAL entrant (sim/pokemon.ts:544-552).  Nothing
+    # in gen9 singles damages a BENCHED mon, so an entrant whose display is BELOW
+    # the hp the reconstruction banked for it cannot be that mon -- and Illusion is
+    # the only mechanism that makes PS print another species' name.  The bearer's
+    # own tracked hp must also sit inside the displayed band before we believe it.
+    # synth236572: p2's Zoroark, already revealed on T10, re-entered on T13 wearing
+    # Granbull's face at 1/100 and died to Spikes with no |replace|, so the
+    # reconstruction fainted the REAL Granbull; its genuine T22 switch-in handed
+    # the engine a 0-HP entrant that produced neither hazard chip nor the observed
+    # `-ability|Intimidate` / `-unboost|atk`.
+    if is_opponent(battle, split_msg):
+        _bearer = _illusion_bearer_from_impossible_entry_hp(side, pkmn, split_msg[4])
+        if _bearer is not None:
+            logger.info(
+                "{} cannot enter at {} (it is benched at {}/{}) - the entrant is the "
+                "disguised {}".format(
+                    pkmn.name, split_msg[4], pkmn.hp, pkmn.max_hp, _bearer.name
+                )
+            )
+            pkmn = _bearer
+            temp_pkmn = _bearer
 
     # ILLUSION entering AS THE SPECIES THAT IS ALREADY ACTIVE.  Species Clause makes
     # "the mon switching in is the species already standing on the field" impossible
