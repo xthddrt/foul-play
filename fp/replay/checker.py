@@ -130,10 +130,11 @@ def _detect_tera_sides(block_lines: list[str], user_pid: str) -> set[str]:
 def _extract_side_action(block_lines: list[str], slot: str):
     """Determine a side's real turn DECISION from the resolution block, keyed on
     its active slot ("p1a"/"p2a").  Returns ("move", move_id) | ("switch",
-    species) | None (skip: the side fainted or was prevented before acting, or a
-    forced replacement is all that's visible).  Reading the block's FIRST action
-    for the slot avoids last_used_move being clobbered by a mid-turn forced
-    faint-replacement switch (which carries the same turn number)."""
+    species) | ("revive", species) | None (skip: the side fainted or was
+    prevented before acting, or a forced replacement is all that's visible).
+    Reading the block's FIRST action for the slot avoids last_used_move being
+    clobbered by a mid-turn forced faint-replacement switch (which carries the
+    same turn number)."""
     from fp.helpers import normalize_name
 
     for line in block_lines:
@@ -142,6 +143,26 @@ def _extract_side_action(block_lines: list[str], slot: str):
             continue
         act = sp[1]
         tag = sp[2].split(":")[0].strip()
+        # REVIVAL BLESSING's continuation block.  PS asks WHICH fainted mon to
+        # revive with a mid-turn switch request (`reviving: true`), so the checker
+        # fires the rest of the turn as its own pseudo-turn whose pre-state already
+        # has `force_switch` + `revival_blessing` armed -- and the side's decision
+        # there is the REVIVE TARGET, announced only as `|-heal|p1: Chandelure|
+        # 117/235|[from] move: Revival Blessing` on the BENCH tag (no a/b slot
+        # letter), which the slot filter below never sees.  Left unnamed the turn
+        # went through the membership fan with `revivalblessing` as its primary
+        # candidate, and re-selecting the MOVE against an already-armed state
+        # TOGGLED `force_switch`/`revival_blessing` back OFF, so the engine emitted
+        # no `Revive` at all and synth202076 T24's `-heal` matched nothing.  A block
+        # that also contains the move's own `|move|` line is unaffected: that line
+        # comes first and wins.
+        if (
+            act == "-heal"
+            and tag == slot[:2]
+            and "[from] move: Revival Blessing" in line
+            and ":" in sp[2]
+        ):
+            return ("revive", normalize_name(sp[2].split(":", 1)[1].strip()))
         if tag != slot:
             continue
         if act == "move" and len(sp) >= 4:
@@ -330,7 +351,10 @@ def _action_to_move_string(action, side: str, tera_sides: set[str]) -> str | Non
     if action is None:
         return None
     kind, val = action
-    if kind == "switch":
+    if kind in ("switch", "revive"):
+        # `MoveChoice::from_string` resolves a bare pokemon id to `Switch(index)`,
+        # which is also how a revival-blessing force switch names its target (the
+        # engine answers it with `Revive`, not a Switch -- genx/generate_instructions.rs)
         return val  # bare species id for from_string
     if side in tera_sides:
         return val + "-tera"
@@ -2131,9 +2155,24 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
             # (synth67220 T5). The true reserve entry -- the same physical mon,
             # tracked separately until |replace| swaps it into `.active` --
             # already carries the exact stats.
+            #
+            # ...and so are the MOVES, for exactly the same object-identity reason:
+            # Illusion substitutes only the printed name (sim/pokemon.ts:531), never
+            # `moveSlots`, so the physical mon selects from ITS OWN set.  The
+            # reconstruction stands the disguise up with the DISGUISE species' moveset,
+            # which is not merely cosmetic -- it is the list the engine call is built
+            # from, so a move the bearer actually used is rejected outright
+            # (`ValueError: Invalid move for s2: flamethrower`) and every turn of the
+            # span is either skipped or evaluated against the wrong four moves.
+            # synth206196 T21: a Zoroark-Hisui wearing Rayquaza's face Flamethrowers
+            # Volbeat and burns it; the engine, holding Rayquaza's
+            # earthquake/dragonascent/scaleshot/swordsdance, could reproduce the turn
+            # with NO legal action (`membership 0/7`) and the `brn` was a HARD miss.
             for _reserve in battler.reserve:
                 if _species_key(_reserve.name) == il["true_species"]:
                     battler.active.stats = dict(_reserve.stats)
+                    if getattr(_reserve, "moves", None):
+                        battler.active.moves = list(_reserve.moves)
                     break
         return
 
@@ -2731,6 +2770,69 @@ def _suppress_dead_mon_residual_heals(
             (getattr(p, "hp", 0) or 0) <= 0 for p in _reserve
         ):
             battle_over_everywhere = True
+
+    # ARM D -- arm C's certificate, taken PER BRANCH.
+    #
+    # Arms B and C both quantify "the engine kills it" over ALL branches, and that
+    # quantifier is unavailable whenever the branch set contains an arm in which the
+    # dying side never ACTED: a full-paralysis or flinch arm leaves it untouched, so
+    # `_ko_margin_sides` sees the observed survival reproduced somewhere and refuses,
+    # and `dead` is false.  Those arms cannot witness the heal either, though, because
+    # the healer is left at FULL HP in them -- a residual tick on a full-HP mon is
+    # impossible in ANY simulator, PS included, so such a branch is not evidence in
+    # either direction.  With them set aside the remaining branches are exactly arm C:
+    # the folded roll kills the other side, that side's whole team is already fainted,
+    # `battle_is_over()` makes the engine drop the entire residual phase
+    # (genx/generate_instructions.rs `run_end_of_turn = !battle_decided`), and the
+    # survivor's tick is unreachable.
+    #
+    # synth195487 T96: Dipplin 114/284 par is p1's LAST mon.  Iron Head folds to its 43
+    # mean (crit arm 65), Struggle's fixed 1/4-maxhp recoil is 71, and 114-43-71 = 0 --
+    # so every arm in which Dipplin struggles kills it and ends the battle, while the
+    # arms where it is fully paralysed or flinched leave Jirachi untouched at 291/291.
+    # PS rolled the MINIMUM 40, left Dipplin at 3, and Jirachi took
+    # `|-heal|p2a: Jirachi|96/100|[from] item: Leftovers`.  The whole disagreement is
+    # the 3 HP the fold discarded.
+    #
+    # The certificate is arm B's, unchanged and still load-bearing: the protocol did NOT
+    # faint that mon and brought it to <= _KO_MARGIN_HP ABSOLUTE HP itself, so the KO
+    # provably sits inside the discarded spread rather than being an over-kill that
+    # `min(damage, hp)` flattened onto 0.  At least one branch must actually be a
+    # battle-ending one, so a turn the engine simply never resolves is not excused.
+    def _residual_phase_folded_away(heal_side: str) -> bool:
+        other = "opp" if heal_side == "user" else "user"
+        h_key, o_key = ("s1", "s2") if heal_side == "user" else ("s2", "s1")
+        h_battler = snap.user if heal_side == "user" else snap.opponent
+        h_act = u_action if heal_side == "user" else o_action
+        o_battler = snap.user if other == "user" else snap.opponent
+        o_act = u_action if other == "user" else o_action
+        h_hp = _simulated_hp(h_battler, h_act)
+        o_hp = _simulated_hp(o_battler, o_act)
+        h_max = getattr(_simulated_pokemon(h_battler, h_act), "max_hp", None)
+        if h_hp is None or o_hp is None or o_hp <= 0 or not h_max:
+            return False
+        if faints[other]:
+            return False
+        o_low = _protocol_min_exact_hp(
+            block_lines,
+            user_pid if other == "user" else opp_pid,
+            getattr(_simulated_pokemon(o_battler, o_act), "max_hp", None),
+        )
+        if o_low is None or o_low > _KO_MARGIN_HP:
+            return False
+        reserve = list(getattr(o_battler, "reserve", None) or [])
+        if len(reserve) < 5 or not all(
+            (getattr(p, "hp", 0) or 0) <= 0 for p in reserve
+        ):
+            return False
+        ended_any = False
+        for b in parsed:
+            if _branch_hp_after(b, o_key, o_hp) <= 0:
+                ended_any = True
+            elif _branch_hp_after(b, h_key, h_hp) < h_max:
+                return False
+        return ended_any
+
     for f in list(turn_findings):
         if f.category == "heal":
             sp = (f.observed or "").split("|")
@@ -2745,6 +2847,7 @@ def _suppress_dead_mon_residual_heals(
                 dead_everywhere.get(side)
                 or folded_ko.get(side)
                 or battle_over_everywhere
+                or _residual_phase_folded_away(side)
             ):
                 continue
             turn_findings.remove(f)
