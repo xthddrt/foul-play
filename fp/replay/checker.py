@@ -3853,6 +3853,14 @@ def check_log(
 
     armed = None  # {"turn": int, "snapshot": Battle, "faints", "party_order"}
     block_lines: list[str] = []
+    # PS `moveLastTurnResult` is per TURN, but blocks are per DECISION: a mid-turn
+    # decision (pivot switch target, faint replacement, Revival Blessing) splits one
+    # turn across blocks, and the split-off remainder carries no |move| lines --
+    # computing move_failed from it alone erased a failure the first half recorded
+    # (synth512309 T21: Wugtrio's -immune Stomping Tantrum, lost when Pelipper's
+    # U-turn split the block, so T22's doubled Tantrum was generated at base power).
+    # Accumulate a turn's blocks here until a |turn| line closes the turn.
+    mf_carry: list[str] = []
     first_request_seen = False
     # PS `side.totalFainted` (sim/battle.ts:2551) and `side.pokemon` order
     # (permuted on every switch-in, sim/battle-actions.ts:129-131).  Both are
@@ -3861,6 +3869,9 @@ def check_log(
     # in and the result is frozen into the NEXT armed turn.
     faints = {"p1": 0, "p2": 0}
     party_order = _initial_party_order(exact_teams)
+    # cumulative |turn| counter for `_apply_block_to_side_state`'s Illusion
+    # span lookups (harvest convention: 0 before |turn|1)
+    side_turn = [0]
 
     for chunk in chunks:
         for ln in chunk.split("\n"):
@@ -3881,14 +3892,20 @@ def check_log(
 
         if not first_request_seen:
             first_request_seen = True
-            _apply_block_to_side_state(block_lines, faints, party_order)
+            _apply_block_to_side_state(
+                block_lines, faints, party_order, reveals, side_turn
+            )
+            mf_lines = mf_carry + block_lines
             armed = {
                 "turn": battle.turn,
                 "snapshot": deepcopy(battle),
                 "faints": dict(faints),
                 "party_order": {k: list(v) for k, v in party_order.items()},
-                "move_failed": _move_failed_sides(block_lines),
+                "move_failed": _move_failed_sides(mf_lines),
             }
+            mf_carry = (
+                [] if any(ln.startswith("|turn|") for ln in block_lines) else mf_lines
+            )
             block_lines = []
             continue
 
@@ -3904,16 +3921,22 @@ def check_log(
             damage_collector=damage_collector,
             damage_tolerance=damage_tolerance,
         )
-        _apply_block_to_side_state(block_lines, faints, party_order)
+        _apply_block_to_side_state(
+            block_lines, faints, party_order, reveals, side_turn
+        )
+        mf_lines = mf_carry + block_lines
         armed = {
             "turn": battle.turn,
             "snapshot": deepcopy(battle),
             "faints": dict(faints),
             "party_order": {k: list(v) for k, v in party_order.items()},
             # PS `moveLastTurnResult` for the turn now being armed: whether each side's
-            # move FAILED in the block just consumed
-            "move_failed": _move_failed_sides(block_lines),
+            # move FAILED in the turn just consumed (ALL its blocks -- see mf_carry)
+            "move_failed": _move_failed_sides(mf_lines),
         }
+        mf_carry = (
+            [] if any(ln.startswith("|turn|") for ln in block_lines) else mf_lines
+        )
         block_lines = []
 
     stats["hp_certificate_refusals"] = len(hp_certificate.CERTIFICATE_REFUSALS)
@@ -3940,7 +3963,9 @@ def _initial_party_order(exact_teams) -> dict:
     return {pid: list((exact_teams.get(pid) or {}).keys()) for pid in ("p1", "p2")}
 
 
-def _apply_block_to_side_state(block_lines, faints: dict, party_order: dict) -> None:
+def _apply_block_to_side_state(
+    block_lines, faints: dict, party_order: dict, reveals=None, turn_state=None
+) -> None:
     """Fold one resolution block into the cumulative side state.
 
     faints: one |faint| line == one `side.totalFainted++` (sim/battle.ts:
@@ -3973,7 +3998,13 @@ def _apply_block_to_side_state(block_lines, faints: dict, party_order: dict) -> 
         if len(parts) < 3:
             continue
         action = parts[1]
-        if action == "faint":
+        if action == "turn":
+            try:
+                if turn_state is not None:
+                    turn_state[0] = int(parts[2])
+            except (ValueError, IndexError):
+                pass
+        elif action == "faint":
             pid = parts[2].split(":")[0].strip()[:2]
             if pid in faints:
                 faints[pid] += 1
@@ -3985,6 +4016,39 @@ def _apply_block_to_side_state(block_lines, faints: dict, party_order: dict) -> 
             if PARTY_ORDER_UNRESOLVED in order:
                 continue  # already unknown; nothing to keep in sync
             key = _species_key(parts[3].split(",")[0].strip())
+            # PS swaps `side.pokemon` by the mon PHYSICALLY entering
+            # (battle-actions.ts:129-131), but under Illusion this |switch|
+            # line names the DISGUISE (`getFullDetails` substitutes the
+            # illusion's details, sim/pokemon.ts:544-553), which desyncs the
+            # order Beat Up walks.  Resolve the entrant through the proven
+            # disguise spans; an entry opening a stay the sidecar could not
+            # decide poisons the order (refuse, never guess).
+            turn = turn_state[0] if turn_state else 0
+            for il in (reveals or {}).get("illusions", ()):
+                if (
+                    il["pid"] == pid
+                    and il["disguise"] == key
+                    and il["start_turn"] == turn
+                    and not il.get("_order_swap_applied")
+                ):
+                    il["_order_swap_applied"] = True
+                    key = il["true_species"]
+                    break
+            else:
+                # only while the bearer can still disguise at all: a fainted
+                # bearer cannot re-apply Illusion (data/abilities.ts illusion
+                # onFaint), so later entries are genuine.
+                bearer = (reveals or {}).get("illusion_bearers", {}).get(pid)
+                bearer_faint = (reveals or {}).get("faint_turns", {}).get(
+                    (pid, bearer)
+                )
+                if bearer is not None and (
+                    bearer_faint is None or turn <= bearer_faint
+                ):
+                    unresolved = (reveals or {}).get("illusion_unresolved") or {}
+                    if any(start == turn for start, _ in unresolved.get(pid, ())):
+                        order.append(PARTY_ORDER_UNRESOLVED)
+                        continue
             slot = resolve_party_slot(order, key)
             if slot is None:
                 order.append(PARTY_ORDER_UNRESOLVED)
@@ -4180,6 +4244,21 @@ def _evaluate_turn(
     except Exception:
         side_maxhp = {}
         side_hp = {}
+    # turn-start held item of each side's active (normalized, e.g. "SITRUSBERRY"):
+    # lets the berry-gate concessions require that the engine state actually HOLDS
+    # the berry the protocol shows eaten, without needing an in-branch ChangeItem
+    side_item: dict = {}
+    try:
+        side_item = {
+            "s1": _norm(
+                str(state.side_one.pokemon[_index_int(state.side_one.active_index)].item)
+            ),
+            "s2": _norm(
+                str(state.side_two.pokemon[_index_int(state.side_two.active_index)].item)
+            ),
+        }
+    except Exception:
+        side_item = {}
     ctx = TurnContext(
         turn=turn,
         branches=parsed,
@@ -4189,6 +4268,7 @@ def _evaluate_turn(
         pre_volatiles=pre_volatiles,
         side_maxhp=side_maxhp,
         side_hp=side_hp,
+        side_item=side_item,
         phase_split=phase_split,
         phase2_line_index=phase2_line_index,
     )
@@ -4542,8 +4622,14 @@ def _legal_action_strings(state, side_key: str, tera: bool) -> list[str]:
 
     Derivation: every move id in the active's reconstructed 4-slot moveset, plus
     every non-active party member with hp > 0 (a switch is named by bare species
-    id -- genx/state.rs:118-125).  Struggle is added only when the moveset is
-    empty, which is exactly when PS offers it (sim/pokemon.ts:1109-1112).
+    id -- genx/state.rs:118-125).  Struggle is ALWAYS kept as a non-tera
+    candidate: PS offers it whenever NO move survives the usability filter
+    (sim/pokemon.ts:1109-1112) -- an empty moveset, but ALSO e.g. a Choice-locked
+    mon whose locked move hit 0 PP (synth496550 T9: scarfed Imposter Ditto locked
+    into a 0-PP Protect had ONLY Struggle; Sucker Punch legitimately fails against
+    every reconstructed status/switch candidate, so the observed Moxie +1 Atk
+    reproduced in no branch).  Usability is a reconstruction product, so
+    over-approximate.
 
     Deliberately NOT filtered by PP or `disabled`: those are reconstruction
     products, and dropping a candidate the reconstruction got wrong could make
@@ -4566,7 +4652,7 @@ def _legal_action_strings(state, side_key: str, tera: bool) -> list[str]:
         if not mid or mid == "none":
             continue
         out.append(mid + "-tera" if tera else mid)
-    if not out:
+    if not out or not tera:
         out.append("struggle")
     if not tera:
         for i, p in enumerate(side.pokemon):

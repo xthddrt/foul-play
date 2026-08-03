@@ -177,6 +177,9 @@ class TurnContext:
     user_move: str = ""
     opp_move: str = ""
     notes: list[str] = field(default_factory=list)
+    # turn-start held item of each engine side's active, keyed "s1"/"s2",
+    # normalized ("SITRUSBERRY"); absent = the held-item berry-gate is skipped.
+    side_item: dict = field(default_factory=dict)
     # normalized volatile names each engine side ALREADY holds at turn start,
     # keyed "s1"/"s2".  A protocol `-start` for one of these is a PS condition
     # `onRestart` re-emission (e.g. Charge re-announced by Electromorphosis on a
@@ -225,6 +228,24 @@ def _norm(s: str) -> str:
     """Uppercase, strip everything non-alphanumeric: 'Heal Block' -> 'HEALBLOCK',
     'move: Leech Seed' handled by _clean upstream -> 'LEECHSEED'."""
     return re.sub(r"[^A-Z0-9]", "", s.upper())
+
+
+# The gen9 heal berries whose EAT is purely an HP threshold (`hp <= maxhp/2` at its
+# widest: sitrusberry/oranberry onUpdate, and the Figy pinch family's
+# `hp <= maxhp/4 || (hp <= maxhp/2 && gluttony)`, data/items.ts).  Used by the
+# berry-gate concessions: an eat of one of these that PS observed but no engine
+# branch's running hp can reach is roll/crit fold selection, not a fidelity gap.
+_HP_THRESHOLD_HEAL_BERRIES = frozenset(
+    (
+        "SITRUSBERRY",
+        "ORANBERRY",
+        "FIGYBERRY",
+        "WIKIBERRY",
+        "MAGOBERRY",
+        "AGUAVBERRY",
+        "IAPAPABERRY",
+    )
+)
 
 
 # Volatiles the engine actually tracks as ApplyVolatileStatus (PokemonVolatileStatus
@@ -515,7 +536,18 @@ def _fold_faint_blocks_volatile(ctx, s) -> bool:
             if i.kind == "Damage" and i.source in ("move", "recoil"):
                 net[i.side] -= max(0, i.amount() or 0)
             elif i.kind == "Heal":
-                net[i.side] += max(0, i.amount() or 0)
+                # A NEGATIVE Heal is poke-engine's encoding of IN-MOVE HP LOSS: Life Orb
+                # recoil and every negative `choice.heal` self-cost ride
+                # `Instruction::Heal` with a negative amount (genx/generate_instructions.rs
+                # :4943-4974, `Effect::Heal(heal_amount)` -> get_instructions_from_heal),
+                # never `Instruction::Damage`.  Clamping it to 0 hid exactly the faint this
+                # predicate exists to recognise -- synth493441 T38: Sawsbuck 6/284 behind a
+                # Life Orb, engine survivor-mean Horn Leech 43 -> drain +22 -> 28, orb -28
+                # -> 0 in branch 0, while branch 1 (the crit arm) KOs Uxie before it moves,
+                # so Uxie's Yawn lands in NEITHER branch -- yet PS's own roll (48 -> drain
+                # +24 -> 30 -> -28 = 2) left both alive.  End-of-turn chips stay excluded:
+                # they are `Damage` with a non-move source, not Heals.
+                net[i.side] += i.amount() or 0
         s_down, o_down = net[s] <= 0, net[o] <= 0
         if not s_down and not o_down:
             return False
@@ -844,6 +876,45 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 br,
                 lambda i: i.kind == "ChangeItem" and i.side == s,
             )
+            if not ok:
+                # BERRY-GATE concession, the item-side twin of the heal arm's
+                # `berry_gated` fold below: an `[eat]` of an HP-threshold heal
+                # berry exists only because PS's actual roll/crit path pushed the
+                # holder to <= maxhp/2 (the gate at its widest), so when running-hp
+                # arithmetic shows EVERY branch staying strictly above that gate,
+                # no branch can carry the ChangeItem any more than it can the Heal
+                # -- roll selection inside the damage fold, separately asserted by
+                # the exact-damage membership check, not a fidelity gap.  Gated on
+                # the engine state actually HOLDING the named berry at turn start,
+                # so an unmodelled hold still reports.
+                lost = _norm(ev.detail or "")
+                hp0_i = (ctx.side_hp or {}).get(s)
+                mhp_i = (ctx.side_maxhp or {}).get(s)
+                if (
+                    "[eat]" in ev.raw
+                    and lost in _HP_THRESHOLD_HEAL_BERRIES
+                    and lost == _norm((ctx.side_item or {}).get(s) or "")
+                    and hp0_i
+                    and mhp_i
+                    and hp0_i * 2 > mhp_i
+                    and not _any_branch(
+                        br, lambda i: i.kind == "Switch" and i.side == s
+                    )
+                ):
+
+                    def _eat_unreachable(branch):
+                        hp = hp0_i
+                        lowest = hp0_i
+                        for i in branch:
+                            amt = i.amount() or 0
+                            if i.kind == "Damage" and i.side == s:
+                                hp -= max(0, amt)
+                            elif i.kind == "Heal" and i.side == s:
+                                hp += amt
+                            lowest = min(lowest, hp)
+                        return lowest * 2 > mhp_i
+
+                    ok = all(_eat_unreachable(b) for b in br)
             if not ok:
                 # A berry self-consumed on an HP threshold (`-enditem ... [eat]`,
                 # e.g. Sitrus at <=50% max HP) fires only when HP crosses the gate,
@@ -1222,16 +1293,37 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                     b_norm = _norm(m_berry.group(1))
                     if b_norm.endswith("BERRY"):
                         berry = b_norm
+                held = _norm((ctx.side_item or {}).get(s) or "")
+                # Cheek Pouch's heal (data/abilities.ts cheekpouch onEatItem)
+                # exists only DOWNSTREAM of a berry eat: when the holder's berry
+                # is an HP-threshold heal berry whose eat the arithmetic below
+                # proves unreachable in every branch, this row is the same fold
+                # artifact as the `[from] item:` row it accompanies (synth496254
+                # T17: crit Beat Up + tox chip took PS's Greedent to 169 <= 173
+                # while every pinned-roll branch bottomed at 176).
+                if not berry and "ability: Cheek Pouch" in (ev.raw or ""):
+                    if held in _HP_THRESHOLD_HEAL_BERRIES:
+                        berry = held
+                # ...and the gate accepts the engine state HOLDING the berry at
+                # turn start (`held == berry`) as the carry evidence: a berry
+                # held from turn start whose gate no branch reaches produces no
+                # ChangeItem anywhere, yet the hold is exactly as modelled as a
+                # Harvest restore (synth513550 T18: double-crit Triple Axel +
+                # Substitute cost took PS's Tauros to 114 <= 126 while every
+                # branch bottomed at 136).  An unmodelled hold still reports.
                 berry_gated = bool(
                     berry
                     and hp0
                     and mhp
                     and hp0 * 2 > mhp
-                    and _any_branch(
-                        br,
-                        lambda i: i.kind == "ChangeItem"
-                        and i.side == s
-                        and berry in _norm(i.payload or ""),
+                    and (
+                        held == berry
+                        or _any_branch(
+                            br,
+                            lambda i: i.kind == "ChangeItem"
+                            and i.side == s
+                            and berry in _norm(i.payload or ""),
+                        )
                     )
                 )
                 if hp0 and not _any_branch(
@@ -1253,6 +1345,50 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                         return berry_gated and lowest * 2 > mhp
 
                     ok = all(_heal_impossible(b) for b in br)
+                # ...and the same arithmetic concedes the CROSS-SIDE SAP branch, the
+                # fainted fold ONE SIDE OVER.  Leech Seed pays the seeder out of the
+                # seeded mon -- `this.damage(...)` then `this.heal(damage, target,
+                # pokemon)` (PS data/moves.ts:10220-10229, leechseed condition
+                # onResidual) -- and `Battle#heal` prints that credit as an UNTAGGED
+                # `[silent]` `-heal` on the seeder.  poke-engine models the sap the
+                # same way but skips it whole when either mon is already down
+                # (generate_instructions.rs leech-seed residual: `if active_pkmn.hp
+                # == 0 || other_active_pkmn.hp == 0 { continue }`), so when the damage
+                # fold faints the OTHER side's active in every branch while PS's
+                # actual roll left it alive to be sapped, no branch can carry this
+                # Heal -- exactly like the fainted / at-max / berry-gate folds above.
+                # synth483004 T24 (holdout44): Archaludon 62 hp, folded Psychic Fangs
+                # 18 + fixed 1/6 Rocky Helmet 44 == 62 in every branch (55 + capped 7
+                # in the high arm) while PS rolled 17 and left it at 1 for Leech Seed
+                # to sap into Solgaleo.  The roll itself is the exact-damage
+                # membership check's assertion, not this one's.  Gated on an UNTAGGED
+                # `[silent]` heal so every attributed heal (`[from] item: ...`,
+                # `[from] move: ...`, `[from] drain`, `[from] ability: ...`) still
+                # reports, and skipped when a branch switches that side in.
+                if (
+                    not ok
+                    and "[silent]" in (ev.raw or "")
+                    and "[from]" not in (ev.raw or "")
+                ):
+                    sap_side = "s2" if s == "s1" else "s1"
+                    sap_hp0 = ctx.side_hp.get(sap_side)
+                    if sap_hp0 and not _any_branch(
+                        br, lambda i: i.kind == "Switch" and i.side == sap_side
+                    ):
+
+                        def _sap_source_dead(branch):
+                            hp = sap_hp0
+                            for i in branch:
+                                if i.side != sap_side:
+                                    continue
+                                amt = i.amount() or 0
+                                if i.kind == "Damage":
+                                    hp -= max(0, amt)
+                                elif i.kind == "Heal":
+                                    hp += amt
+                            return hp <= 0
+
+                        ok = all(_sap_source_dead(b) for b in br)
             if not ok:
                 findings.append(
                     Finding(

@@ -3208,6 +3208,11 @@ def prepare(battle, split_msg):
         )
         pkmn.volatile_statuses.append(being_prepared)
 
+    # timestamp for the |turn| expiry in `turn()`: PS's `twoturnmove` condition
+    # carries `duration: 2` and `onMoveAborted` (data/conditions.ts:287-323), so
+    # the move-named charge volatile can never outlive the turn AFTER the charge
+    pkmn.charge_volatile_turn = {being_prepared: battle.turn}
+
 
 def terastallize(battle, split_msg):
     if is_opponent(battle, split_msg):
@@ -4214,9 +4219,19 @@ def remove_item(battle, split_msg):
         logger.info("Setting {}'s removed item to {}".format(pkmn.name, item))
         pkmn.removed_item = item
 
-    if "unburden" not in pkmn.volatile_statuses and "unburden" in [
-        normalize_name(a) for a in pokedex[pkmn.name][constants.ABILITIES].values()
-    ]:
+    # PS hangs onTakeItem/onAfterUseItem on the Unburden ABILITY OBJECT itself
+    # (data/abilities.ts:5228-5234), so the volatile arms off the mon's ACTUAL
+    # ability -- a TRACED / Skill-Swapped / Role-Played Unburden counts even though
+    # the species can never roll it.  The pokedex list is only the fallback proxy
+    # used while the real ability is still unknown (opponent side).
+    # synth471912 T4: Gardevoir Traced Hawlucha's Unburden and Tricked its Choice
+    # Scarf away on T3; without the volatile it stayed at 180 instead of 360 and
+    # lost the turn order that lets it Trick the Scarf back.
+    if "unburden" not in pkmn.volatile_statuses and (
+        normalize_name(pkmn.ability or "") == "unburden"
+        or "unburden"
+        in [normalize_name(a) for a in pokedex[pkmn.name][constants.ABILITIES].values()]
+    ):
         logger.info("Adding unburden volatile to {}".format(pkmn.name))
         pkmn.volatile_statuses.append("unburden")
 
@@ -5967,6 +5982,31 @@ def turn(battle, split_msg):
         if side.active is not None:
             side.active.moved_this_turn = False
             side.active.active_turns += 1
+
+    # Expire stale two-turn charge volatiles. PS's `twoturnmove` condition has
+    # `duration: 2` and `onMoveAborted` (data/conditions.ts:287-323), so an
+    # ABORTED release (confusion self-hit, full para, sleep, flinch) still loses
+    # the move-named volatile by the end of the release turn. This tracker only
+    # strips it on the release's |move| line, so an aborted release kept it
+    # forever and the mon's NEXT fresh charge was reconstructed as a RELEASE
+    # (synth500078: T5 Meteor Beam charge, T6 confusion self-hit, stale
+    # 'meteorbeam' at T9 -> the engine ran the release arm on the new charge
+    # turn and the observed charge +1 SpA matched no branch). Keep the volatile
+    # through the release turn (turn == prepared + 1); anything older is gone in
+    # PS with certainty.
+    for side in (battle.user, battle.opponent):
+        pkmn = side.active
+        if pkmn is None:
+            continue
+        prepared = getattr(pkmn, "charge_volatile_turn", {})
+        for vs in list(pkmn.volatile_statuses):
+            if all_move_json.get(vs, {}).get("flags", {}).get("charge") and (
+                battle.turn > prepared.get(vs, battle.turn - 2) + 1
+            ):
+                logger.info(
+                    "Expiring stale charge volatile {} on {}".format(vs, pkmn.name)
+                )
+                remove_volatile(pkmn, vs)
 
 
 def noinit(battle, split_msg):
