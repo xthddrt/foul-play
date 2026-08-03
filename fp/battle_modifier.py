@@ -38,11 +38,23 @@ from fp.helpers import (
 )
 from fp.battle import boost_multiplier_lookup
 from fp import hp_certificate
+from fp.inference import (
+    MOVE_END_STRINGS,
+    can_have_priority_modified,
+    can_have_speed_modified,
+    is_opponent,
+    get_move_information,
+    check_speed_ranges,
+    check_opponent_hiddenpower,
+    check_choicescarf,
+    get_damage_dealt,
+    update_dataset_possibilities,
+    check_heavydutyboots,
+)
 
 
 logger = logging.getLogger(__name__)
 
-MOVE_END_STRINGS = {"move", "switch", "upkeep", "-miss", ""}
 ITEMS_REVEALED_ON_SWITCH_IN = [
     # boosterenergy technically only revealed if pkmn has quarkdrive/protosynthesis
     # but if they don't have that it doesn't matter
@@ -141,6 +153,46 @@ SELF_COST_DAMAGE_MOVES = {
 }
 
 
+
+# --- opponent-model ledger -------------------------------------------------
+OPPONENT_LEDGER_PATH = "/Users/sallyliu/pokemon-fast-bot/opponent_ledger.jsonl"
+
+
+def record_opponent_action(battle, event, actual):
+    """Join the search's opponent prediction with what the opponent actually
+    did and append to the ledger. Ground truth for opponent-model calibration
+    (switch keeps, veto gaps, entry intent). Rows with pred=None mean no
+    search preceded the action (e.g. first turn, mid-turn forced switches).
+    """
+    try:
+        from fp.search import selection
+
+        pred = selection.last_opponent_prediction
+        stale = (
+            not pred
+            or pred.get("battle_tag") != getattr(battle, "battle_tag", None)
+            or pred.get("turn") != battle.turn
+        )
+        row = {
+            "battle_tag": getattr(battle, "battle_tag", None),
+            "turn": battle.turn,
+            "event": event,
+            "actual": actual,
+            "opp_active": getattr(battle.opponent.active, "name", None),
+            "opp_name": getattr(battle.opponent, "account_name", None),
+            "opp_elo": getattr(battle.opponent, "account_rating", None),
+            "our_active": getattr(battle.user.active, "name", None),
+            "pred": None if stale else pred.get("dist"),
+            "our_choice": None if stale else pred.get("our_choice"),
+            "our_mcts_score": None if stale else pred.get("our_mcts_score"),
+        }
+        with open(OPPONENT_LEDGER_PATH, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:
+        logger.debug("opponent ledger write failed", exc_info=True)
+
+
+
 def crit_rate_for_generation(generation):
     if generation == "gen1":
         return 205 / 105
@@ -153,93 +205,6 @@ def crit_rate_for_generation(generation):
         return 2.0
     else:
         return 1.5
-
-
-def can_have_priority_modified(battle, pokemon, move_name):
-    return (
-        "prankster"
-        in [
-            normalize_name(a)
-            for a in pokedex[pokemon.name][constants.ABILITIES].values()
-        ]
-        or (move_name == "grassyglide" and battle.field == constants.GRASSY_TERRAIN)
-        or (
-            move_name in all_move_json
-            and all_move_json[move_name][constants.CATEGORY] == constants.STATUS
-            and "myceliummight"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-    )
-
-
-def can_have_speed_modified(battle, pokemon):
-    return (
-        (
-            pokemon.item is None
-            and "unburden"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-        or (
-            battle.weather == constants.RAIN
-            and pokemon.ability is None
-            and "swiftswim"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-        or (
-            battle.weather == constants.SUN
-            and pokemon.ability is None
-            and "chlorophyll"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-        or (
-            battle.weather == constants.SAND
-            and pokemon.ability is None
-            and "sandrush"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-        or (
-            battle.weather in constants.HAIL_OR_SNOW
-            and pokemon.ability is None
-            and "slushrush"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-        or (
-            battle.field == constants.ELECTRIC_TERRAIN
-            and pokemon.ability is None
-            and "surgesurfer"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-        or (
-            pokemon.status == constants.PARALYZED
-            and pokemon.ability is None
-            and "quickfeet"
-            in [
-                normalize_name(a)
-                for a in pokedex[pokemon.name][constants.ABILITIES].values()
-            ]
-        )
-    )
 
 
 def remove_volatile(pkmn, volatile):
@@ -261,10 +226,6 @@ def unlikely_to_have_choice_item(move_name):
         return True
 
     return False
-
-
-def is_opponent(battle, split_msg):
-    return not split_msg[2].startswith(battle.user.name)
 
 
 def _side_from_pokemon_identifier(battle, identifier):
@@ -307,6 +268,211 @@ def zoroark_inference_allowed(battle) -> bool:
     `Battle.exact_roster_known` is set only by the checker when a sidecar is
     loaded; live play never sets it and keeps the heuristics."""
     return not getattr(battle, "exact_roster_known", False)
+
+
+def _sidecar_species_moveset(battle, side, species):
+    """`species`'s TRUE 4 moves on `side` from the checker's exact-teams sidecar.
+
+    Keyed by SPECIES NAME, not by a reconstructed Pokemon object: the sidecar
+    knows the whole team from turn 0, while `side.reserve` only ever holds the
+    mons the protocol has already revealed.  An Illusion bearer that never takes
+    a damaging hit is never revealed at all (PS only prints `|replace|` from the
+    ability's onEnd, data/abilities.ts:2066-2077), so requiring a reserve object
+    before consulting its moveset throws away ground truth already in hand.
+
+    None means "no ground truth here" (live play, or a mon the sidecar has no
+    entry for) and every caller must then leave the reconstruction's own
+    inference alone."""
+    if not species:
+        return None
+    exact_teams = getattr(battle, "exact_teams", None)
+    if exact_teams is None:
+        return None
+    team = getattr(exact_teams, "value", exact_teams).get(side.name) or {}
+    record = team.get(species)
+    if not record:
+        return None
+    return {normalize_name(m) for m in (record.get("moves") or ())} or None
+
+
+def _sidecar_moveset(battle, side, pkmn):
+    """`pkmn`'s TRUE 4 moves from the checker's exact-teams sidecar, or None."""
+    if pkmn is None:
+        return None
+    return _sidecar_species_moveset(battle, side, pkmn.name)
+
+
+def _record_used_move(battle, side, pkmn, move_name):
+    """Give a just-used move to the pokemon that really owns it.
+
+    Illusion is the only gen9-randbats mechanism that makes the protocol print a
+    |move| line against the wrong species: PS renders the actor through
+    `toString()`, which returns the illusion's name (sim/pokemon.ts:531).  LIVE
+    play has to accept the misattribution - with imperfect information, crediting
+    the move to the species shown IS the best available inference until the
+    disguise breaks, and that is what the `zoroark_inference_allowed` heuristics
+    below fall back on.  The replay checker is not in that position: its
+    exact-teams sidecar fixes every mon's 4 moves for the whole battle, so a move
+    the shown species provably does not own cannot have come from it, and the
+    only mon that can be standing there under another name is that side's
+    Illusion bearer.  Credit the bearer and leave the disguise's own moveset
+    intact.  Anything the bearer's true moveset does NOT explain either falls
+    through to the old append (and its "More than 4 moves" warning), so a
+    misattribution from some other cause stays loud.
+
+    Without this the disguise accumulated a 5th/6th move and
+    `poke_engine_helpers` truncated the list to the first 4 - harmless only while
+    the phantoms happen to sort last.  They frequently do not: opponent-side
+    moves are learned in REVEAL order and the sidecar top-up
+    (`damage_membership.apply_exact_team`) stops once the list reaches 4, so a
+    Volcanion that a Zoroark-Hisui had lent Hyper Voice and Poltergeist to went
+    into the engine holding those two plus only two of its own four moves.
+
+    Returns the Move recorded on `pkmn`, or None when nothing was recorded there.
+    """
+    true_moves = _sidecar_moveset(battle, side, pkmn)
+    if (
+        true_moves is not None
+        and move_name not in true_moves
+        and not getattr(pkmn, "transformed_into", None)
+        and "transform" not in pkmn.volatile_statuses
+    ):
+        # The bearer is identified from the SIDECAR, not from `side.reserve`.
+        # PS only announces a broken Illusion (`|replace|`) when the disguise
+        # takes a damaging hit, so a Zoroark that ends its disguise by SWITCHING
+        # OUT is never revealed, has no reserve object to find, and the old
+        # `find_pokemon_in_reserves` lookup silently gave up and appended the
+        # phantom to the disguise (synth79068: p2's unrevealed Zoroark-Hisui lent
+        # Will-O-Wisp to Sandaconda; synth71462: an unrevealed Zoroark lent Nasty
+        # Plot AND Dark Pulse to Appletun, pushing Appletun's real Recover out of
+        # the 4 slots poke_engine_helpers reads).
+        # The PROOF is unchanged and still needs both halves - the sidecar says
+        # the shown species cannot own the move AND says that side's Illusion
+        # bearer can - so a misattribution from any other cause still falls
+        # through to the append and stays loud.
+        for bearer_name in ("zoroark", "zoroarkhisui"):
+            bearer_moves = _sidecar_species_moveset(battle, side, bearer_name)
+            if bearer_moves is None or move_name not in bearer_moves:
+                continue
+            bearer = side.find_pokemon_in_reserves(bearer_name)
+            if bearer is None:
+                # Not revealed yet, so there is no object to credit.  Dropping is
+                # right: the disguise's own 4 moves still come from the sidecar
+                # top-up, and the bearer gets its true moveset the same way if it
+                # is ever reconstructed.
+                logger.info(
+                    "{} cannot own {} - it belongs to the still-unrevealed {}; "
+                    "dropping it rather than crediting the disguise".format(
+                        pkmn.name, move_name, bearer_name
+                    )
+                )
+            else:
+                logger.info(
+                    "{} cannot own {} - crediting the disguised {} instead".format(
+                        pkmn.name, move_name, bearer.name
+                    )
+                )
+                if bearer.get_move(move_name) is None:
+                    bearer.add_move(move_name)
+            return None
+    return pkmn.add_move(move_name)
+
+
+def _sidecar_species_record(battle, side, species):
+    """`species`'s whole TRUE set on `side` from the checker's exact-teams
+    sidecar, or None when there is no ground truth (live play, or a species the
+    sidecar has no entry for).  Keyed by SPECIES NAME for the same reason
+    `_sidecar_species_moveset` is: an Illusion bearer that never takes a
+    damaging hit is never revealed and so has no reserve object to look up."""
+    if not species:
+        return None
+    ref = getattr(battle, "exact_teams", None)
+    exact_teams = getattr(ref, "value", ref)  # fp.battle.SharedByReference
+    if not exact_teams:
+        return None
+    return (exact_teams.get(side.name) or {}).get(species)
+
+
+def _sidecar_species_item(battle, side, species):
+    """`species`'s TRUE held item, normalized; None when the set holds nothing
+    OR when there is no ground truth -- callers must first establish that a
+    record exists via `_sidecar_species_record`."""
+    record = _sidecar_species_record(battle, side, species)
+    if not record:
+        return None
+    return normalize_name(record["item"]) if record.get("item") else None
+
+
+def _record_revealed_item(battle, side, pkmn, item):
+    """Give a protocol-revealed item to the pokemon that really holds it.
+
+    The ITEM cousin of `_record_used_move`, with the same proof shape.  Illusion
+    makes PS print every line about the bearer against the species it is SHOWING
+    (`toString()`, sim/pokemon.ts:531), and that includes every item fact: the
+    Life Orb recoil chip, the Leftovers/Black Sludge heal, the Rocky Helmet
+    `[of]` attribution, the Toxic Orb status, Poltergeist / Frisk / Air Balloon
+    reveals, and the `-enditem` of a consumed berry or a Knocked Off item.  LIVE
+    play must accept the misattribution - with imperfect information the shown
+    species IS the best available inference - so with no sidecar this returns
+    `pkmn` unchanged and nothing about real play moves.  The replay checker's
+    exact-teams sidecar fixes every mon's held item for the whole battle, so an
+    item the shown species provably does not hold cannot be its, and the only
+    mon that can be standing there under another name is that side's Illusion
+    bearer.
+
+    Without this the leak OUTLIVES the disguise.  `illusion_end` already moves
+    the item across on a `|replace|`, but PS only prints `|replace|` when the
+    disguise takes a damaging hit (data/abilities.ts:2066-2077): a Zoroark that
+    ends its disguise by SWITCHING OUT is never announced, and the reconstruction
+    keeps ONE object per species -- the same object that is the real party member
+    of the impersonated species.  synth73774: p2's Zoroark-Hisui spent turns 7-19
+    as Glimmora, so its two Life Orb recoil chips set the tracked "glimmora"
+    item to Life Orb; that is a protocol REVEAL, which `apply_exact_team`
+    (fp/replay/damage_membership.py:2262-2267) correctly refuses to overwrite
+    with the sidecar item, so when the REAL Glimmora came in on T19 and burned
+    its Power Herb on Meteor Beam the engine state said it held Life Orb and no
+    branch could consume a Power Herb.
+
+    Returns the pokemon the item statement really concerns (usually `pkmn`), or
+    None when it concerns a still-unrevealed Illusion bearer and must be dropped.
+    """
+    if pkmn is None or pkmn.item == item:
+        # The reconstruction already independently knows this mon holds it --
+        # e.g. a Trick/Bestow GAIN that `set_item` recorded.  A gained item is
+        # absent from every sidecar set (which are start-of-battle), so without
+        # this guard the later `-enditem` of it would read as unownable.
+        return pkmn
+    shown = _sidecar_species_record(battle, side, pkmn.name)
+    if shown is None or _sidecar_species_item(battle, side, pkmn.name) == item:
+        return pkmn
+    # The PROOF needs both halves - the sidecar says the shown species cannot
+    # hold the item AND says that side's Illusion bearer does - so an item
+    # statement misattributed by any other cause still falls through unchanged.
+    for bearer_name in ("zoroark", "zoroarkhisui"):
+        if _sidecar_species_record(battle, side, bearer_name) is None:
+            continue
+        if _sidecar_species_item(battle, side, bearer_name) != item:
+            continue
+        bearer = side.find_pokemon_in_reserves(bearer_name)
+        if bearer is None:
+            # Not revealed yet, so there is no object to credit.  Dropping is
+            # right: the disguise keeps whatever it had (the sidecar top-up
+            # then fills its real item), and the bearer gets its true item the
+            # same way if it is ever reconstructed.
+            logger.info(
+                "{} cannot hold {} - it belongs to the still-unrevealed {}; "
+                "dropping it rather than crediting the disguise".format(
+                    pkmn.name, item, bearer_name
+                )
+            )
+        else:
+            logger.info(
+                "{} cannot hold {} - crediting the disguised {} instead".format(
+                    pkmn.name, item, bearer.name
+                )
+            )
+        return bearer
+    return pkmn
 
 
 def _ident_is_slotless(identifier: str) -> bool:
@@ -387,20 +553,6 @@ def has_non_lockedmove_from_tag(split_msg):
     )
 
 
-def get_move_information(m):
-    # Given a |move| line from the PS protocol, extract the user of the move and the move object
-    try:
-        split_move_line = m.split("|")
-        return split_move_line[2], all_move_json[normalize_name(split_move_line[3])]
-    except KeyError:
-        logger.warning(
-            "Unknown move {} - using standard 0 priority move".format(
-                normalize_name(m.split("|")[3])
-            )
-        )
-        return m.split("|")[2], {constants.ID: "unknown", constants.PRIORITY: 0}
-
-
 def request(battle, split_msg):
     if len(split_msg) >= 2:
         battle_json = json.loads(split_msg[2].strip("'"))
@@ -476,6 +628,47 @@ def user_just_switched_into_zoroark(battle, switch_or_drag):
     )
 
 
+def _switch_out_ability(battle, side, side_name):
+    """The outgoing mon's ability for SWITCH-OUT purposes, widened by the
+    full-knowledge sidecar the replay checker attaches (`battle.exact_teams`)
+    whenever live tracking has revealed none.
+
+    Regenerator is SILENT in the protocol -- PS emits no line for it -- so a mon
+    that leaves at 5% and comes back at 38% reveals nothing until it is already
+    back on the field.  With the ability still None the +1/3 heal below is
+    skipped, and the turn-start reconstruction of the turn it RETURNS on hands
+    the engine a mon a third of its max HP too low: synth76563 T30 put Slowbro at
+    14/300 instead of 114/300, so the Stealth Rock it really survived killed it
+    on entry, and the Draco Meteor that actually KO'd it -- together with that
+    move's own -2 SpA self-drop -- existed in no branch.  The sidecar is already
+    the authority the rest of the checker replays with (it is applied to every
+    per-turn snapshot, and to the Substitute derivation's deepcopy at
+    :2203-2209); this makes the LIVE walk agree with it on the one silent
+    mechanic that changes HP.
+
+    On the live ladder there is no sidecar, so this returns fp's tracked ability
+    unchanged and nothing about real play moves."""
+    pkmn = side.active
+    if pkmn is None:
+        return None
+    if pkmn.ability:
+        return pkmn.ability
+    ref = getattr(battle, "exact_teams", None)
+    exact_teams = getattr(ref, "value", ref)  # fp.battle.SharedByReference
+    if not exact_teams:
+        return pkmn.ability
+    try:
+        from fp.replay.damage_membership import _match_exact_mon
+
+        pid = battle.opponent.name if side_name == "opponent" else battle.user.name
+        rec = _match_exact_mon(exact_teams.get(pid) or {}, pkmn.name)
+    except Exception:
+        return pkmn.ability
+    if rec and rec.get("ability"):
+        return normalize_name(rec["ability"])
+    return pkmn.ability
+
+
 def switch(battle, split_msg):
     switch_or_drag(battle, split_msg, switch_or_drag="switch")
 
@@ -490,6 +683,13 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
         side = battle.opponent
         other_side = battle.user
         logger.info("Opponent has switched - clearing the last used move")
+        prev_alive = side.active is not None and side.active.hp > 0
+        record_opponent_action(
+            battle,
+            "switch" if (switch_or_drag == "switch" and prev_alive) else
+            ("forced_switch" if switch_or_drag == "switch" else "drag"),
+            "switch " + normalize_name(split_msg[2].split(":")[-1].strip()),
+        )
     else:
         side_name = "user"
         side = battle.user
@@ -679,12 +879,20 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
         # reset toxic count for this side
         side.side_conditions[constants.TOXIC_COUNT] = 0
 
+        # PS clears the OUTGOING mon's `statsRaisedThisTurn` on switch-out
+        # (sim/battle-actions.ts:123 `oldActive.statsRaisedThisTurn = false`), and the
+        # entrant starts false, so the side-level flag the engine keeps must drop here too.
+        # Matters on turn 1, where the turn-boundary reset above does not run: a lead that
+        # was Download/Intrepid-Sword-boosted and then pivots out must not leave its
+        # replacement looking "raised this turn" to an Alluring Voice / Burning Jealousy.
+        side.stats_raised_this_turn = False
+
         # if the side is alive and has regenerator, give it back 1/3 of it's maxhp
         if (
             "champions" not in battle.pokemon_format
             and side.active.hp > 0
             and not side.active.fainted
-            and side.active.ability == "regenerator"
+            and _switch_out_ability(battle, side, side_name) == "regenerator"
         ):
             health_healed = int(side.active.max_hp / 3)
             side.active.hp = min(side.active.hp + health_healed, side.active.max_hp)
@@ -729,6 +937,33 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
     nickname = split_msg[2]
     temp_pkmn = Pokemon.from_switch_string(split_msg[3], nickname=nickname)
     pkmn = side.find_pokemon_in_reserves(temp_pkmn.name)
+
+    # ILLUSION entering AS THE SPECIES THAT IS ALREADY ACTIVE.  Species Clause makes
+    # "the mon switching in is the species already standing on the field" impossible
+    # for any real switch, so the only thing that produces it is a Zoroark whose
+    # disguise happens to be the outgoing mon's own species (PS prints the entrant's
+    # DETAILS from `pokemon.illusion`, sim/pokemon.ts:531-552).  The reserve lookup
+    # above necessarily misses -- the genuine mon is `side.active`, not in `reserve` --
+    # so without this a BLANK object is fabricated, and because `Pokemon.__eq__` is by
+    # species the `pkmn != side.active` guard below then declines to bank the real
+    # object and it is DISCARDED outright, taking every tracked per-mon value with it.
+    # Measured (synth72642): the genuine Dondozo is dropped mid-Rest with rest_turns==1,
+    # returns on T38 as a blank `slp` object with rest_turns==0, and the engine -- seeing
+    # sleep_turns==0 -- gives it no wake branch at all, so its T39 `-curestatus|slp` +
+    # `Rest` self-sleep is unreachable in every branch.  Reusing the object keeps the
+    # party at one entry per species (a duplicate would blow the binding's 6-member
+    # refusal) and hands the existing Zoroark rollback the right `hp_at_switch_in` /
+    # `status_at_switch_in` to restore at the `|replace|`.  The append is undone by the
+    # `side.reserve.remove(pkmn)` in the branch below, which is exactly the bookkeeping
+    # a reserve hit already gets.
+    if (
+        pkmn is None
+        and side.active is not None
+        and side.active.name == temp_pkmn.name
+        and not side.active.fainted
+    ):
+        pkmn = side.active
+        side.reserve.append(pkmn)
 
     if pkmn is None:
         pkmn = Pokemon.from_switch_string(split_msg[3], nickname=nickname)
@@ -852,6 +1087,32 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
         side.reserve.append(side.active)
 
     side.active = pkmn
+
+    # ENTRY-INTENT evidence: the opponent CHOSE to bring this mon in against
+    # our active (voluntary switch, pivot follow-up, or faint replacement all
+    # arrive as |switch|; |drag| does not). Which sets make that entry good
+    # is informative - the sampler upweights them (fp/search/random_battles).
+    if (
+        switch_or_drag == "switch"
+        and side is battle.opponent
+        and other_side.active is not None
+        and other_side.active.hp > 0
+    ):
+        alive_bench = sum(1 for p in side.reserve if p.hp > 0)
+        unrevealed = 6 - (len(side.reserve) + 1)
+        if alive_bench + unrevealed > 0:
+            me = other_side.active
+            pkmn.entry_contexts.append(
+                {
+                    "vs_name": me.name,
+                    "vs_hp": me.hp,
+                    "vs_maxhp": me.max_hp,
+                    "vs_types": list(me.types),
+                    "vs_defense": me.stats[constants.DEFENSE],
+                    "vs_special_defense": me.stats[constants.SPECIAL_DEFENSE],
+                    "vs_speed": me.stats[constants.SPEED],
+                }
+            )
 
     # every switch-in starts a fresh Fake Out / First Impression window: PS
     # resets activeMoveActions to 0 in switchIn (sim/battle-actions.ts:138) -
@@ -1171,8 +1432,10 @@ def heal_or_damage(battle, split_msg):
         and other_side.name in split_msg[5]
     ):
         item = normalize_name(split_msg[4].split("item:")[-1])
-        logger.info("Setting {}'s item to: {}".format(other_side.active.name, item))
-        other_side.active.item = item
+        owner = _record_revealed_item(battle, other_side, other_side.active, item)
+        if owner is not None:
+            logger.info("Setting {}'s item to: {}".format(owner.name, item))
+            owner.item = item
 
     if (
         len(split_msg) >= 5
@@ -1238,8 +1501,10 @@ def heal_or_damage(battle, split_msg):
     # give that pokemon an item if this string specifies one
     if len(split_msg) == 5 and constants.ITEM in split_msg[4] and pkmn.item is not None:
         item = normalize_name(split_msg[4].split(constants.ITEM)[-1].strip(": "))
-        logger.info("Setting {}'s item to: {}".format(pkmn.name, item))
-        pkmn.item = item
+        owner = _record_revealed_item(battle, side, pkmn, item)
+        if owner is not None:
+            logger.info("Setting {}'s item to: {}".format(owner.name, item))
+            owner.item = item
 
     # gen 1 if you are trapping the opponent and hit yourself in confusion, the opponent is released
     if (
@@ -1405,6 +1670,9 @@ def move(battle, split_msg):
         side = battle.opponent
         pkmn = battle.opponent.active
         opposing_pkmn = battle.user.active
+        record_opponent_action(
+            battle, "move", normalize_name(split_msg[3].strip().lower())
+        )
     else:
         side = battle.user
         pkmn = battle.user.active
@@ -1631,7 +1899,7 @@ def move(battle, split_msg):
     if split_msg[-1] == "[from]Sleep Talk" or split_msg[-1] == "[from]move: Sleep Talk":
         move_object = pkmn.get_move(move_name)
         if move_object is None:
-            pkmn.add_move(move_name)
+            _record_used_move(battle, side, pkmn, move_name)
             logger.info(
                 "Added unrevealed {} to {}'s moves because it was called by sleeptalk".format(
                     move_name, pkmn.name
@@ -1734,7 +2002,7 @@ def move(battle, split_msg):
         pp_to_decrement = 2 if opposing_pkmn.ability == "pressure" else 1
     move_object = pkmn.get_move(move_name)
     if move_object is None:
-        new_move = pkmn.add_move(move_name)
+        new_move = _record_used_move(battle, side, pkmn, move_name)
         if new_move is not None:
             new_move.current_pp -= pp_to_decrement
     else:
@@ -1889,12 +2157,19 @@ def setboost(battle, split_msg):
 
 def boost(battle, split_msg):
     if is_opponent(battle, split_msg):
-        pkmn = battle.opponent.active
+        side = battle.opponent
     else:
-        pkmn = battle.user.active
+        side = battle.user
+    pkmn = side.active
 
     stat = constants.STAT_ABBREVIATION_LOOKUPS[split_msg[3].strip()]
     amount = int(split_msg[4].strip())
+
+    # PS `Battle#boost` stamps `target.statsRaisedThisTurn = true` whenever any component
+    # of the boost is positive (sim/battle.ts:2082), regardless of source -- own move,
+    # item, ability, secondary. Alluring Voice / Burning Jealousy read it.
+    if amount > 0:
+        side.stats_raised_this_turn = True
 
     pkmn.boosts[stat] = min(pkmn.boosts[stat] + amount, constants.MAX_BOOSTS)
     logger.info(
@@ -1930,7 +2205,15 @@ def status(battle, split_msg):
         other_side = battle.opponent
 
     if len(split_msg) > 4 and "item: " in split_msg[4]:
-        pkmn.item = normalize_name(split_msg[4].split("item:")[-1])
+        item = normalize_name(split_msg[4].split("item:")[-1])
+        owner = _record_revealed_item(
+            battle,
+            battle.opponent if is_opponent(battle, split_msg) else battle.user,
+            pkmn,
+            item,
+        )
+        if owner is not None:
+            owner.item = item
 
     if len(split_msg) == 5 and split_msg[3] == "slp":
         if split_msg[4] == "[from] move: Rest":
@@ -2015,9 +2298,30 @@ def reset_substitute_absorb_refusals():
     SUBSTITUTE_ABSORB_REFUSALS.clear()
 
 
+# Buckets whose refusal is the CORRECT answer rather than a symptom of a defect,
+# so they belong at debug level: nothing upstream is wrong and nothing can be
+# derived.  PS runs the whole hit pipeline once per hit of a multi-hit move
+# (sim/battle-actions.ts:889 `for (hit = 1; hit <= targetHits; hit++)`), so the
+# substitute's `onTryPrimaryHit` calls `getDamage` and emits one
+# `-activate ... [damage]` PER HIT with an independent roll
+# (data/moves.ts:18335-18355), while `calculate_damage_rolls_full`
+# (poke-engine-py/src/lib.rs:1540-1596) returns exactly ONE (noncrit, crit) pair
+# per side with no hit index and no hit count -- the per-hit roll set the
+# derivation would need does not exist in the API.  A delayed move resolves from
+# a source that need not be on the field at all, which the active-vs-active
+# preview cannot model.  Every bucket is still COUNTED in
+# SUBSTITUTE_ABSORB_REFUSALS and exported per-name into the checker's stats
+# (fp/replay/checker.py:2915-2919), so the gate loses no visibility.  Every other
+# bucket stays at error level: those DO mean something upstream is wrong.
+_EXPECTED_SUBSTITUTE_REFUSALS = frozenset(("multi_hit_context", "delayed_move"))
+
+
 def _refuse_substitute_absorb(reason, detail=""):
     SUBSTITUTE_ABSORB_REFUSALS[reason] += 1
-    logger.error(
+    log = (
+        logger.debug if reason in _EXPECTED_SUBSTITUTE_REFUSALS else logger.error
+    )
+    log(
         "REFUSING to derive an absorbed Substitute hit [%s]%s: the tracked "
         "substitute HP widens to its honest bounds instead",
         reason,
@@ -2245,9 +2549,11 @@ def activate(battle, split_msg, msg_lines=None, msg_index=None):
     `last_used_move`, which cannot represent a delayed move.
     """
     if is_opponent(battle, split_msg):
+        side = battle.opponent
         pkmn = battle.opponent.active
         other_pkmn = battle.user.active
     else:
+        side = battle.user
         pkmn = battle.user.active
         other_pkmn = battle.opponent.active
 
@@ -2340,8 +2646,10 @@ def activate(battle, split_msg, msg_lines=None, msg_index=None):
 
     if split_msg[3].lower() == "move: poltergeist":
         item = normalize_name(split_msg[4])
-        logger.info("{} has the item {}".format(pkmn.name, item))
-        pkmn.item = item
+        owner = _record_revealed_item(battle, side, pkmn, item)
+        if owner is not None:
+            logger.info("{} has the item {}".format(owner.name, item))
+            owner.item = item
 
     if split_msg[3].lower().startswith("ability: "):
         ability = normalize_name(split_msg[3].split(":")[-1].strip())
@@ -2366,8 +2674,10 @@ def activate(battle, split_msg, msg_lines=None, msg_index=None):
         i == "[consumed]" for i in split_msg
     ):
         item = normalize_name(split_msg[3].split(":")[-1].strip())
-        logger.info("Setting {}'s item to {}".format(pkmn.name, item))
-        pkmn.item = item
+        owner = _record_revealed_item(battle, side, pkmn, item)
+        if owner is not None:
+            logger.info("Setting {}'s item to {}".format(owner.name, item))
+            owner.item = item
 
     if split_msg[3].lower().startswith("move: "):
         move_name = normalize_name(split_msg[3].split(":")[-1].strip())
@@ -2425,6 +2735,28 @@ def prepare(battle, split_msg):
         pkmn = battle.user.active
 
     being_prepared = normalize_name(split_msg[3])
+
+    # Chilly Reception reuses the `-prepare` tag that real two-turn charge
+    # moves (Fly/Dig/SolarBeam/...) use, but it is a different PS mechanic:
+    # a priorityChargeCallback move (data/moves.ts:2396-2420) whose volatile
+    # is added SILENTLY by `source.addVolatile('chillyreception')` before
+    # this message, and whose `condition` has no onEnd - so when the
+    # duration-1 volatile naturally expires, `Pokemon#removeVolatile`
+    # (sim/pokemon.ts:2040-2051) emits no matching `-end` at all. Chilly
+    # Reception's move data also has empty `flags` (no `charge`), so
+    # `move()`'s charge-gated two-turn-release cleanup never strips it
+    # either. Nothing downstream in this tracker ever reads
+    # 'chillyreception', so don't track it - a mon that re-uses the move
+    # without switching out (selfSwitch has no valid replacement, e.g. the
+    # last alive party member) would otherwise hit a spurious "already has
+    # the volatile status" warning on every subsequent use.
+    if being_prepared == "chillyreception":
+        logger.info(
+            "{} used Chilly Reception - not tracking it as a persistent "
+            "volatile (PS never emits a matching -end for it)".format(pkmn.name)
+        )
+        return
+
     if being_prepared in pkmn.volatile_statuses:
         logger.warning(
             "{} already has the volatile status {}".format(pkmn.name, being_prepared)
@@ -2668,6 +3000,59 @@ def end_volatile_status(battle, split_msg):
             if vs.startswith("fallen"):
                 logger.info("Removing {} from {}".format(vs, pkmn.name))
                 pkmn.volatile_statuses.remove(vs)
+    elif volatile_status == "illusion":
+        # PS's Illusion ability emits `-end|<mon>|Illusion` from its onEnd
+        # handler (data/abilities.ts:2066-2077), always paired with a
+        # `replace` message in the same event. Our tracker fully reconciles
+        # species/hp/status/boosts/item off that `replace` line via the
+        # dispatch table's "replace": illusion_end handler, and "illusion"
+        # is never added to pkmn.volatile_statuses (it's ability state, not
+        # a PS volatile), so this line is an expected no-op, not a desync.
+        logger.info(
+            "Illusion ended for {} (already handled via replace)".format(pkmn.name)
+        )
+    elif volatile_status == constants.FUTURE_SIGHT:
+        # PS prints the two halves of a delayed attack against OPPOSITE sides:
+        # `onTry` emits `|-start|<SOURCE>|move: Future Sight` (data/moves.ts:6420)
+        # while the futuremove slot condition's `onEnd` emits
+        # `|-end|<TARGET>|move: Future Sight` when it resolves
+        # (data/conditions.ts:403).  The pending attack is tracked as
+        # `side.future_sight` on the side that USED it - `start_volatile_status`
+        # returns before touching `volatile_statuses` - so the mon this `-end`
+        # names never had a `futuresight` volatile and its absence is not a
+        # desync.  The countdown must NOT be cleared here: PS resolves the hit
+        # two turns after the use (synth70040, `-start` T40 -> `-end` in T42's
+        # residual), the tracker seeds 3 and `upkeep` decrements once per turn,
+        # so the attacking side reads exactly (1, <attacker>) while this line is
+        # parsed - the value the engine fires on
+        # (genx/generate_instructions.rs:11309-11314) - and the same turn's
+        # `upkeep` zeroes it.  Clearing early would also break the
+        # `future_sight[0] != 1` guard that keeps the live-play Zoroark inference
+        # from reading the delayed hit as an unexplained damage mismatch (:3334).
+        logger.info(
+            "Future Sight resolved into {} - tracked as side.future_sight on the "
+            "attacking side, never as a volatile here".format(pkmn.name)
+        )
+    elif (
+        volatile_status == constants.SLOW_START
+        and volatile_status not in pkmn.volatile_statuses
+    ):
+        # Slow Start is ABILITY state in PS, not a volatile, and it announces its
+        # end TWICE.  `onResidual` emits `|-end|<mon>|Slow Start` when the counter
+        # reaches 0 and then DELETES the counter (data/abilities.ts:4308-4316);
+        # the ability's `onEnd` emits a second `|-end|<mon>|Slow Start|[silent]`
+        # whenever the ability stops applying (:4328-4331), guarded ONLY by
+        # `if (pokemon.beingCalledBack) return;`.  A FAINT is not a call-back, so
+        # a Regigigas that already outlasted its five turns and then faints prints
+        # the silent `-end` with nothing left to end (synth70008: `-end` at the
+        # counter expiry, `-end ... [silent]` right after `|faint|`).  A duplicate
+        # announcement, not a desync.
+        logger.info(
+            "{} announced the end of an already-ended Slow Start - no-op".format(
+                pkmn.name
+            )
+        )
+        pkmn.volatile_status_durations[constants.SLOW_START] = 0
     elif len(split_msg) >= 5 and constants.PARTIALLY_TRAPPED in split_msg[4]:
         remove_volatile(pkmn, constants.PARTIALLY_TRAPPED)
         # both partial-trap release shapes hit this branch (PS
@@ -3137,11 +3522,28 @@ def set_item(battle, split_msg):
         logger.info(
             "{} frisked the opponent's item as {}".format(side.active.name, item)
         )
-        logger.info("Setting {}'s item to {}".format(other_side.active.name, item))
-        other_side.active.item = item
+        # Frisk is a pure REVEAL of what the target already holds, so it is
+        # subject to the Illusion misattribution `_record_revealed_item` undoes.
+        owner = _record_revealed_item(battle, other_side, other_side.active, item)
+        if owner is not None:
+            logger.info("Setting {}'s item to {}".format(owner.name, item))
+            owner.item = item
     else:
-        logger.info("Setting {}'s item to {}".format(side.active.name, item))
-        side.active.item = item
+        # A `[from]` tag on a `-item` marks a TRANSFER (Trick / Switcheroo /
+        # Bestow / Thief / Covet / Magician / Pickpocket / Recycle): the item
+        # GAINED is absent from every sidecar set, which records the
+        # start-of-battle hold, so the Illusion proof cannot speak to it and
+        # must not be consulted.  A bare `-item` (Air Balloon) and gen9 Frisk
+        # (`-item|<target>|<item>|[from] ability: Frisk|[of] <frisker>`, which
+        # names the TARGET and so misses the gen5 branch above) are pure
+        # REVEALS of an existing hold and are subject to it.
+        pkmn = side.active
+        if len(split_msg) < 5 or "ability: Frisk" in split_msg[4]:
+            pkmn = _record_revealed_item(battle, side, pkmn, item)
+            if pkmn is None:
+                return
+        logger.info("Setting {}'s item to {}".format(pkmn.name, item))
+        pkmn.item = item
 
         # A `-item` line is direct PROTOCOL evidence of what this pokemon holds, so it
         # supersedes any earlier item GUESS. Leaving `item_inferred` set let downstream
@@ -3151,7 +3553,7 @@ def set_item(battle, split_msg):
         # imposed on already-used moves) reset it to UNKNOWN, after which the exact-teams
         # sidecar refilled its ORIGINAL Heavy-Duty Boots and every T23 Knock Off roll was
         # computed at the wrong Attack.
-        side.active.item_inferred = False
+        pkmn.item_inferred = False
 
         # a `-item` on this pokemon means it now genuinely HOLDS the item:
         # gen5+ Knock Off removes the item outright and PS has no
@@ -3159,13 +3561,13 @@ def set_item(battle, split_msg):
         # Covet/Thief gain is a real, active held item. Clear the knock-off
         # marker or the engine conversion nulls the new item forever
         # (poke_engine_helpers.py itemless-conversion check)
-        if side.active.knocked_off:
+        if pkmn.knocked_off:
             logger.info(
                 "{} gained an item after a knock off - clearing knocked_off".format(
-                    side.active.name
+                    pkmn.name
                 )
             )
-            side.active.knocked_off = False
+            pkmn.knocked_off = False
 
         _apply_item_transfer_donor_loss(battle, split_msg, side, other_side, item)
 
@@ -3179,23 +3581,32 @@ def remove_item(battle, split_msg):
 
     item = normalize_name(split_msg[3].strip())
 
-    logger.info("Removing {}'s item: {}".format(side.active.name, item))
-    side.active.item = None
+    # `-enditem` names the DISGUISE when an Illusion bearer consumes its own
+    # berry / Focus Sash / Power Herb or has its item Knocked Off, and the
+    # damage here is worse than a wrong `item`: it also latches `removed_item`,
+    # which `apply_exact_team` (correctly) refuses to overwrite, so the real
+    # party member of the impersonated species stays item-less for the rest of
+    # the battle.
+    pkmn = _record_revealed_item(battle, side, side.active, item)
+    if pkmn is None:
+        return
 
-    if side.active.removed_item is None:
-        logger.info("Setting {}'s removed item to {}".format(side.active.name, item))
-        side.active.removed_item = item
+    logger.info("Removing {}'s item: {}".format(pkmn.name, item))
+    pkmn.item = None
 
-    if "unburden" not in side.active.volatile_statuses and "unburden" in [
-        normalize_name(a)
-        for a in pokedex[side.active.name][constants.ABILITIES].values()
+    if pkmn.removed_item is None:
+        logger.info("Setting {}'s removed item to {}".format(pkmn.name, item))
+        pkmn.removed_item = item
+
+    if "unburden" not in pkmn.volatile_statuses and "unburden" in [
+        normalize_name(a) for a in pokedex[pkmn.name][constants.ABILITIES].values()
     ]:
-        logger.info("Adding unburden volatile to {}".format(side.active.name))
-        side.active.volatile_statuses.append("unburden")
+        logger.info("Adding unburden volatile to {}".format(pkmn.name))
+        pkmn.volatile_statuses.append("unburden")
 
     if len(split_msg) >= 5 and "knockoff" in normalize_name(split_msg[4]):
-        logger.info("Knockoff removed {}'s item".format(side.active.name))
-        side.active.knocked_off = True
+        logger.info("Knockoff removed {}'s item".format(pkmn.name))
+        pkmn.knocked_off = True
 
 
 def immune(battle, split_msg):
@@ -3534,6 +3945,29 @@ def illusion_end(battle, split_msg):
             pkmn_disguised_as.remove_move(mv)
             if side.active.get_move(mv) is None:
                 side.active.add_move(mv)
+
+        # `moves_used_since_switch_in` is cleared on every switch-out
+        # (switch_or_drag), so it only remembers the disguise's LATEST stay: if
+        # the same disguised mon switched out and back in earlier without the
+        # illusion ever breaking, moves it used during an EARLIER stay already
+        # slipped past the loop above and are still sitting on
+        # `pkmn_disguised_as`. It has just been demoted to the reserve (no
+        # longer anyone's currently-selected action), so where the checker's
+        # exact-teams sidecar is loaded, drop anything left that is not really
+        # in this species' fixed randbats set - e.g. carbink otherwise
+        # permanently keeping a disguised Zoroark's Will-O-Wisp and Hyper
+        # Voice from an earlier stay, pushing it past 4 tracked moves.
+        exact_teams = getattr(battle, "exact_teams", None)
+        exact_mon = (
+            (exact_teams.value.get(side.name) or {}).get(pkmn_disguised_as.name)
+            if exact_teams is not None
+            else None
+        )
+        if exact_mon is not None:
+            true_moves = {normalize_name(m) for m in exact_mon.get("moves", ())}
+            for mv in [m.name for m in pkmn_disguised_as.moves]:
+                if mv not in true_moves:
+                    pkmn_disguised_as.remove_move(mv)
 
         # the pokemon that we thought was active needs some attributes reset to
         # whatever the values were at switch-in as any changes that happened to zoroark
@@ -4070,12 +4504,25 @@ def cant(battle, split_msg):
 
         remove_volatile(side.active, "mustrecharge")
 
-    # |cant|p2a: Politoed|move: Taunt|Toxic
-    if len(split_msg) == 4 and split_msg[3].startswith("move: "):
-        move_name = normalize_name(split_msg[3].split(":")[-1])
+    # `|cant|POKEMON|REASON|MOVE`: only the 4th field is the blocked mon's OWN
+    # move.  The old `len(split_msg) == 4` form read the REASON instead, and the
+    # only 4-field `move: ` reason gen9 emits is Throat Chop
+    # (data/moves.ts:19407,19413 `this.add('cant', pokemon, 'move: Throat Chop')`
+    # - no move argument), so it credited the ATTACKER's Throat Chop to the
+    # VICTIM: 9 different species picked up a phantom `throatchop` in corpus B,
+    # and once the list hits 5 `poke_engine_helpers` truncates, which can evict a
+    # real move.  The shape the comment was written for
+    # (`|cant|p2a: Politoed|move: Taunt|Toxic`, data/moves.ts taunt/healblock/
+    # disable onBeforeMove `this.add('cant', attacker, 'move: X', move)`) has 5
+    # fields and never reached the branch, so its genuine reveal was being
+    # dropped.  Routed through `_record_used_move` so a disguised Illusion bearer
+    # blocked by Taunt does not stamp its move on the disguise.  PS aborts before
+    # `deductPP` on a BeforeMove block, so no PP is charged.
+    if len(split_msg) == 5 and split_msg[3].startswith("move: "):
+        move_name = normalize_name(split_msg[4])
         move_object = side.active.get_move(move_name)
         if move_object is None:
-            side.active.add_move(move_name)
+            _record_used_move(battle, side, side.active, move_name)
             logger.info(
                 "Adding {} to {}'s moves from 'cant'".format(
                     move_name, side.active.name
@@ -4475,11 +4922,34 @@ def upkeep(battle, _):
     # we do not want to guess leftovers/blacksludge anymore when it is time to guess an item
     # leftovers and blacksludge will reveal themselves at the end of the turn if they exist
     opp_pkmn = battle.opponent.active
-    if opp_pkmn.hp < opp_pkmn.max_hp:
+    # ONLY valid once this mon has actually SURVIVED a residual phase below max
+    # HP without healing. Being below max HP at upkeep proves nothing on its own:
+    # a mon that switched in and took hazard damage is below max at upkeep and
+    # will still heal at the residual step, and a mon that healed and then took
+    # further damage this turn is also below max.
+    #
+    # The old unconditional form was an unsound INFERENCE, the same class of
+    # defect as a false reverse-damage elimination. Measured: it excluded the
+    # opponent's TRUE set (SPEC-B4 worked example -- Floatzel, item unknown,
+    # `leftovers` already in impossible_items, true item Leftovers).
+    #
+    # `saw_residual_without_heal` is set by the residual handler only after an
+    # end-of-turn completes with this mon below max HP and no item heal observed.
+    below_max = opp_pkmn.hp < opp_pkmn.max_hp
+    prev_hp = getattr(opp_pkmn, "_last_upkeep_hp", None)
+    # Sound only across TWO upkeeps: Leftovers fires once per residual phase, so
+    # a mon that sat below max through a full turn boundary and did not gain HP
+    # cannot be holding it. A single below-max reading is consistent with having
+    # just switched into hazards, or with healing and then taking more damage.
+    saw_residual_without_heal = (
+        below_max and prev_hp is not None and opp_pkmn.hp <= prev_hp
+    )
+    opp_pkmn._last_upkeep_hp = opp_pkmn.hp
+
+    if below_max and saw_residual_without_heal:
         logger.info(
-            "{} has less than maxhp during upkeep, no longer guessing leftovers or blacksludge".format(
-                opp_pkmn.name
-            )
+            "{} completed a residual phase below maxhp without healing - "
+            "leftovers/blacksludge ruled out".format(opp_pkmn.name)
         )
         opp_pkmn.impossible_items.add(constants.LEFTOVERS)
         opp_pkmn.impossible_items.add(constants.BLACK_SLUDGE)
@@ -4584,6 +5054,16 @@ def turn(battle, split_msg):
     logger.info("")
     logger.info("Turn: {}".format(battle.turn))
 
+    # PS `nextTurn` clears `statsRaisedThisTurn` on every active mon -- but the whole block
+    # is guarded by `if (this.turn !== 1)` (sim/battle.ts:1673-1675), and `|turn|N` is
+    # emitted by `nextTurn` AFTER it incremented `this.turn`, so the comparison here is
+    # against the turn number just parsed. That exception is the entire reason a turn-start
+    # state can carry the flag at all: a `|start|` switch-in ability boost survives into
+    # turn 1's action resolution (synth75383 T1: Porygon2's Download, then Alluring Voice).
+    if battle.turn != 1:
+        battle.user.stats_raised_this_turn = False
+        battle.opponent.stats_raised_this_turn = False
+
     # a new turn opens a fresh action window: nobody has acted yet. (The
     # taunt/encore apply seed in start_volatile_status keys on this; switch-in
     # also clears it for the entering pkmn in switch_or_drag.)
@@ -4602,709 +5082,6 @@ def noinit(battle, split_msg):
     if split_msg[2] == "rename":
         battle.battle_tag = split_msg[3]
         logger.info("Renamed battle to {}".format(battle.battle_tag))
-
-
-def check_speed_ranges(battle, msg_lines):
-    """
-    Intention:
-        This function is intended to set the min or max possible speed that the opponent's
-        active Pokemon could possibly have given a turn that just happened.
-
-        For example: if both the bot and the opponent use an equal priority move but the
-        opponent moves first, then the opponent's min_speed attribute will be set to the
-        bots actual speed. This is because the opponent must have at least that much speed
-        for it to have gone first.
-
-        These min/max speeds are set without knowledge of items. If the opponent goes first
-        when having a choice scarf then min speed will still be set to the bots speed. When
-        it comes time to guess a Pokemon's possible set(s), the item must be taken into account
-        as well when determining the final speed of a Pokemon. Abilities are NOT taken into
-        consideration because their speed modifications are subject to certain conditions
-        being present, whereas a choice scarf ALWAYS boosts speed.
-
-        If there is a situation where an ability could have modified the turn order (either by
-        changing a move's priority or giving a Pokemon more speed) then this check should be
-        skipped. Examples are:
-            - either side switched
-            - the opponent COULD have a speed-boosting weather ability AND that weather is up
-            - the opponent COULD have prankster and it used a status move
-            - Grassy Glide is used when Grassy Terrain is up
-    """
-    for ln in msg_lines:
-        # If either side switched this turn - don't do this check
-        if ln.startswith("|switch|"):
-            return
-
-        # if anyone got `cant` or hit themselves in confusion
-        # skip this check as we don't know if they used a priority move
-        if ln.startswith("|cant|") or (
-            ln.startswith("|-activate|") and ln.endswith("confusion")
-        ):
-            return
-
-        # If anyone used a custapberry, skip this check
-        if ln.startswith("|-enditem|") and (
-            "custapberry" in normalize_name(ln) or "Custap Berry" in ln
-        ):
-            return
-
-        # If anyone had quick claw activate, skip this check
-        if "quickclaw" in normalize_name(ln) or "Quick Claw" in ln:
-            return
-
-        # If anyone had quick claw activate, skip this check
-        if "quickdraw" in normalize_name(ln) or "Quick Draw" in ln:
-            return
-
-    # A "switch" selection without a |switch| line in this block happens when
-    # answering Revival Blessing's revive prompt: the fainted target is healed
-    # in the party without switching in, so the |switch| check above does not
-    # catch it and last_selected_move is not a move that can be looked up
-    if battle.user.last_selected_move.move.startswith("switch "):
-        return
-
-    moves = [get_move_information(m) for m in msg_lines if m.startswith("|move|")]
-    number_of_moves = len(moves)
-    if number_of_moves not in [1, 2]:
-        return
-
-    if (
-        number_of_moves == 1
-        and moves[0][0].startswith(battle.opponent.name)
-        and moves[0][1][constants.ID] != "pursuit"
-    ):
-        moves.append(
-            (
-                "{}a: {}".format(battle.opponent.name, battle.user.active.name),
-                all_move_json[normalize_name(battle.user.last_selected_move.move)],
-            )
-        )
-
-    # if the bot knocked out the opponent there's nothing to do here
-    elif number_of_moves == 1:
-        return
-
-    if (
-        moves[0][1][constants.PRIORITY] != moves[1][1][constants.PRIORITY]
-        or moves[0][1][constants.ID] == "encore"
-    ):
-        return
-
-    bot_went_first = moves[0][0].startswith(battle.user.name)
-
-    if (
-        battle.opponent.active is None
-        or battle.opponent.active.item == "choicescarf"
-        or can_have_speed_modified(battle, battle.opponent.active)
-        or (
-            not bot_went_first
-            and can_have_priority_modified(
-                battle, battle.opponent.active, moves[0][1][constants.ID]
-            )
-        )
-        or (
-            bot_went_first
-            and can_have_priority_modified(
-                battle, battle.user.active, moves[0][1][constants.ID]
-            )
-        )
-    ):
-        return
-
-    speed_threshold = int(
-        boost_multiplier_lookup[battle.user.active.boosts[constants.SPEED]]
-        * battle.user.active.stats[constants.SPEED]
-        / boost_multiplier_lookup[battle.opponent.active.boosts[constants.SPEED]]
-    )
-
-    if "protosynthesisspe" in battle.opponent.active.volatile_statuses:
-        speed_threshold = int(speed_threshold / 1.5)
-
-    if battle.opponent.side_conditions[constants.TAILWIND]:
-        speed_threshold = int(speed_threshold / 2)
-
-    if battle.user.side_conditions[constants.TAILWIND]:
-        speed_threshold = int(speed_threshold * 2)
-
-    if battle.opponent.active.status == constants.PARALYZED:
-        if battle.generation in ["gen4", "gen5", "gen6"]:
-            speed_threshold = int(speed_threshold * 4)
-        else:
-            speed_threshold = int(speed_threshold * 2)
-
-    if battle.user.active.status == constants.PARALYZED:
-        if battle.generation in ["gen4", "gen5", "gen6"]:
-            speed_threshold = int(speed_threshold / 4)
-        else:
-            speed_threshold = int(speed_threshold / 2)
-
-    if battle.user.active.item == "choicescarf":
-        speed_threshold = int(speed_threshold * 1.5)
-
-    if "protosynthesisspe" in battle.user.active.volatile_statuses:
-        speed_threshold = int(speed_threshold * 1.5)
-
-    # we want to swap which attribute gets updated in trickroom because the slower pokemon goes first
-    if battle.trick_room:
-        bot_went_first = not bot_went_first
-
-    if bot_went_first:
-        opponent_max_speed = min(
-            battle.opponent.active.speed_range.max, speed_threshold
-        )
-        battle.opponent.active.speed_range = StatRange(
-            min=battle.opponent.active.speed_range.min, max=opponent_max_speed
-        )
-        logger.info(
-            "Updated {}'s max speed to {}".format(
-                battle.opponent.active.name, battle.opponent.active.speed_range.max
-            )
-        )
-
-    else:
-        opponent_min_speed = max(
-            battle.opponent.active.speed_range.min, speed_threshold
-        )
-        battle.opponent.active.speed_range = StatRange(
-            min=opponent_min_speed, max=battle.opponent.active.speed_range.max
-        )
-        logger.info(
-            "Updated {}'s min speed to {}".format(
-                battle.opponent.active.name, battle.opponent.active.speed_range.min
-            )
-        )
-
-
-def check_opponent_hiddenpower(battle, msg_line):
-    """
-    `msg_line` is should be the line *after* |-move|...|Hidden Power|...
-    and is meant to be called for the opponent's pkmn only
-
-    This function checks if the move was resisted, super-effective, or neutral.
-    It then updates pkmn.hidden_power_possibilities based on that information
-    """
-    attacker = battle.opponent.active
-    defender_types = battle.user.active.types
-    logger.info(
-        "Checking hiddenpower possibilities for opponent's {}".format(attacker.name)
-    )
-    logger.info(
-        "Starting hiddenpower possibilities {}".format(
-            attacker.hidden_power_possibilities
-        )
-    )
-
-    next_line_split_msg = msg_line.split("|")
-    if next_line_split_msg[1] == "-resisted":
-        logger.info("{} resisted hiddenpower".format(defender_types))
-        for t in list(attacker.hidden_power_possibilities):
-            if not is_not_very_effective(t, defender_types):
-                attacker.hidden_power_possibilities.remove(t)
-
-    elif next_line_split_msg[1] == "-supereffective":
-        logger.info("{} was weak to hiddenpower".format(defender_types))
-        for t in list(attacker.hidden_power_possibilities):
-            if not is_super_effective(t, defender_types):
-                attacker.hidden_power_possibilities.remove(t)
-
-    elif next_line_split_msg[1] == "-damage":
-        logger.info("{} was neutral to hiddenpower".format(defender_types))
-        for t in list(attacker.hidden_power_possibilities):
-            if not is_neutral_effectiveness(t, defender_types):
-                attacker.hidden_power_possibilities.remove(t)
-
-    else:
-        logger.info(
-            "Cannot update hiddenpower possibilities with: {}".format(
-                next_line_split_msg[1]
-            )
-        )
-        return
-
-    logger.info(
-        "Remaining hiddenpower possibilities: {}".format(
-            attacker.hidden_power_possibilities
-        )
-    )
-
-
-def check_choicescarf(battle, msg_lines):
-    # If either side switched this turn - don't do this check
-    if any(
-        battle.generation in ["gen1", "gen2", "gen3"]
-        or ln.startswith("|switch|")
-        or ln.startswith("|cant|")
-        or (ln.startswith("|-activate|") and ln.endswith("confusion"))
-        for ln in msg_lines
-    ) or battle.user.last_selected_move.move.startswith("switch "):
-        return
-
-    moves = [get_move_information(m) for m in msg_lines if m.startswith("|move|")]
-    number_of_moves = len(moves)
-
-    # if the bot went first we cannot ever infer a choicescarf
-    if number_of_moves not in [1, 2] or moves[0][0].startswith(battle.user.name):
-        return
-
-    elif number_of_moves == 1:
-        moves.append(
-            (
-                "{}a: {}".format(battle.opponent.name, battle.user.active.name),
-                all_move_json[normalize_name(battle.user.last_selected_move.move)],
-            )
-        )
-
-    if moves[0][1][constants.PRIORITY] != moves[1][1][constants.PRIORITY]:
-        return
-
-    battle_copy = deepcopy(battle)
-    if (
-        battle.opponent.active is None
-        or battle.opponent.active.item != constants.UNKNOWN_ITEM
-        or not battle.opponent.active.can_have_choice_item
-        or can_have_speed_modified(battle, battle.opponent.active)
-        or can_have_priority_modified(
-            battle, battle.opponent.active, moves[0][1][constants.ID]
-        )
-        or can_have_priority_modified(
-            battle, battle.user.active, moves[1][1][constants.ID]
-        )
-        or (
-            battle_copy.user.active.ability == "unburden"
-            and battle_copy.user.active.item is None
-        )
-    ):
-        return
-
-    if battle.battle_type == BattleType.RANDOM_BATTLE:
-        evs = ",".join(str(ev) for ev in random_battles_evs())
-        battle_copy.opponent.active.set_spread(
-            "serious", evs
-        )  # random battles have known spreads
-    else:
-        if battle.trick_room:
-            battle_copy.opponent.active.set_spread(
-                "quiet", "0,0,0,0,0,0"
-            )  # assume as slow as possible in trickroom
-        else:
-            battle_copy.opponent.active.set_spread(
-                "jolly", f"0,0,0,0,0,{maximum_ev()}"
-            )  # assume as fast as possible
-    opponent_effective_speed = battle_copy.get_effective_speed(battle_copy.opponent)
-    bot_effective_speed = battle_copy.get_effective_speed(battle_copy.user)
-
-    if battle.trick_room:
-        has_scarf = opponent_effective_speed > bot_effective_speed
-    else:
-        has_scarf = bot_effective_speed > opponent_effective_speed
-
-    if has_scarf:
-        logger.info(
-            "Opponent {} could not have gone first - setting it's item to choicescarf".format(
-                battle.opponent.active.name
-            )
-        )
-        battle.opponent.active.item = "choicescarf"
-        battle.opponent.active.item_inferred = True
-
-
-def get_damage_dealt(battle, split_msg, next_messages):
-    move_name = normalize_name(split_msg[3])
-    critical_hit = False
-
-    if is_opponent(battle, split_msg):
-        attacking_side = battle.opponent
-        defending_side = battle.user
-    else:
-        attacking_side = battle.user
-        defending_side = battle.opponent
-
-    for line in next_messages:
-        next_line_split = line.split("|")
-        # if one of these strings appears in index 1 then
-        # exit out since we are done with this pokemon's move
-        if len(next_line_split) < 2 or next_line_split[1] in MOVE_END_STRINGS:
-            break
-
-        elif next_line_split[1] == "-crit":
-            critical_hit = True
-
-        # if '-damage' appears, we want to parse the percentage damage dealt
-        elif (
-            next_line_split[1] == "-damage"
-            and defending_side.name in next_line_split[2]
-        ):
-            final_health, maxhp, _ = get_pokemon_info_from_condition(next_line_split[3])
-            # maxhp can be 0 if the targetted pokemon fainted
-            # the message would be: "0 fnt"
-            if maxhp == 0:
-                maxhp = defending_side.active.max_hp
-
-            damage_dealt = (
-                defending_side.active.hp / defending_side.active.max_hp
-            ) * maxhp - final_health
-            damage_percentage = round(damage_dealt / maxhp, 4)
-
-            logger.info(
-                "{} did {}% damage to {} with {}".format(
-                    attacking_side.active.name,
-                    damage_percentage * 100,
-                    defending_side.active.name,
-                    move_name,
-                )
-            )
-            return DamageDealt(
-                attacker=attacking_side.active.name,
-                defender=defending_side.active.name,
-                move=move_name,
-                percent_damage=damage_percentage,
-                crit=critical_hit,
-            )
-
-
-def _do_check(
-    battle,
-    battle_copy,
-    possibilites,
-    check_type,
-    damage_dealt,
-    bot_went_first,
-    check_lower_bound,
-    allow_emptying=False,
-):
-    actual_damage_dealt = damage_dealt.percent_damage * battle_copy.user.active.max_hp
-
-    indicies_to_remove = []
-    num_starting_possibilites = len(possibilites)
-    for i in range(num_starting_possibilites):
-        p = possibilites[i]
-        if isinstance(p, PredictedPokemonSet):
-            p = p.pkmn_set
-
-        if not battle.opponent.active.ability:
-            battle_copy.opponent.active.ability = p.ability
-        if battle.opponent.active.item == constants.UNKNOWN_ITEM:
-            battle_copy.opponent.active.item = p.item
-        battle_copy.opponent.active.set_spread(
-            p.nature, ",".join(str(x) for x in p.evs)
-        )
-
-        if check_type == "damage_received":
-            actual_damage_dealt = (
-                damage_dealt.percent_damage * battle_copy.opponent.active.max_hp
-            )
-
-            if bot_went_first:
-                opponent_move = constants.DO_NOTHING_MOVE
-            else:
-                opponent_move = battle_copy.opponent.last_used_move.move
-
-            damage, _ = poke_engine_get_damage_rolls(
-                battle_copy, damage_dealt.move, opponent_move, bot_went_first
-            )
-        elif check_type == "damage_dealt":
-            _, damage = poke_engine_get_damage_rolls(
-                battle_copy,
-                battle_copy.user.last_selected_move.move,
-                damage_dealt.move,
-                bot_went_first,
-            )
-        else:
-            raise ValueError("Invalid check_type: {}".format(check_type))
-
-        if damage_dealt.crit:
-            max_damage = damage[1]
-        else:
-            max_damage = damage[0]
-
-        damage = [max_damage * 0.85, max_damage]
-        lower_bound_violated = check_lower_bound and (
-            actual_damage_dealt < (damage[0] * 0.975 - 5)
-        )
-        upper_bound_violated = actual_damage_dealt > (damage[1] * 1.025 + 5)
-        if lower_bound_violated or upper_bound_violated:
-            logger.debug(
-                "{} is invalid based on reverse damage calc. damage_dealt={}, lower={}, upper={}".format(
-                    p, actual_damage_dealt, damage[0], damage[1]
-                )
-            )
-            indicies_to_remove.append(i)
-
-    if len(indicies_to_remove) == num_starting_possibilites and not allow_emptying:
-        logger.warning("Would remove all possibilities, not removing any")
-        logger.warning(f"{actual_damage_dealt=}")
-        return
-
-    for i in reversed(indicies_to_remove):
-        possibilites.pop(i)
-
-
-def update_dataset_possibilities(
-    battle,
-    damage_dealt,
-    check_type,
-):
-    if (
-        battle.wait
-        or battle.generation in {"gen1", "gen2"}
-        or battle.opponent.active is None
-        or battle.opponent.active.hp <= 0
-        or battle.opponent.active.name
-        in ["ditto", "shedinja", "terapagosterastal", "meloetta", "meloettapirouette"]
-        or battle.user.active.name
-        in ["ditto", "shedinja", "terapagosterastal", "meloetta", "meloettapirouette"]
-        or damage_dealt.move not in all_move_json
-        or all_move_json[damage_dealt.move][constants.CATEGORY] == constants.STATUS
-        or "multiaccuracy" in all_move_json[damage_dealt.move]
-        or damage_dealt.move.startswith(constants.HIDDEN_POWER)
-        or damage_dealt.percent_damage == 0
-        or (
-            check_type == "damage_dealt"
-            and battle.opponent.last_used_move.move != damage_dealt.move
-        )
-        or (
-            check_type == "damage_received"
-            and battle.user.last_used_move.move != damage_dealt.move
-        )
-        or damage_dealt.move
-        in [
-            "pursuit",
-            "struggle",
-            "counter",
-            "mirrorcoat",
-            "metalburst",
-            "foulplay",
-            "meteorbeam",
-            "electroshot",
-            "ficklebeam",
-            "lashout",
-            "ragefist",
-            "shellsidearm",
-            "futuresight",
-        ]
-    ):
-        return
-
-    battle_copy = deepcopy(battle)
-
-    if battle.battle_type == BattleType.RANDOM_BATTLE:
-        possibilites = RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(
-            battle.opponent.active
-        )
-        smogon_possibilities = None
-        allow_emptying = False
-    elif battle.battle_type == BattleType.BATTLE_FACTORY:
-        possibilites = TeamDatasets.get_pkmn_sets_from_pkmn_name(battle.opponent.active)
-        smogon_possibilities = None
-        allow_emptying = False
-    else:
-        possibilites = TeamDatasets.get_pkmn_sets_from_pkmn_name(battle.opponent.active)
-        smogon_possibilities = SmogonSets.get_pkmn_sets_from_pkmn_name(
-            battle.opponent.active
-        )
-        allow_emptying = True
-
-    check_lower_bound = True
-    if check_type == "damage_dealt":
-        user_percent_hp = round(battle.user.active.hp / battle.user.active.max_hp, 2)
-        if abs(damage_dealt.percent_damage - user_percent_hp) < 0.02:
-            check_lower_bound = False
-        bot_went_first = (
-            battle.user.last_used_move.turn == battle.opponent.last_used_move.turn
-        )
-    elif check_type == "damage_received":
-        opponent_percent_hp = round(
-            battle.opponent.active.hp / battle.opponent.active.max_hp, 2
-        )
-        if abs(damage_dealt.percent_damage - opponent_percent_hp) < 0.02:
-            check_lower_bound = False
-        bot_went_first = (
-            battle.opponent.last_used_move.turn != battle.user.last_used_move.turn
-        )
-    else:
-        raise ValueError("Invalid check_type: {}".format(check_type))
-
-    logger.debug(f"{check_type=}")
-    logger.debug(f"{check_lower_bound=}")
-    logger.debug(f"{bot_went_first=}")
-
-    _do_check(
-        battle,
-        battle_copy,
-        possibilites,
-        check_type,
-        damage_dealt,
-        bot_went_first,
-        check_lower_bound,
-        allow_emptying=allow_emptying,
-    )
-
-    if smogon_possibilities is not None:
-        _do_check(
-            battle,
-            battle_copy,
-            smogon_possibilities,
-            check_type,
-            damage_dealt,
-            bot_went_first,
-            check_lower_bound,
-            allow_emptying=False,  # never completely empty smogon stats
-        )
-
-
-def check_heavydutyboots(battle, msg_lines):
-    side_to_check = battle.opponent
-
-    if (
-        battle.generation not in ["gen8", "gen9"]
-        or side_to_check.active.item != constants.UNKNOWN_ITEM
-        or "magicguard"
-        in [
-            normalize_name(a)
-            for a in pokedex[side_to_check.active.name][constants.ABILITIES].values()
-        ]
-    ):
-        return
-
-    if side_to_check.side_conditions[constants.STEALTH_ROCK] > 0:
-        pkmn_took_stealthrock_damage = False
-        for line in msg_lines:
-            split_line = line.split("|")
-
-            # |-damage|p2a: Weedle|88/100|[from] Stealth Rock
-            if (
-                len(split_line) > 4
-                and split_line[1] == "-damage"
-                and split_line[2].startswith(side_to_check.name)
-                and split_line[4] == "[from] Stealth Rock"
-            ):
-                pkmn_took_stealthrock_damage = True
-
-        if not pkmn_took_stealthrock_damage:
-            logger.info("{} has heavydutyboots".format(side_to_check.active.name))
-            side_to_check.active.item = "heavydutyboots"
-            side_to_check.active.item_inferred = True
-        else:
-            logger.info(
-                "{} was affected by stealthrock, it cannot have heavydutyboots".format(
-                    side_to_check.active.name
-                )
-            )
-            side_to_check.active.impossible_items.add(constants.HEAVY_DUTY_BOOTS)
-
-    elif (
-        side_to_check.side_conditions[constants.SPIKES] > 0
-        and "levitate"
-        not in [
-            normalize_name(a)
-            for a in pokedex[side_to_check.active.name][constants.ABILITIES].values()
-        ]
-        and not side_to_check.active.has_type("flying")
-        and side_to_check.active.ability != "levitate"
-    ):
-        pkmn_took_spikes_damage = False
-        for line in msg_lines:
-            split_line = line.split("|")
-
-            # |-damage|p2a: Weedle|88/100|[from] Spikes
-            if (
-                len(split_line) > 4
-                and split_line[1] == "-damage"
-                and split_line[2].startswith(side_to_check.name)
-                and split_line[4] == "[from] Spikes"
-            ):
-                pkmn_took_spikes_damage = True
-
-        if not pkmn_took_spikes_damage:
-            logger.info("{} has heavydutyboots".format(side_to_check.active.name))
-            side_to_check.active.item = "heavydutyboots"
-            side_to_check.active.item_inferred = True
-        else:
-            logger.info(
-                "{} was affected by spikes, it cannot have heavydutyboots".format(
-                    side_to_check.active.name
-                )
-            )
-            side_to_check.active.impossible_items.add(constants.HEAVY_DUTY_BOOTS)
-    elif (
-        side_to_check.side_conditions[constants.TOXIC_SPIKES] > 0
-        and side_to_check.active.status is None
-        and not side_to_check.active.has_type("flying")
-        and not side_to_check.active.has_type("poison")
-        and not side_to_check.active.has_type("steel")
-        and side_to_check.active.ability != "levitate"
-        and "levitate"
-        not in [
-            normalize_name(a)
-            for a in pokedex[side_to_check.active.name][constants.ABILITIES].values()
-        ]
-        and side_to_check.active.ability not in constants.IMMUNE_TO_POISON_ABILITIES
-    ):
-        pkmn_took_toxicspikes_poison = False
-        for line in msg_lines:
-            split_line = line.split("|")
-
-            # a pokemon can be toxic-ed from sources other than toxicspikes
-            # stopping at one of these strings ensures those other sources aren't considered
-            if len(split_line) < 2 or split_line[1] in {"move", "upkeep", ""}:
-                break
-
-            # |-status|p2a: Pikachu|psn
-            if (
-                split_line[1] == "-status"
-                and (
-                    split_line[3] == constants.POISON
-                    or split_line[3] == constants.TOXIC
-                )
-                and split_line[2].startswith(side_to_check.name)
-            ):
-                pkmn_took_toxicspikes_poison = True
-
-        if not pkmn_took_toxicspikes_poison:
-            logger.info("{} has heavydutyboots".format(side_to_check.active.name))
-            side_to_check.active.item = "heavydutyboots"
-            side_to_check.active.item_inferred = True
-        else:
-            logger.info(
-                "{} was affected by toxicspikes, it cannot have heavydutyboots".format(
-                    side_to_check.active.name
-                )
-            )
-            side_to_check.active.impossible_items.add(constants.HEAVY_DUTY_BOOTS)
-
-    elif (
-        side_to_check.side_conditions[constants.STICKY_WEB] > 0
-        and not side_to_check.active.has_type("flying")
-        and "levitate"
-        not in [
-            normalize_name(a)
-            for a in pokedex[side_to_check.active.name][constants.ABILITIES].values()
-        ]
-    ):
-        pkmn_was_affected_by_stickyweb = False
-        for line in msg_lines:
-            split_line = line.split("|")
-
-            # |-activate|p2a: Gengar|move: Sticky Web
-            if (
-                len(split_line) == 4
-                and split_line[1] == "-activate"
-                and split_line[2].startswith(side_to_check.name)
-                and split_line[3] == "move: Sticky Web"
-            ):
-                pkmn_was_affected_by_stickyweb = True
-
-        if not pkmn_was_affected_by_stickyweb:
-            logger.info("{} has heavydutyboots".format(side_to_check.active.name))
-            side_to_check.active.item = "heavydutyboots"
-            side_to_check.active.item_inferred = True
-        else:
-            logger.debug(
-                "{} was affected by sticky web, it cannot have heavydutyboots".format(
-                    side_to_check.active.name
-                )
-            )
-            side_to_check.active.impossible_items.add(constants.HEAVY_DUTY_BOOTS)
 
 
 def update_battle(battle: Battle, msg: str):

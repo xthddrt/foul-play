@@ -5539,11 +5539,39 @@ class TestUpkeep(unittest.TestCase):
         self.assertEqual(self.battle.user.future_sight, (0, "pokemon_name"))
 
     def test_adds_leftovers_blacksludge_to_impossible_items_at_end_of_turn(self):
+        # Leftovers fires once per residual phase, so ruling it out needs TWO
+        # upkeeps below max HP with no gain. One is not evidence.
         self.battle.opponent.active.hp = 50
+        upkeep(self.battle, "")
         upkeep(self.battle, "")
         self.assertIn(constants.LEFTOVERS, self.battle.opponent.active.impossible_items)
         self.assertIn(
             constants.BLACK_SLUDGE, self.battle.opponent.active.impossible_items
+        )
+
+    def test_single_upkeep_below_maxhp_does_not_rule_out_leftovers(self):
+        """Regression: this false elimination hid the opponent's TRUE set.
+
+        A mon that switched into hazards is below max HP at its first upkeep and
+        will still heal at the residual step. The old rule fired immediately and
+        excluded every Leftovers set -- measured as the dominant `match_item`
+        support gap (SPEC-B4 worked example: Floatzel, true item Leftovers,
+        already in impossible_items).
+        """
+        self.battle.opponent.active.hp = 50
+        upkeep(self.battle, "")
+        self.assertNotIn(
+            constants.LEFTOVERS, self.battle.opponent.active.impossible_items
+        )
+
+    def test_hp_gain_between_upkeeps_never_rules_out_leftovers(self):
+        """If HP went UP across the turn boundary, Leftovers is consistent."""
+        self.battle.opponent.active.hp = 50
+        upkeep(self.battle, "")
+        self.battle.opponent.active.hp = 62  # healed
+        upkeep(self.battle, "")
+        self.assertNotIn(
+            constants.LEFTOVERS, self.battle.opponent.active.impossible_items
         )
 
     def test_adds_flameorb_toxicorb_if_status_is_none_at_end_of_turn(self):

@@ -122,6 +122,16 @@ POKE_ENGINE_SUPPORTS_LAST_MOVE_FAILED = hasattr(PokeEngineSide, "last_move_faile
 # which is the pre-field behaviour.
 POKE_ENGINE_SUPPORTS_TIMES_REVIVED = hasattr(PokeEngineSide, "times_revived")
 
+# same wheel-compat detection for the Side `stats_raised` field (PS
+# `statsRaisedThisTurn`). The engine gates Alluring Voice / Burning Jealousy's 100%
+# confuse/burn secondary on it and used to hard-code it false in the python-object ->
+# engine conversion, on the premise that it is within-turn-only state. PS falsifies that
+# on turn 1, where `nextTurn` skips the reset (sim/battle.ts:1673-1675) and a `|start|`
+# switch-in ability boost is still live for turn 1's moves. Older wheels reject the
+# kwarg; without it those two moves simply never fire the secondary off a pre-turn-1
+# boost, which is the pre-field behaviour.
+POKE_ENGINE_SUPPORTS_STATS_RAISED = hasattr(PokeEngineSide, "stats_raised")
+
 # same wheel-compat detection for the `last_consumed_item` field. The engine
 # gates Harvest/Cud Chew recycling on it (genx/abilities.rs:1314-1315: berry
 # AND empty item slot), so it must be seeded at root or a berry eaten before
@@ -516,6 +526,10 @@ def battler_to_poke_engine_side(
         # so the clamp only guards against a malformed count reaching the binding.
         extra_side_kwargs["times_revived"] = max(
             0, min(int(getattr(battler, "times_revived", 0)), 100)
+        )
+    if POKE_ENGINE_SUPPORTS_STATS_RAISED:
+        extra_side_kwargs["stats_raised"] = bool(
+            getattr(battler, "stats_raised_this_turn", False)
         )
 
     side = PokeEngineSide(

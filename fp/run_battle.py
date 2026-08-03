@@ -79,6 +79,21 @@ def extract_battle_factory_tier_from_msg(msg):
     return normalize_name(tier_name)
 
 
+def fallback_choice(battle):
+    # last-resort legal choice when the search dies: any legal move beats
+    # forfeiting on time
+    request = battle.request_json or {}
+    if not request.get(constants.FORCE_SWITCH):
+        active = request.get(constants.ACTIVE) or [{}]
+        for m in active[0].get(constants.MOVES, []):
+            if not m.get("disabled"):
+                return m["id"]
+    for p in battle.user.reserve:
+        if p.hp > 0:
+            return "switch {}".format(p.name)
+    return battle.user.active.moves[0].name
+
+
 async def async_pick_move(battle):
     # increment on the REAL battle (find_best_move only ever sees a copy)
     # so the first-decision extended search applies exactly once per battle
@@ -89,7 +104,16 @@ async def async_pick_move(battle):
 
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor() as pool:
-        best_move = await loop.run_in_executor(pool, find_best_move, battle_copy)
+        try:
+            best_move = await loop.run_in_executor(pool, find_best_move, battle_copy)
+        except asyncio.CancelledError:
+            raise
+        # BaseException: pyo3 panics escape `except Exception`
+        except BaseException as e:
+            logger.error(
+                "find_best_move failed ({!r}); using fallback choice".format(e)
+            )
+            best_move = fallback_choice(battle_copy)
     battle.user.last_selected_move = LastUsedMove(
         battle.user.active.name,
         best_move.removesuffix("-tera").removesuffix("-mega"),
@@ -163,8 +187,13 @@ async def start_battle_common(
     while True:
         msg = await ps_websocket_client.receive_message()
         if "|player|" in msg and battle.opponent.account_name in msg:
-            battle.opponent.name = msg.split("|")[2]
+            parts = msg.split("|")
+            battle.opponent.name = parts[2]
             battle.user.name = constants.ID_LOOKUP[battle.opponent.name]
+            # |player|p1|Name|avatar|rating - rating present on ladder games
+            battle.opponent.account_rating = (
+                parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
+            )
             break
 
     return battle, msg
@@ -339,6 +368,16 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type, team_dict):
                 else None
             )
             logger.info("Winner: {}".format(winner))
+            try:
+                from fp.battle_modifier import record_opponent_action
+
+                record_opponent_action(
+                    battle,
+                    "game_end",
+                    "win" if winner == FoulPlayConfig.username else "loss",
+                )
+            except Exception:
+                logger.debug("game_end ledger row failed", exc_info=True)
             if (
                 FoulPlayConfig.save_replay == SaveReplay.always
                 or (

@@ -47,6 +47,12 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+GRADED_EVIDENCE_RELAXATION_FLAG = "FP_GRADED_EVIDENCE_RELAXATION"
+# Graded relaxation is ON by default; this disables it, restoring the legacy
+# all-at-once fallback.  Named to match the established FP_CONTROL_NO_* negative
+# control convention used elsewhere in the tree.
+GRADED_EVIDENCE_RELAXATION_CONTROL_OFF = "FP_CONTROL_NO_GRADED_EVIDENCE_RELAXATION"
+
 
 # 24h: pkmn/randbats regenerates whenever Showdown's generator changes
 # (~monthly, typically at dex rotations - exactly when sets shift most). A
@@ -54,6 +60,36 @@ logger = logging.getLogger(__name__)
 # is ~466KB so a daily re-download is free. On download failure the stale
 # cache is kept (see get_sets_file), so a tight TTL cannot brick the bot.
 SETS_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+
+def _build_cosmetic_forme_to_base() -> dict[str, str]:
+    """Maps every cosmetic forme id to its base species id.
+
+    PS lists cosmetic formes on the BASE entry (`cosmeticFormes`) and gives the
+    forme itself no `baseSpecies`, so a forme like `sawsbucksummer` cannot be
+    resolved to `sawsbuck` by the normal baseSpecies path.  Cosmetic formes are
+    identical for set generation -- only appearance differs -- so they must share
+    the base species' sets.
+    """
+    # Two passes: cosmetic forme ENTRIES carry a copy of `cosmeticFormes`, so a
+    # single pass lets one forme overwrite another's base (sawsbucksummer ->
+    # sawsbuckwinter).  Collect the forme ids first, then only accept a base
+    # that is not itself a cosmetic forme.
+    all_formes = set()
+    for entry in pokedex.values():
+        for forme in (entry or {}).get("cosmeticFormes") or []:
+            all_formes.add(normalize_name(forme))
+
+    mapping = {}
+    for base_id, entry in pokedex.items():
+        if base_id in all_formes:
+            continue
+        for forme in (entry or {}).get("cosmeticFormes") or []:
+            mapping[normalize_name(forme)] = base_id
+    return mapping
+
+
+COSMETIC_FORME_TO_BASE = _build_cosmetic_forme_to_base()
 
 
 def _read_sets_cache_file(cache_path: str) -> Optional[dict]:
@@ -408,6 +444,23 @@ class PredictedPokemonSet:
     pkmn_set: PokemonSet
     pkmn_moveset: PokemonMoveset
 
+    def mechanics_signature(self):
+        """Canonical identity for mechanics-equivalent dataset rows."""
+        return (
+            normalize_name(self.pkmn_set.ability or ""),
+            normalize_name(self.pkmn_set.item or ""),
+            normalize_name(self.pkmn_set.nature or ""),
+            tuple(int(value) for value in self.pkmn_set.evs),
+            tuple(int(value) for value in self.pkmn_set.ivs),
+            (
+                None
+                if self.pkmn_set.level is None
+                else int(self.pkmn_set.level)
+            ),
+            normalize_name(self.pkmn_set.tera_type or ""),
+            tuple(sorted(normalize_name(move) for move in self.pkmn_moveset.moves)),
+        )
+
     def full_set_pkmn_can_have_set(
         self,
         pkmn: Pokemon,
@@ -417,6 +470,10 @@ class PredictedPokemonSet:
         level_check=False,
         tera_check=True,
     ) -> bool:
+        if self.mechanics_signature() in getattr(
+            pkmn, "rejected_set_signatures", set()
+        ):
+            return False
         return self.pkmn_set.set_makes_sense(
             pkmn,
             match_ability=match_ability,
@@ -572,6 +629,31 @@ class PokemonSets:
         if pkmn_mega_name in d:
             return d[pkmn_mega_name]
         elif pkmn_name in d:
+            # A COSMETIC forme (Sawsbuck-Summer, Gastrodon-East, ...) shares its
+            # base species' sets in PS's generator: pokedex records them under
+            # `cosmeticFormes` on the BASE entry and gives the forme itself no
+            # `baseSpecies`, so the baseSpecies fallback below never fires for
+            # them.  `_merge_user_observed_sets` writes an observed set under the
+            # narrow cosmetic key, and this early return then SHADOWS the entire
+            # base family -- measured at 600 support gaps where the opponent's
+            # true set existed in the dataset but the lookup never offered it
+            # (SPEC-B4).  Merge instead of shadowing; dedupe so a set observed
+            # under both keys is not double-weighted in the count-weighted draw.
+            base_species = COSMETIC_FORME_TO_BASE.get(pkmn_name)
+            if base_species is not None and base_species in d:
+                merged = list(d[base_species])
+                seen = {
+                    s.mechanics_signature()
+                    for s in merged
+                    if hasattr(s, "mechanics_signature")
+                }
+                for s in d[pkmn_name]:
+                    if (
+                        not hasattr(s, "mechanics_signature")
+                        or s.mechanics_signature() not in seen
+                    ):
+                        merged.append(s)
+                return merged
             return d[pkmn_name]
         elif pkmn_base_name in d:
             return d[pkmn_base_name]
@@ -726,6 +808,8 @@ class _RandomBattleSets(PokemonSets):
             logger.warning("Called `predict_set` when pkmn_sets was empty")
             return []
 
+        pkmn_sets = self.get_pkmn_sets_from_pkmn_name(pkmn)
+
         # A TRANSFORMED mon (Ditto/Imposter) carries COPIED moves/ability that
         # match no real set of its base species, so the normal filters return
         # nothing and the true item is never sampled (forensic: transformed
@@ -734,40 +818,132 @@ class _RandomBattleSets(PokemonSets):
         # Match the base species' sets on item knowledge only.
         if getattr(pkmn, "transformed_into", None):
             remaining_sets = []
-            for pkmn_set in self.get_pkmn_sets_from_pkmn_name(pkmn):
-                set_item = pkmn_set.pkmn_set.item
-                if pkmn.item != constants.UNKNOWN_ITEM and set_item != pkmn.item:
+            for pkmn_set in pkmn_sets:
+                if pkmn_set.mechanics_signature() in getattr(
+                    pkmn, "rejected_set_signatures", set()
+                ):
                     continue
-                if set_item in getattr(pkmn, "impossible_items", set()):
+                set_item = pkmn_set.pkmn_set.item
+                # A transformed mon that has LOST its item carries `item == ""`
+                # (falsy), not UNKNOWN_ITEM. The old guard treated empty as
+                # "known to hold nothing" and required the set's item to be
+                # empty too, excluding the true set. `removed_item` records what
+                # it actually held -- 100% valid information, and the only
+                # evidence available once the item is gone.
+                #
+                # Measured: this was the dominant support-gap cause (SPEC-B4).
+                # Worked example -- transformed Ditto, item "", removed_item
+                # choicescarf, true set Choice Scarf, candidate list EMPTY.
+                known_item = pkmn.item if pkmn.item else None
+                removed_item = getattr(pkmn, "removed_item", None) or None
+                if known_item is not None and known_item != constants.UNKNOWN_ITEM:
+                    if set_item != known_item:
+                        continue
+                elif removed_item is not None:
+                    # It held `removed_item` before losing it: only sets with
+                    # that item are possible. This NARROWS, it does not widen.
+                    if set_item != removed_item:
+                        continue
+                # An item proven impossible stays impossible -- unless it is the
+                # very item we watched this mon hold and lose, which is direct
+                # observation and outranks any inference.
+                if set_item in getattr(pkmn, "impossible_items", set()) and (
+                    removed_item is None or set_item != removed_item
+                ):
                     continue
                 remaining_sets.append(pkmn_set)
             return remaining_sets
 
-        remaining_sets = []
-        for pkmn_set in self.get_pkmn_sets_from_pkmn_name(pkmn):
-            if pkmn_set.full_set_pkmn_can_have_set(
-                pkmn,
-                match_ability=True,
-                match_item=True,
-                speed_check=True,
-                level_check=True,
-                tera_check=True,
-            ):
-                remaining_sets.append(pkmn_set)
+        def matching_sets(**checks):
+            return [
+                pkmn_set
+                for pkmn_set in pkmn_sets
+                if pkmn_set.full_set_pkmn_can_have_set(pkmn, **checks)
+            ]
 
-        if not remaining_sets:
-            for pkmn_set in self.get_pkmn_sets_from_pkmn_name(pkmn):
-                if pkmn_set.full_set_pkmn_can_have_set(
-                    pkmn,
+        remaining_sets = matching_sets(
+            match_ability=True,
+            match_item=True,
+            speed_check=True,
+            level_check=True,
+            tera_check=True,
+        )
+        if remaining_sets:
+            return remaining_sets
+
+        if os.environ.get(GRADED_EVIDENCE_RELAXATION_CONTROL_OFF):
+            # Legacy all-at-once fallback, retained ONLY as the negative control.
+            # Graded relaxation is the default because it is strictly better on
+            # every measured axis (SPEC-B2): recovery 402/402 with 0 regressions
+            # - it never returns empty where all-at-once returned candidates -
+            # while mean candidate count falls 20.54 -> 16.30 and mean retained
+            # match flags rise 0 -> 2.16.  The path fires on 17.53% of games
+            # (27/154), so shipping it dormant would have been a fix nobody runs.
+            return matching_sets(
+                match_ability=False,
+                match_item=False,
+                speed_check=False,
+                level_check=False,
+                tera_check=False,
+            )
+
+        # Speed is the weakest inferred evidence. Recorded positions showed
+        # that level or tera never recovered first, so keep ability until the
+        # final rung and relax the middle group together.
+        relaxation_steps = (
+            (
+                1,
+                "speed",
+                dict(
+                    match_ability=True,
+                    match_item=True,
+                    speed_check=False,
+                    level_check=True,
+                    tera_check=True,
+                ),
+            ),
+            (
+                2,
+                "speed,level,tera,item",
+                dict(
+                    match_ability=True,
+                    match_item=False,
+                    speed_check=False,
+                    level_check=False,
+                    tera_check=False,
+                ),
+            ),
+            (
+                3,
+                "speed,level,tera,item,ability",
+                dict(
                     match_ability=False,
                     match_item=False,
                     speed_check=False,
                     level_check=False,
                     tera_check=False,
-                ):
-                    remaining_sets.append(pkmn_set)
+                ),
+            ),
+        )
+        for depth, relaxed_constraints, checks in relaxation_steps:
+            remaining_sets = matching_sets(**checks)
+            if remaining_sets:
+                logger.info(
+                    "Evidence relaxation for %s recovered %d candidates "
+                    "at depth=%d after relaxing=%s",
+                    pkmn.name,
+                    len(remaining_sets),
+                    depth,
+                    relaxed_constraints,
+                )
+                return remaining_sets
 
-        return remaining_sets
+        logger.info(
+            "Evidence relaxation for %s exhausted at depth=3 after "
+            "relaxing=speed,level,tera,item,ability with no candidates",
+            pkmn.name,
+        )
+        return []
 
     def get_all_possible_moves(self, pkmn: Pokemon):
         if not self.pkmn_sets:

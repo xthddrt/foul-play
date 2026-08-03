@@ -491,13 +491,15 @@ class TestFirstTurnSearchTime(unittest.TestCase):
                 setattr(FoulPlayConfig, attr, value)
 
     def test_randombattles_first_decision_uses_first_turn_time(self):
-        # first decision, nothing revealed: the early-shallow branch halves
-        # the base time. decisions_made=1 is the production path: the counter
-        # was just incremented by async_pick_move for this very decision
+        # first decision, nothing revealed: the early-shallow branch divides
+        # the base time by the wave count (num_battles_multiplier) so wall
+        # time matches the configured budget. decisions_made=1 is the
+        # production path: the counter was just incremented by
+        # async_pick_move for this very decision
         battle = battle_stub(turn=1, decisions_made=1)
         num_battles, search_time = search_time_num_battles_randombattles(battle)
         self.assertEqual(4, num_battles)
-        self.assertEqual(10000, search_time)
+        self.assertEqual(5000, search_time)
 
     def test_randombattles_later_decision_uses_search_time(self):
         battle = battle_stub(turn=5, decisions_made=6)
@@ -588,188 +590,6 @@ def mcts_result_iwsd(options):
     return SimpleNamespace(
         side_one=side_one, total_visits=sum(o.visits for o in side_one)
     )
-
-
-class TestSignificanceForfeit(unittest.TestCase):
-    _ATTRS = (
-        "losing_attack_fallback_threshold",
-        "switch_weight_multiplier",
-        "switch_gate_tolerance",
-        "significance_forfeit_alpha",
-        "significance_forfeit_iwsd_margin",
-    )
-
-    def setUp(self):
-        self.originals = {attr: getattr(FoulPlayConfig, attr) for attr in self._ATTRS}
-        FoulPlayConfig.losing_attack_fallback_threshold = 0.0
-        FoulPlayConfig.switch_weight_multiplier = 1.0
-        FoulPlayConfig.switch_gate_tolerance = 0.04
-        FoulPlayConfig.significance_forfeit_alpha = 0.05
-        FoulPlayConfig.significance_forfeit_iwsd_margin = 0.02
-
-    def tearDown(self):
-        for attr, value in self.originals.items():
-            setattr(FoulPlayConfig, attr, value)
-
-    @staticmethod
-    def _tied_worlds():
-        # 6 worlds: riskymove leads on share but its per-world score edge
-        # over the lower-iwsd safemove is statistically nothing
-        risky_avgs = [0.50, 0.48, 0.52, 0.49, 0.51, 0.50]
-        safe_avgs = [0.50, 0.51, 0.49, 0.50, 0.48, 0.52]
-        return [
-            (
-                mcts_result_iwsd(
-                    [
-                        ("riskymove", 400, risky_avgs[i], 0.30),
-                        ("safemove", 350, safe_avgs[i], 0.20),
-                        ("fillermove", 250, 0.45, 0.20),
-                    ]
-                ),
-                1.0 / 6,
-                i,
-            )
-            for i in range(6)
-        ]
-
-    def test_forfeit_fires_on_statistical_tie_with_safer_option(self):
-        choice = select_move_from_mcts_results(self._tied_worlds())
-        self.assertEqual("safemove", choice)
-
-    def test_forfeit_disabled_at_alpha_zero(self):
-        FoulPlayConfig.significance_forfeit_alpha = 0.0
-        choice = select_move_from_mcts_results(self._tied_worlds())
-        self.assertEqual("riskymove", choice)
-
-    def test_no_forfeit_when_top_is_significantly_better(self):
-        # top pick beats the safer option by a consistent +0.10 per world:
-        # the paired t certifies the edge and no forfeit happens
-        results = [
-            (
-                mcts_result_iwsd(
-                    [
-                        ("strongmove", 400, 0.60 + d, 0.30),
-                        ("safemove", 350, 0.50 + d, 0.20),
-                    ]
-                ),
-                1.0 / 6,
-                i,
-            )
-            for i, d in enumerate([0.0, 0.01, -0.01, 0.005, -0.005, 0.0])
-        ]
-        choice = select_move_from_mcts_results(results)
-        self.assertEqual("strongmove", choice)
-
-    def test_no_forfeit_without_iwsd_data(self):
-        # old-wheel results without total_score_sq: forfeit silently skipped
-        results = [
-            (mcts_result([("riskymove", 40), ("safemove", 36)]), 1.0, 0),
-        ]
-        choice = select_move_from_mcts_results(results)
-        self.assertEqual("riskymove", choice)
-
-    def test_low_share_challenger_cannot_trigger_forfeit(self):
-        # a junk arm the search abandoned (2% pooled share) with a tiny iwsd
-        # and a statistical tie must NOT qualify as a 'safer' challenger:
-        # challengers need >= 5% pooled share
-        risky_avgs = [0.50, 0.48, 0.52, 0.49, 0.51, 0.50]
-        junk_avgs = [0.50, 0.51, 0.49, 0.50, 0.48, 0.52]
-        results = [
-            (
-                mcts_result_iwsd(
-                    [
-                        ("riskymove", 500, risky_avgs[i], 0.30),
-                        ("junksafe", 20, junk_avgs[i], 0.05),
-                        # filler's iwsd is within the 0.02 margin of the top
-                        # pick's, so it never qualifies as a challenger
-                        ("fillermove", 480, 0.45, 0.29),
-                    ]
-                ),
-                1.0 / 6,
-                i,
-            )
-            for i in range(6)
-        ]
-        choice = select_move_from_mcts_results(results)
-        self.assertEqual("riskymove", choice)
-
-    def test_pooled_iwsd_ignores_sub_one_percent_worlds(self):
-        # the challenger's iwsd evidence comes almost entirely from worlds
-        # where its share is < 1% (1-visit-class arms have iwsd ~0, biasing
-        # the pooled average low). Only worlds with >= 1% share may vote:
-        # here that leaves a single world at iwsd 0.29, which is NOT lower
-        # than the top pick's 0.30 by the 0.02 margin, so no forfeit fires
-        risky_avgs = [0.50, 0.48, 0.52, 0.49, 0.51, 0.50]
-        safe_avgs = [0.50, 0.51, 0.49, 0.50, 0.48, 0.52]
-        worlds = [
-            (
-                mcts_result_iwsd(
-                    [
-                        ("riskymove", 500, risky_avgs[0], 0.30),
-                        ("safemove", 300, safe_avgs[0], 0.29),
-                        ("fillermove", 200, 0.45, 0.30),
-                    ]
-                ),
-                1.0 / 6,
-                0,
-            )
-        ]
-        for i in range(1, 6):
-            worlds.append(
-                (
-                    mcts_result_iwsd(
-                        [
-                            ("riskymove", 500, risky_avgs[i], 0.30),
-                            # 5/1000 visits = 0.5% share: iwsd 0 is junk data
-                            ("safemove", 5, safe_avgs[i], 0.0),
-                            ("fillermove", 495, 0.45, 0.30),
-                        ]
-                    ),
-                    1.0 / 6,
-                    i,
-                )
-            )
-        # pooled share ~5.4% clears the challenger floor, isolating the
-        # per-world iwsd floor as the thing under test
-        choice = select_move_from_mcts_results(worlds)
-        self.assertEqual("riskymove", choice)
-
-    def test_fewer_than_five_common_worlds_skips_the_test(self):
-        # the paired t needs >= 5 worlds where BOTH options were visited;
-        # the challenger only appears in 4 of the 6 worlds, so the test is
-        # inconclusive (None) and no forfeit fires
-        risky_avgs = [0.50, 0.48, 0.52, 0.49, 0.51, 0.50]
-        safe_avgs = [0.50, 0.51, 0.49, 0.50]
-        worlds = []
-        for i in range(4):
-            worlds.append(
-                (
-                    mcts_result_iwsd(
-                        [
-                            ("riskymove", 450, risky_avgs[i], 0.30),
-                            ("safemove", 350, safe_avgs[i], 0.05),
-                            ("fillermove", 200, 0.45, 0.30),
-                        ]
-                    ),
-                    1.0 / 6,
-                    i,
-                )
-            )
-        for i in range(4, 6):
-            worlds.append(
-                (
-                    mcts_result_iwsd(
-                        [
-                            ("riskymove", 450, risky_avgs[i], 0.30),
-                            ("fillermove", 550, 0.45, 0.30),
-                        ]
-                    ),
-                    1.0 / 6,
-                    i,
-                )
-            )
-        choice = select_move_from_mcts_results(worlds)
-        self.assertEqual("riskymove", choice)
 
 
 class TestTeraMarginGate(unittest.TestCase):
@@ -1024,7 +844,7 @@ class TestSearchExecutorReuse(unittest.TestCase):
 
 class TestSelectionPipelineOrdering(unittest.TestCase):
     """Interaction-matrix coverage of the full selection pipeline order:
-    score-gate -> tera-margin-gate -> significance-forfeit -> losing-fallback.
+    score-gate -> tera-margin-gate -> losing-fallback.
     (The fallback-after-gate legs are pinned by
     TestScoreDominanceGate.test_fallback_still_fires_after_gating and
     TestLosingAttackFallback.test_fallback_fires_on_blended_argmax_score.)"""
@@ -1034,8 +854,6 @@ class TestSelectionPipelineOrdering(unittest.TestCase):
         "switch_weight_multiplier",
         "switch_gate_tolerance",
         "tera_margin_gate",
-        "significance_forfeit_alpha",
-        "significance_forfeit_iwsd_margin",
     )
 
     def setUp(self):
@@ -1044,8 +862,6 @@ class TestSelectionPipelineOrdering(unittest.TestCase):
         FoulPlayConfig.switch_weight_multiplier = 1.0
         FoulPlayConfig.switch_gate_tolerance = 0.04
         FoulPlayConfig.tera_margin_gate = 0.025
-        FoulPlayConfig.significance_forfeit_alpha = 0.05
-        FoulPlayConfig.significance_forfeit_iwsd_margin = 0.02
 
     def tearDown(self):
         for attr, value in self.originals.items():
@@ -1066,76 +882,6 @@ class TestSelectionPipelineOrdering(unittest.TestCase):
         ]
         self.assertEqual("flareblitz", select_move_from_mcts_results(results))
 
-    def test_forfeit_cannot_resurrect_a_score_gated_switch(self):
-        # the switch is by far the 'safest' option (iwsd 0.05) and would win
-        # a significance forfeit, but its score (0.40) is gated out first
-        # (floor 0.50 - 0.04); the forfeit may only consider ELIGIBLE options
-        # and the other move's iwsd is within the margin, so the top pick stays
-        risky_avgs = [0.50, 0.48, 0.52, 0.49, 0.51, 0.50]
-        results = [
-            (
-                mcts_result_iwsd(
-                    [
-                        ("riskymove", 400, risky_avgs[i], 0.30),
-                        ("switch blissey", 350, 0.40, 0.05),
-                        ("othermove", 250, 0.50, 0.29),
-                    ]
-                ),
-                1.0 / 6,
-                i,
-            )
-            for i in range(6)
-        ]
-        choice = select_move_from_mcts_results(results)
-        self.assertEqual("riskymove", choice)
-
-    def test_margin_gate_survivor_can_still_forfeit_to_safer_option(self):
-        # gates -> forfeit ordering: the tera clears the score gate AND the
-        # margin gate (0.62 >= 0.58 + 0.025) but cannot certify its edge over
-        # the much safer safemove at alpha, so it forfeits to it
-        safe_avgs = [0.60, 0.56, 0.59, 0.57, 0.58, 0.58]
-        diffs = [0.10, -0.02, 0.08, -0.04, 0.06, 0.06]
-        results = [
-            (
-                mcts_result_iwsd(
-                    [
-                        ("flareblitz-tera", 450, safe_avgs[i] + diffs[i], 0.30),
-                        ("flareblitz", 400, 0.50, 0.25),
-                        ("safemove", 150, safe_avgs[i], 0.10),
-                    ]
-                ),
-                1.0 / 6,
-                i,
-            )
-            for i in range(6)
-        ]
-        choice = select_move_from_mcts_results(results)
-        self.assertEqual("safemove", choice)
-
-    def test_forfeit_winner_feeds_the_losing_fallback(self):
-        # forfeit -> fallback ordering: after the forfeit elects the safer
-        # move the fallback threshold check runs against the FORFEITED
-        # winner's score; everything is hopeless here so the fallback picks
-        # the best-scoring eligible attack instead of the safe stall
-        FoulPlayConfig.losing_attack_fallback_threshold = 0.35
-        risky_avgs = [0.20, 0.18, 0.22, 0.19, 0.21, 0.20]
-        safe_avgs = [0.20, 0.21, 0.19, 0.20, 0.18, 0.22]
-        results = [
-            (
-                mcts_result_iwsd(
-                    [
-                        ("riskymove", 450, risky_avgs[i], 0.30),
-                        ("safemove", 350, safe_avgs[i], 0.10),
-                        ("bestattack", 200, 0.25, 0.30),
-                    ]
-                ),
-                1.0 / 6,
-                i,
-            )
-            for i in range(6)
-        ]
-        choice = select_move_from_mcts_results(results)
-        self.assertEqual("bestattack", choice)
 
 
 if __name__ == "__main__":

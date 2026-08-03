@@ -75,6 +75,7 @@ class _FoulPlayConfig:
     search_time_ms: int
     first_turn_search_time_ms: int | None = None
     search_threads: int
+    search_pool_workers: int | None = None
     parallelism: int
     run_count: int
     team_name: str
@@ -83,12 +84,24 @@ class _FoulPlayConfig:
     switch_weight_multiplier: float = 1.0
     losing_attack_fallback_threshold: float = 0.05
     variance_penalty_lambda: float = 0.0
-    switch_gate_tolerance: float = 0.04
-    tera_margin_gate: float = 0.025
+    switch_gate_tolerance: float = 0.01
+    # near-tie mixing (selection.py _sample_near_ties); either 0 disables
+    mix_visit_ratio: float = 0.8
+    mix_score_tolerance: float = 0.01
+    # two-phase committed-root probes (main.py): phase 1 nominates finalists,
+    # phase 2 measures each with a dedicated forced-root search per world.
+    # probe_phase1_ms=0 disables (single-phase search, today's behavior)
+    probe_phase1_ms: int = 1500
+    probe_phase2_budget_ms: int = 3000
+    probe_ms_min: int = 500
+    probe_ms_max: int = 2250
+    probe_worlds: int = 8
+    probe_margin: float = 0.04
+    probe_floor_margin: float = 0.01
+    probe_max_candidates: int = 3
+    tera_margin_gate: float = 0.015
     losing_upside_threshold: float = 0.15
     losing_upside_displacement_multiplier: float = 2.0
-    significance_forfeit_alpha: float = 0.1
-    significance_forfeit_iwsd_margin: float = 0.02
     reuse_search_pool: bool = True
     never_start_timer: bool = False
     user_to_challenge: str
@@ -145,6 +158,15 @@ class _FoulPlayConfig:
             help="Number of states to search in parallel",
         )
         parser.add_argument(
+            "--search-pool-workers",
+            type=int,
+            default=None,
+            help="Worker processes in the search pool. Defaults to "
+            "--search-parallelism. Set to the physical core count to run "
+            "more worlds than cores in sequential full-speed waves instead "
+            "of oversubscribing.",
+        )
+        parser.add_argument(
             "--search-threads",
             type=int,
             default=1,
@@ -197,7 +219,7 @@ class _FoulPlayConfig:
         parser.add_argument(
             "--switch-gate-tolerance",
             type=float,
-            default=0.04,
+            default=0.01,
             help="A voluntary switch or tera/mega option is only eligible for "
             "selection when its aggregated avg score is within this tolerance "
             "of the best plain move with >=5%% pooled visit share (or better). "
@@ -213,8 +235,8 @@ class _FoulPlayConfig:
             "opponent reply (root pair table). One LINEAR band: 0 at this "
             "threshold, equal to the dead-zone bound at the dead-zone bound "
             "(with defaults: (0.15,0) to (0.05,0.05), so 0.025 at 0.10) - "
-            "at and below the dead zone the band covers every option. Also "
-            "disables the significance forfeit below this score. 0 disables.",
+            "at and below the dead zone the band covers every option. "
+            "0 disables.",
         )
         parser.add_argument(
             "--losing-upside-displacement-multiplier",
@@ -230,30 +252,13 @@ class _FoulPlayConfig:
         parser.add_argument(
             "--tera-margin-gate",
             type=float,
-            default=0.025,
+            default=0.015,
             help="A tera/mega option (a once-per-battle resource spend) is only "
             "eligible for selection when its aggregated avg score BEATS the "
             "best non-tera alternative by at least this margin. Stops "
             "tie-break-level edges from spending tera (the T1 tera-Fire "
             "Flare Blitz that won the argmax by 0.006 with five opponent "
             "mons unrevealed). 0 disables.",
-        )
-        parser.add_argument(
-            "--significance-forfeit-alpha",
-            type=float,
-            default=0.1,
-            help="The top pick forfeits to the highest-value alternative whose "
-            "within-world score spread (iwsd) is meaningfully lower and that "
-            "the top pick cannot beat at this alpha on a paired t-test across "
-            "the sampled worlds. 0 disables.",
-        )
-        parser.add_argument(
-            "--significance-forfeit-iwsd-margin",
-            type=float,
-            default=0.02,
-            help="An alternative only qualifies as a significance-forfeit "
-            "challenger when its pooled within-world score sd is lower than "
-            "the top pick's by at least this margin.",
         )
         parser.add_argument(
             "--no-search-pool-reuse",
@@ -305,6 +310,7 @@ class _FoulPlayConfig:
         self.search_time_ms = args.search_time_ms
         self.first_turn_search_time_ms = args.first_turn_search_time_ms
         self.parallelism = args.search_parallelism
+        self.search_pool_workers = args.search_pool_workers
         self.search_threads = args.search_threads
         self.run_count = args.run_count
         self.team_name = args.team_name or self.pokemon_format
@@ -319,8 +325,6 @@ class _FoulPlayConfig:
         self.losing_upside_displacement_multiplier = (
             args.losing_upside_displacement_multiplier
         )
-        self.significance_forfeit_alpha = args.significance_forfeit_alpha
-        self.significance_forfeit_iwsd_margin = args.significance_forfeit_iwsd_margin
         self.reuse_search_pool = not args.no_search_pool_reuse
         self.never_start_timer = args.never_start_timer
         self.user_to_challenge = args.user_to_challenge

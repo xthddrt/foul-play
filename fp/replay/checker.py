@@ -504,6 +504,15 @@ def _harvest_reveals(chunks: list[str]) -> dict:
     slot_sleep_attempts: dict[str, int] = {}
     sleep_attempts_by_turn: dict[tuple[str, int], int] = {}
     turn = 0
+    # True while the protocol is PAST the current turn's residual phase (`|upkeep`)
+    # and before the next `|turn|` line -- the between-turns window that carries
+    # faint-replacement switch-ins -- and, initially, the pre-`|turn|1` lead switches.
+    # A berry eaten in that window has NOT been ticked by any residual phase yet, so
+    # for Cud Chew it belongs to the NEXT turn (see `berry_eats`).
+    post_upkeep = True
+    # slots whose `|switch|` line is the last thing that resolved for them, i.e. that
+    # are still inside PS's pre-`runSwitch` window (see `berry_eats`).
+    switch_fresh: set[str] = set()
 
     def _open_occupancy(slot: str, species: str, entry_turn: int, details: str) -> None:
         prev = open_occupancy.get(slot)
@@ -603,6 +612,9 @@ def _harvest_reveals(chunks: list[str]) -> dict:
             if not line.startswith("|"):
                 continue
             parts = line.split("|")
+            if len(parts) >= 2 and parts[1] == "upkeep":
+                post_upkeep = True
+                switch_fresh.clear()
             if len(parts) < 3:
                 continue
             action = parts[1]
@@ -629,6 +641,8 @@ def _harvest_reveals(chunks: list[str]) -> dict:
                     for slot, attempts in slot_sleep_attempts.items():
                         sleep_attempts_by_turn[(slot, turn)] = attempts
                 cudchew_activated.clear()
+                post_upkeep = False
+                switch_fresh.clear()
                 continue
 
             if len(parts) >= 4 and parts[3].strip() == "slp":
@@ -656,7 +670,47 @@ def _harvest_reveals(chunks: list[str]) -> dict:
                 slot = parts[2].split(":")[0].strip()
                 sub = _subject(parts)
                 if sub is not None and slot not in cudchew_activated:
-                    berry_eats.setdefault(sub, set()).add(turn)
+                    # PS cudchew (data/abilities.ts:733-740) sets counter=2 on the eat
+                    # and IMMEDIATELY decrements it when the action queue is empty:
+                    # ":737-738 `// This is needed in case the berry was eaten during
+                    # residuals, preventing the timer from decreasing this turn` /
+                    # `if (!this.queue.peek()) this.effectState.counter--;`".  The re-eat
+                    # fires on the residual phase that drives the counter to 0, so the
+                    # ONLY question is whether PS's queue was empty at the eat:
+                    #   * mid-turn eat -> the `residual` action is still queued
+                    #     (sim/battle.ts:2942 turnLoop `addChoice({choice:'residual'})`,
+                    #     preserved across mid-turn switch requests by commitChoices'
+                    #     `oldQueue` splice at :3013) -> counter 2 -> turn N's residual
+                    #     takes it to 1, turn N+1's to 0 -> re-eat end of turn N+1.
+                    #   * eat at the `eachEvent('Update')` that follows the residual
+                    #     action itself (:2856; the `upkeep` line is printed inside that
+                    #     action at :2814, so this line lands AFTER `|upkeep|`) -> queue
+                    #     EMPTY -> counter 1 -> turn N+1's residual takes it to 0 ->
+                    #     re-eat end of turn N+1 as well.
+                    # Both file against the turn in effect, since `_arm_cudchew` already
+                    # models "eat turn + 1".  The exception is the THIRD window: a
+                    # faint-replacement switch-in.  `switchIn` does not run the switch-in
+                    # itself, it QUEUES `{choice:'runSwitch'}` (battle-actions.ts:157), so
+                    # the `eachEvent('Update')` at the end of the switch action sees a
+                    # NON-empty queue -> counter 2 -> re-eat end of turn N+2.  That Update
+                    # precedes `runSwitch`, so the protocol tell is exact: the `-enditem`
+                    # sits between the `|switch|` line and that mon's own entry-hazard /
+                    # switch-in-ability lines (synth60415 T26: `|switch|p2a: Tauros|...
+                    # |24/100` -> Sitrus -> Stealth Rock -> `|turn|27`, re-eat T28).  A
+                    # replacement that switches in ABOVE the berry threshold and only
+                    # crosses it on hazard damage instead eats inside `runSwitch`, whose
+                    # own trailing Update sees the emptied queue -> counter 1 -> re-eat
+                    # end of turn N+1 (synth72182 T12: switch -> Spikes -> Stealth Rock ->
+                    # Sitrus, re-eat T13).
+                    berry_eats.setdefault(sub, set()).add(
+                        turn + 1 if post_upkeep and slot in switch_fresh else turn
+                    )
+            # A slot is "fresh" only until the first line of its own that resolves
+            # after the switch -- that is exactly the pre-`runSwitch` Update window.
+            if action in ("switch", "drag"):
+                switch_fresh.add(parts[2].split(":")[0].strip())
+            elif switch_fresh:
+                switch_fresh.discard(parts[2].split(":")[0].strip())
 
             # "[from] ability: X" annotations are NOT confined to the "-"-prefixed
             # effect lines the dispatch below reaches: PS defaults a called move's
@@ -1885,6 +1939,25 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
             # paralysed the Zoroark with (synth24996 T3). Illusion is a fixed randbats
             # set property of both Zoroark formes, so it needs no per-game lookup.
             battler.active.ability = _ILLUSION_ABILITY
+            # ...and the STATS are the bearer's too. Illusion only substitutes
+            # the DISPLAY identity (data/abilities.ts illusion onBeforeSwitchIn
+            # sets `pokemon.illusion` -- a reference `toString`/`getUpdatedDetails`
+            # read for the printed name, sim/pokemon.ts:531-552); `getStat`
+            # (sim/pokemon.ts:596) always reads `this.storedStats`, the REAL
+            # mon's own stats, never the illusion's. Leaving the disguise's
+            # stats in place put a slower "Volcanion" (spe 156) ahead of a
+            # 187-Speed Noctowl in the engine's simulated turn order, when the
+            # real Zoroark-Hisui (spe 222) actually moved first and Noctowl's
+            # Roost healed AFTER taking damage -- so the engine, having Noctowl
+            # act first while its turn-start HP was already full, generated no
+            # Heal branch at all for a Roost PS plainly showed healing
+            # (synth67220 T5). The true reserve entry -- the same physical mon,
+            # tracked separately until |replace| swaps it into `.active` --
+            # already carries the exact stats.
+            for _reserve in battler.reserve:
+                if _species_key(_reserve.name) == il["true_species"]:
+                    battler.active.stats = dict(_reserve.stats)
+                    break
         return
 
 
@@ -2169,6 +2242,204 @@ def _demote_ko_margin_findings(
         f.message += " [ko-margin]"
         f.predicted = (f.predicted + "; " if f.predicted else "") + reason
         stats["ko_margin_demotions"] = stats.get("ko_margin_demotions", 0) + 1
+
+
+# END-OF-TURN residual recovery: PS runs these from the residual queue, so they
+# only ever fire on a mon that is STILL ALIVE when the queue reaches it.  Keyed
+# by the `[from]` annotation of the `|-heal|` line, lowercased with every
+# non-alphanumeric stripped ("[from] item: Leftovers" -> "itemleftovers").
+# Mid-turn heals (drain moves, Recover, Water Absorb, Berry) are deliberately
+# ABSENT: a missing one of those is a real engine gap and must stay asserted.
+_RESIDUAL_HEAL_SOURCES = frozenset(
+    (
+        "itemleftovers",
+        "itemblacksludge",
+        "abilitypoisonheal",
+        "abilityicebody",
+        "abilityraindish",
+        "abilitydryskin",
+        "moveaquaring",
+        "moveingrain",
+        "grassyterrain",
+    )
+)
+
+
+# END-OF-TURN residual BOOST abilities: PS runs these from the residual queue
+# (`onResidual`), so like the residual heals above they only ever fire on a mon
+# that is STILL ALIVE when the queue reaches it, and they announce themselves
+# with `|-ability|SLOT|<Name>|boost` on the line immediately before the
+# `|-boost|`.  Deliberately just Speed Boost: it is the only residual-queue
+# boost ability gen9 randbats fields, and every member of this set must be one
+# whose unreachability the fold argument below actually proves.
+_RESIDUAL_BOOST_ABILITIES = frozenset(("speedboost",))
+
+# `cur/max` in an HP field.  A `max` of 100 is the opponent's PERCENT display and
+# is REJECTED: the certificate below is an absolute-HP claim and a percent cannot
+# express it (1% of a 300 HP mon is 3 HP, the whole band).
+_ABS_HP_FIELD = re.compile(r"\b(\d+)/(\d+)\b")
+
+
+def _protocol_min_exact_hp(block_lines, pid) -> int | None:
+    """Lowest EXACT (non-percent) HP the protocol shows for `pid`'s slot in this
+    block, or None when the block never prints one.  This is the certificate that
+    a KO disagreement really is inside the discarded damage spread: PS itself has
+    to have brought the mon to within `_KO_MARGIN_HP` of fainting."""
+    lo = None
+    for line in block_lines:
+        sp = line.split("|")
+        if len(sp) < 4 or not sp[1].startswith("-"):
+            continue
+        if sp[2].split(":")[0].strip()[:2] != pid:
+            continue
+        m = _ABS_HP_FIELD.search(sp[3])
+        if m is None or m.group(2) == "100":
+            continue
+        cur = int(m.group(1))
+        lo = cur if lo is None else min(lo, cur)
+    return lo
+
+
+def _residual_ability_boost_slot(finding, block_lines) -> str | None:
+    """The slot pid whose END-OF-TURN residual ability produced this `boost`
+    finding, or None when the observed `-boost` is not one.  PS puts the
+    announcement on the preceding line (`|-ability|p1a: X|Speed Boost|boost`),
+    which is the only thing that distinguishes a residual-queue boost from a
+    mid-turn one -- the `-boost` line itself carries no `[from]`."""
+    obs = (finding.observed or "").strip()
+    if not obs:
+        return None
+    for i, line in enumerate(block_lines):
+        if i == 0 or line.strip() != obs:
+            continue
+        sp = block_lines[i - 1].split("|")
+        if len(sp) >= 5 and sp[1] == "-ability" and sp[4].strip() == "boost":
+            if re.sub(r"[^a-z0-9]", "", sp[3].lower()) in _RESIDUAL_BOOST_ABILITIES:
+                return sp[2].split(":")[0].strip()[:2]
+    return None
+
+
+def _suppress_dead_mon_residual_heals(
+    turn_findings, parsed, snap, u_action, o_action, block_lines, user_pid, stats
+) -> None:
+    """Drop `heal` findings that assert an END-OF-TURN residual tick which the
+    engine's (legitimate) damage-roll FOLD makes unreachable in every branch,
+    on a turn where the engine and the protocol AGREE the mon dies.
+
+    poke-engine's damage model is PS-exact in its roll SET but deliberately
+    collapses it into TWO arms -- a kill arm at exactly `defender.hp` and a
+    survive arm at the truncating conditional MEAN of the surviving rolls
+    (genx/generate_instructions.rs:9908-9935 Branch straddle, :13399+
+    ThresholdBranch unified KO fan).  The spread is thrown away by
+    construction, so when PS rolls near the BOTTOM of the range the real mon
+    keeps more HP than the folded mean leaves it -- sometimes exactly enough to
+    survive one more residual step and take a Leftovers tick before the next
+    residual kills it.
+
+    synth66915 T25: Manaphy 123/284 psn, Hippowdon's Earthquake rolls
+    102..120 non-crit (sum 1764 -> mean 110; every crit roll >= 153 > 123, so
+    the kill arm is capped to 123).  PS rolled the MINIMUM 102 -> 21 HP,
+    Sandstorm -17 -> 4, Leftovers +17 -> 21, poison -35 -> faint.  Both engine
+    arms put Manaphy at <= 0 before the Leftovers step (123-110-13 = 0 and
+    123-123 = 0), and both agree with PS on the turn's outcome: faint plus a
+    forced switch.  The Leftovers line therefore carries no engine-fidelity
+    information -- no PS-legitimate branch set could emit it.
+
+    ARM A -- the two sides AGREE the mon dies.  All three conditions required:
+      * the `[from]` source is an end-of-turn residual heal (see
+        _RESIDUAL_HEAL_SOURCES) -- mid-turn heals are never suppressed;
+      * the PROTOCOL faints that same simulated mon in this block, so only the
+        intermediate step differs;
+      * EVERY branch has that mon at <= 0 HP, so no branch could have healed it
+        (one surviving branch that fails to heal is a real gap and stays
+        reported).
+
+    ARM B -- the MIRROR case: the engine kills the mon in every branch and the
+    protocol keeps it ALIVE.  Arm A deliberately refused this direction because a
+    heal on a mon PS keeps alive is normally an over-damage defect.  It is not one
+    when the whole disagreement fits inside the spread the fold threw away, and
+    that is provable, so the residual events on such a mon -- heals AND the
+    residual-queue ability boosts of _RESIDUAL_BOOST_ABILITIES -- carry no
+    fidelity information either.  FOUR conditions, all required:
+      * EVERY branch has the mon at <= 0 HP (as in arm A);
+      * the PROTOCOL does NOT faint it, and `_ko_margin_sides` names that side,
+        i.e. the closest branch misses the observed outcome by <= _KO_MARGIN_HP;
+      * the PROTOCOL ITSELF brought the mon to <= _KO_MARGIN_HP absolute HP in
+        this block (`_protocol_min_exact_hp`).  This is the load-bearing
+        condition and it is NOT redundant: the engine's fatal instruction is
+        routinely `min(damage, hp)` -- crash damage, a residual chip, a capped
+        final hit -- so `_branch_hp_after` lands on exactly 0 and the branch-side
+        margin reads 0 NO MATTER HOW BADLY the engine over-killed.  Without this
+        certificate the arm silently ate synth71053 T11, where a phantom
+        maxhp/2 Supercell Slam crash (an engine bug, fixed separately) wiped
+        Eelektross out from 29%.  A percent-only HP display cannot express a
+        4 HP claim and is rejected, so this arm never engages on a mon whose
+        exact HP the protocol never printed.
+      * for a boost, the `-boost` is announced by an `|-ability|...|boost` line
+        naming a residual-queue ability (`_residual_ability_boost_slot`);
+        mid-turn boosts are never suppressed.
+    Witnesses: synth75916 T21 (Tachyon Cutter folds to 79+78 = Espathra's exact
+    157; PS rolled 81+73 and left 3 HP, then took Leftovers +17 and Speed Boost)
+    and synth77424 T42 (Salt Cure's hit folds to the 56 mean; PS rolled 52 and
+    survived the 35 residual with 1 HP, then took Speed Boost).  In both the
+    EXACT-DAMAGE MEMBERSHIP pass -- which runs independently at tolerance 0 --
+    reports the observed damage as a member of the engine's own roll set, which
+    is what makes "the fold, not a defect" a measurement rather than a claim."""
+    if not turn_findings or not parsed:
+        return
+    opp_pid = "p1" if user_pid == "p2" else "p2"
+    faints = _protocol_faints(block_lines, user_pid)
+    margin_sides = set(
+        _ko_margin_sides(parsed, snap, u_action, o_action, block_lines, user_pid)
+    )
+    dead_everywhere: dict = {}
+    folded_ko: dict = {}
+    for side, battler, action, side_key, pid in (
+        ("user", snap.user, u_action, "s1", user_pid),
+        ("opp", snap.opponent, o_action, "s2", opp_pid),
+    ):
+        hp = _simulated_hp(battler, action)
+        dead = bool(
+            hp is not None
+            and hp > 0
+            and all(_branch_hp_after(b, side_key, hp) <= 0 for b in parsed)
+        )
+        dead_everywhere[side] = dead and faints[side]
+        protocol_low = _protocol_min_exact_hp(block_lines, pid)
+        folded_ko[side] = bool(
+            dead
+            and not faints[side]
+            and side in margin_sides
+            and protocol_low is not None
+            and protocol_low <= _KO_MARGIN_HP
+        )
+    for f in list(turn_findings):
+        if f.category == "heal":
+            sp = (f.observed or "").split("|")
+            if len(sp) < 5:
+                continue
+            pid = sp[2].split(":")[0].strip()[:2]
+            side = "user" if pid == user_pid else "opp"
+            src = re.sub(r"[^a-z0-9]", "", sp[4].replace("[from]", "").lower())
+            if src not in _RESIDUAL_HEAL_SOURCES:
+                continue
+            if not (dead_everywhere.get(side) or folded_ko.get(side)):
+                continue
+            turn_findings.remove(f)
+            stats["residual_heal_after_folded_ko"] = (
+                stats.get("residual_heal_after_folded_ko", 0) + 1
+            )
+        elif f.category == "boost":
+            pid = _residual_ability_boost_slot(f, block_lines)
+            if pid is None:
+                continue
+            side = "user" if pid == user_pid else "opp"
+            if not folded_ko.get(side):
+                continue
+            turn_findings.remove(f)
+            stats["residual_boost_after_folded_ko"] = (
+                stats.get("residual_boost_after_folded_ko", 0) + 1
+            )
 
 
 # Abilities that ABSORB a move outright. PS's handlers return `null`, which makes the
@@ -3058,6 +3329,12 @@ def _evaluate_turn(
         phase2_line_index=phase2_line_index,
     )
     turn_findings = compare_turn(ctx, user_is_side_one=True)
+    try:
+        _suppress_dead_mon_residual_heals(
+            turn_findings, parsed, snap, u_action, o_action, block_lines, user_pid, stats
+        )
+    except Exception:
+        pass
     if turn_findings:
         # a marginal KO-boundary disagreement makes every faint-gated companion
         # event on this turn undecidable (see _KO_MARGIN_HP): report SOFT
@@ -3947,7 +4224,13 @@ def _fire_turn(
                 ) + (len(observed) - len(kept))
             observed = kept
 
-    if plan is not None and plan["u"] == "none" and plan["o"] == "none":
+    _noop_sides = set()
+    if plan is not None:
+        if plan["u"] == "none":
+            _noop_sides.add("user")
+        if plan["o"] == "none":
+            _noop_sides.add("opp")
+    if _noop_sides:
         # A block where NEITHER side takes an action this sub-turn (both halves
         # of the split have already spent their decisions) can still carry the
         # PREVIOUS half's move residue: PS emits Revival Blessing's revive heal
@@ -3967,7 +4250,23 @@ def _fire_turn(
                 if e.line_index is not None and e.line_index < len(block_lines)
                 else ""
             )
-            if "[from] move:" in src:
+            # Both halves noop -> the original blanket drop, unchanged.  Only ONE
+            # half noop -> drop just THAT side's move residue, and only Revival
+            # Blessing's: PS emits the revive heal AFTER the forceSwitch request, so
+            # `|-heal|p1: Groudon|131/263|[from] move: Revival Blessing` lands in the
+            # sub-turn where its owner has no action while the OPPONENT still moves
+            # (synth69151 T12, synth68846 T14) -- the both-noop gate never fired and
+            # the event was asserted against an engine call made with u_move='none',
+            # which can never emit the Revive.  Narrow on purpose: side-matched and
+            # source-matched, so ordinary residual move sources (Wish, Future Sight)
+            # keep their assertion in one-sided noop sub-turns.
+            if "[from] move:" in src and (
+                len(_noop_sides) == 2
+                or (
+                    e.side in _noop_sides
+                    and "[from] move: Revival Blessing" in src
+                )
+            ):
                 n += 1
                 continue
             kept.append(e)

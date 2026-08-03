@@ -1,10 +1,11 @@
 import logging
+import os
 import random
 from copy import deepcopy
 
 import constants
 from constants import BattleType
-from data import pokedex
+from data import all_move_json, pokedex
 from fp.battle import Battle, Pokemon
 from data.pkmn_sets import RandomBattleTeamDatasets, TeamDatasets
 from fp.search.helpers import populate_pkmn_from_set
@@ -16,6 +17,237 @@ from fp.helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+SHOWDOWN_TEAM_CONSTRAINTS_CONTROL_OFF = "FP_CONTROL_NO_SHOWDOWN_TEAM_CONSTRAINTS"
+MAX_RANDOM_SAMPLING_ATTEMPTS = 100
+
+# ENTRY-INTENT reweighting: a mon the opponent CHOSE to send in (voluntary
+# switch, pivot follow-up, or faint replacement) is likelier to hold a set
+# that justifies the entry against what it was sent in front of. Entry
+# contexts are recorded by battle_modifier.switch_or_drag; here each
+# candidate set's usage-count weight is multiplied by an entry-plausibility
+# factor. Floored/capped so intent shifts the prior but can never exclude
+# the truth (the SPEC-B5 lesson). ENTRY_INTENT_CONTROL_OFF=1 restores the
+# pure count prior as the negative control.
+ENTRY_INTENT_CONTROL_OFF = "FP_CONTROL_NO_ENTRY_INTENT"
+ENTRY_INTENT_PRIORITY_KO = 5.0
+ENTRY_INTENT_OUTSPEED_KO = 3.0
+ENTRY_INTENT_THREAT = 0.5
+ENTRY_INTENT_MIN_MULT = 0.5
+ENTRY_INTENT_MAX_MULT = 6.0
+
+# item -> (required category or None for both, damage multiplier): the only
+# set-varying damage factors worth modeling in a likelihood feature
+_ENTRY_ITEM_MULTIPLIERS = {
+    "lifeorb": (None, 1.3),
+    "choiceband": (constants.PHYSICAL, 1.5),
+    "choicespecs": (constants.SPECIAL, 1.5),
+    "lightball": (None, 2.0),
+}
+
+
+def _entry_move_damage(pkmn, move_name, item, ctx):
+    """Rough expected damage of `move_name` into the recorded defender.
+
+    A likelihood feature, not a damage calc: randbats stats are
+    set-independent (fixed 85 EVs, neutral nature), so sets differ only by
+    moves/item/ability and this stays accurate enough to rank entry intent.
+    Returns (damage, priority).
+    """
+    move_data = all_move_json.get(move_name)
+    if move_data is None:
+        return 0.0, 0
+    priority = move_data.get(constants.PRIORITY, 0)
+    base_power = move_data.get("basePower", 0)
+    category = move_data.get(constants.CATEGORY)
+    if not base_power or category not in (constants.PHYSICAL, constants.SPECIAL):
+        return 0.0, priority
+    if category == constants.PHYSICAL:
+        attack = pkmn.stats[constants.ATTACK]
+        defense = ctx["vs_defense"]
+    else:
+        attack = pkmn.stats[constants.SPECIAL_ATTACK]
+        defense = ctx["vs_special_defense"]
+    damage = ((2 * pkmn.level / 5 + 2) * base_power * attack / max(defense, 1)) / 50 + 2
+    move_type = move_data.get(constants.TYPE)
+    if move_type in pkmn.types:
+        damage *= 1.5
+    damage *= type_effectiveness_modifier(move_type, ctx["vs_types"])
+    item_rule = _ENTRY_ITEM_MULTIPLIERS.get(item or "")
+    if item_rule is not None and (item_rule[0] is None or item_rule[0] == category):
+        damage *= item_rule[1]
+    return damage * 0.925, priority
+
+
+def entry_intent_multipliers(pkmn, remaining_sets):
+    contexts = getattr(pkmn, "entry_contexts", None)
+    if not contexts or os.environ.get(ENTRY_INTENT_CONTROL_OFF) == "1":
+        return [1.0] * len(remaining_sets)
+    multipliers = []
+    for pkmn_set in remaining_sets:
+        multiplier = 1.0
+        for ctx in contexts:
+            advantage = 0.0
+            best_frac = 0.0
+            for move_name in pkmn_set.pkmn_moveset.moves:
+                damage, priority = _entry_move_damage(
+                    pkmn, move_name, pkmn_set.pkmn_set.item, ctx
+                )
+                if damage <= 0.0:
+                    continue
+                frac = damage / max(ctx["vs_hp"], 1)
+                if frac >= 1.0 and priority > 0:
+                    # revenge entry: KOs the defender before it can act
+                    advantage = max(advantage, ENTRY_INTENT_PRIORITY_KO)
+                elif frac >= 1.0 and pkmn.stats[constants.SPEED] > ctx["vs_speed"]:
+                    advantage = max(advantage, ENTRY_INTENT_OUTSPEED_KO)
+                best_frac = max(best_frac, min(frac, 1.0))
+            multiplier *= 1.0 + advantage + ENTRY_INTENT_THREAT * best_frac
+        multipliers.append(
+            min(max(multiplier, ENTRY_INTENT_MIN_MULT), ENTRY_INTENT_MAX_MULT)
+        )
+    return multipliers
+
+
+def entry_weighted_counts(pkmn, remaining_sets):
+    multipliers = entry_intent_multipliers(pkmn, remaining_sets)
+    return [
+        s.pkmn_set.count * m for s, m in zip(remaining_sets, multipliers)
+    ]
+
+
+def _fresh_entry_context(user_active):
+    return {
+        "vs_hp": user_active.hp,
+        "vs_maxhp": user_active.max_hp,
+        "vs_types": list(user_active.types),
+        "vs_defense": user_active.stats[constants.DEFENSE],
+        "vs_special_defense": user_active.stats[constants.SPECIAL_DEFENSE],
+        "vs_speed": user_active.stats[constants.SPEED],
+    }
+
+
+# a kill is "clean" when the killer's total cost in the exchange -
+# retaliation (if our active gets to act first) plus recoil on the capped
+# damage - stays under this fraction of the killer's max hp
+ENTRY_INTENT_MINIMAL_LOSS_FRACTION = 0.2
+
+
+def _clean_kill_moves(opponent_active, user_active, pkmn_set, ctx, our_best_hit):
+    """Moves in `pkmn_set` that KO our active at no/minimal cost to the
+    killer: the kill lands before our active can act (priority, or the
+    killer outspeeds), or our active's best known retaliation is minimal;
+    recoil is charged on the damage actually needed for the KO."""
+    opponent_outspeeds = opponent_active.stats[constants.SPEED] > ctx["vs_speed"]
+    clean = []
+    for move_name in pkmn_set.pkmn_moveset.moves:
+        damage, priority = _entry_move_damage(
+            opponent_active, move_name, pkmn_set.pkmn_set.item, ctx
+        )
+        if damage < ctx["vs_hp"]:
+            continue
+        strikes_first = priority > 0 or opponent_outspeeds
+        retaliation = 0.0 if strikes_first else our_best_hit
+        move_data = all_move_json.get(move_name) or {}
+        recoil = move_data.get("recoil")
+        recoil_loss = (
+            (recoil[0] / recoil[1]) * min(damage, ctx["vs_hp"]) if recoil else 0.0
+        )
+        loss_fraction = (retaliation + recoil_loss) / max(
+            opponent_active.max_hp, 1
+        )
+        if loss_fraction <= ENTRY_INTENT_MINIMAL_LOSS_FRACTION:
+            clean.append(move_name)
+    return clean
+
+
+def revenge_certain_sets(opponent_active, user_active, remaining_sets):
+    """CERTAIN-REVENGE modeling: the opponent CHOSE this entry against our
+    current active, the revenge window is still open (no move used since
+    entering), and candidate sets carry a CLEAN-KILL move - one that KOs
+    our active at no or minimal cost to the killer. Model them as certainly
+    having and using it: return (qualifying_sets, revenge_move_names) so
+    the sampler draws only those sets and locks the world's moveset to the
+    counter move.
+
+    The lock is only a reasonable inference when the counter is UNIQUELY
+    their best line, so two extra gates apply:
+    - UNIQUENESS: every qualifying set must have exactly ONE clean-kill
+      move; a set with two is ambiguous about what they will click.
+    - DISCRIMINATION: at least one candidate set must LACK a clean kill -
+      the entry choice then actually reveals which set they hold. If every
+      set kills the same way, the entry tells us nothing about the set.
+
+    (None, None) when the premise does not hold; the graded entry-intent
+    weights still apply. Tradeoff, stated: the lock also flattens their
+    future in-tree turns for this decision's search, and retaliation is
+    estimated without set-specific abilities/items on our own hit.
+    """
+    if os.environ.get(ENTRY_INTENT_CONTROL_OFF) == "1":
+        return None, None
+    contexts = getattr(opponent_active, "entry_contexts", None)
+    if not contexts or contexts[-1].get("vs_name") != user_active.name:
+        return None, None
+    if getattr(opponent_active, "active_move_actions", 0) != 0:
+        return None, None
+    ctx = _fresh_entry_context(user_active)
+    # our active's best known hit INTO the entering mon (stats are
+    # set-independent in randbats; abilities/items are not modeled here)
+    opponent_ctx = {
+        "vs_hp": opponent_active.hp,
+        "vs_maxhp": opponent_active.max_hp,
+        "vs_types": list(opponent_active.types),
+        "vs_defense": opponent_active.stats[constants.DEFENSE],
+        "vs_special_defense": opponent_active.stats[constants.SPECIAL_DEFENSE],
+        "vs_speed": opponent_active.stats[constants.SPEED],
+    }
+    our_best_hit = 0.0
+    for mv in getattr(user_active, "moves", []):
+        damage, _ = _entry_move_damage(
+            user_active, mv.name, user_active.item, opponent_ctx
+        )
+        our_best_hit = max(our_best_hit, damage)
+    qualifying = []
+    revenge_moves = set()
+    ambiguous = False
+    heterogeneous = False
+    for pkmn_set in remaining_sets:
+        clean = _clean_kill_moves(
+            opponent_active, user_active, pkmn_set, ctx, our_best_hit
+        )
+        if len(clean) == 1:
+            qualifying.append(pkmn_set)
+            revenge_moves.update(clean)
+        elif len(clean) > 1:
+            ambiguous = True
+        else:
+            heterogeneous = True
+    if not qualifying or ambiguous or not heterogeneous:
+        return None, None
+    return qualifying, revenge_moves
+
+_WEB_SETTERS = {
+    "ariados",
+    "smeargle",
+    "masquerain",
+    "kricketune",
+    "leavanny",
+    "galvantula",
+    "vikavolt",
+    "ribombee",
+    "araquanid",
+    "spidops",
+}
+_SCREEN_SETTERS = {"meowstic", "grimmsnarl", "ninetalesalola", "abomasnow"}
+_SUN_SETTERS = {"ninetales", "torkoal", "groudon", "koraidon"}
+_INCOMPATIBLE_POKEMON = (
+    ({"blissey"}, {"chansey"}),
+    ({"illumise"}, {"volbeat"}),
+    (_WEB_SETTERS, _WEB_SETTERS),
+    (_SCREEN_SETTERS, _SCREEN_SETTERS),
+    ({"toxicroak"}, _SUN_SETTERS),
+)
+_EXTRA_FIRE_WEAK_ABILITIES = {"dryskin", "fluffy"}
 
 
 def get_all_remaining_sets_for_revealed_pkmn(battle: Battle) -> dict:
@@ -51,10 +283,31 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
 
         active = battle_copy.opponent.active
         if revealed_pkmn_sets[active.name]:
-            pkmn_full_set = random.choices(
-                revealed_pkmn_sets[active.name],
-                weights=[s.pkmn_set.count for s in revealed_pkmn_sets[active.name]],
-            )[0]
+            certain_sets, certain_moves = (None, None)
+            if battle_copy.user.active is not None and not getattr(
+                active, "transformed_into", None
+            ):
+                certain_sets, certain_moves = revenge_certain_sets(
+                    active, battle_copy.user.active, revealed_pkmn_sets[active.name]
+                )
+            if certain_sets:
+                if index == 0:
+                    logger.info(
+                        "Certain-revenge entry: {} sampled with {} only".format(
+                            active.name, sorted(certain_moves)
+                        )
+                    )
+                pkmn_full_set = random.choices(
+                    certain_sets,
+                    weights=[s.pkmn_set.count for s in certain_sets],
+                )[0]
+            else:
+                pkmn_full_set = random.choices(
+                    revealed_pkmn_sets[active.name],
+                    weights=entry_weighted_counts(
+                        active, revealed_pkmn_sets[active.name]
+                    ),
+                )[0]
             if getattr(active, "transformed_into", None):
                 # a transformed mon's moves/stats/ability are COPIES that must
                 # stay untouched; only its true item is worth sampling (the
@@ -64,6 +317,10 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
                     active.item = pkmn_full_set.pkmn_set.item
             else:
                 populate_pkmn_from_set(active, pkmn_full_set)
+                if certain_sets:
+                    kept = [m for m in active.moves if m.name in certain_moves]
+                    if kept:
+                        active.moves = kept
 
         # fainted reserves are included so that a pkmn revived by
         # Revival Blessing has a predicted set for the search
@@ -72,7 +329,7 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
                 continue
             pkmn_full_set = random.choices(
                 revealed_pkmn_sets[pkmn.name],
-                weights=[s.pkmn_set.count for s in revealed_pkmn_sets[pkmn.name]],
+                weights=entry_weighted_counts(pkmn, revealed_pkmn_sets[pkmn.name]),
             )[0]
             populate_pkmn_from_set(pkmn, pkmn_full_set)
 
@@ -95,14 +352,13 @@ def sample_randombattle_pokemon(existing_pokemon: list[Pokemon]) -> Pokemon:
 
         return False
 
-    ok = False
     existing_pokemon_names = {pkmn.name for pkmn in existing_pokemon}
     has_mega = any(is_mega(p) for p in existing_pokemon)
+    use_showdown_constraints = not os.environ.get(SHOWDOWN_TEAM_CONSTRAINTS_CONTROL_OFF)
 
     sample_count = 0
-    while not ok:
+    while True:
         sample_count += 1
-        ok = True
         pkmn_name = random.choices(
             RandomBattleTeamDatasets.species_sample_names,
             weights=RandomBattleTeamDatasets.species_sample_weights,
@@ -113,24 +369,48 @@ def sample_randombattle_pokemon(existing_pokemon: list[Pokemon]) -> Pokemon:
             weights=[s.pkmn_set.count for s in pkmn_sets],
         )[0]
         pkmn = Pokemon(pkmn_name, pkmn_full_set.pkmn_set.level)
-        if pkmn_name in existing_pokemon_names:
-            ok = False
-        if sample_count < 10 and is_mega(pkmn) and has_mega:
-            ok = False
-        if sample_count < 10 and _more_than_3_pokemon_weak_to_a_given_typing(
-            existing_pokemon + [pkmn]
-        ):
-            ok = False
-        if sample_count < 10 and _more_than_1_species(existing_pokemon + [pkmn]):
-            ok = False
-        if sample_count < 10 and _more_than_2_pokemon_of_any_type(
-            existing_pokemon + [pkmn]
-        ):
-            ok = False
-        if sample_count < 10 and _more_than_1_pokemon_with_4x_weakness(
-            existing_pokemon + [pkmn]
-        ):
-            ok = False
+        pkmn.ability = pkmn_full_set.pkmn_set.ability
+        team = existing_pokemon + [pkmn]
+
+        if use_showdown_constraints:
+            ok = (
+                pkmn_name not in existing_pokemon_names
+                and not (is_mega(pkmn) and has_mega)
+                and not _violates_showdown_team_constraints(team)
+            )
+        else:
+            # Exact legacy path retained as the negative control: after the
+            # tenth draw it knowingly gives up every constraint except names.
+            ok = pkmn_name not in existing_pokemon_names
+            if sample_count < 10 and is_mega(pkmn) and has_mega:
+                ok = False
+            if sample_count < 10 and _more_than_3_pokemon_weak_to_a_given_typing(
+                team, use_team_building_types=False
+            ):
+                ok = False
+            if sample_count < 10 and _more_than_1_species(
+                team, use_team_building_names=False
+            ):
+                ok = False
+            if sample_count < 10 and _more_than_2_pokemon_of_any_type(
+                team, use_team_building_types=False
+            ):
+                ok = False
+            if sample_count < 10 and _more_than_1_pokemon_with_4x_weakness(
+                team, use_team_building_types=False
+            ):
+                ok = False
+
+        if ok:
+            break
+        if use_showdown_constraints and sample_count == MAX_RANDOM_SAMPLING_ATTEMPTS:
+            pkmn, pkmn_full_set = _sample_valid_randombattle_pokemon(
+                existing_pokemon,
+                existing_pokemon_names,
+                has_mega,
+                is_mega,
+            )
+            break
 
     populate_pkmn_from_set(pkmn, pkmn_full_set)
 
@@ -149,16 +429,47 @@ def sample_randombattle_pokemon(existing_pokemon: list[Pokemon]) -> Pokemon:
 #   more than 3 Pokemon weak to any given typing,
 #   more than 2 Pokemon of any given type,
 #   or more than 1 Pokemon that shares a 4x weakness
-def _more_than_1_species(team: list[Pokemon]) -> bool:
-    pkmn_species = set([pkmn.get_species() for pkmn in team])
+def _team_building_name(pkmn: Pokemon) -> str:
+    name = getattr(pkmn, "base_name", pkmn.name)
+    return name if name in pokedex else pkmn.name
+
+
+def _team_building_types(pkmn: Pokemon) -> list[str]:
+    # The generator reads species.types before applying its caps. Battle-time
+    # Protean, Transform, and Double Shock types are irrelevant here.
+    # pokemon-showdown/data/random-battles/gen9/teams.ts:1770-1808
+    return pokedex[_team_building_name(pkmn)]["types"]
+
+
+def _team_building_ability(pkmn: Pokemon) -> str:
+    return normalize_name(pkmn.original_ability or pkmn.ability or "")
+
+
+def _more_than_1_species(
+    team: list[Pokemon], *, use_team_building_names: bool = True
+) -> bool:
+    if use_team_building_names:
+        pkmn_species = {
+            normalize_name(
+                pokedex[_team_building_name(pkmn)].get(
+                    "baseSpecies", _team_building_name(pkmn)
+                )
+            )
+            for pkmn in team
+        }
+    else:
+        pkmn_species = {pkmn.get_species() for pkmn in team}
     return len(pkmn_species) < len(team)
 
 
-def _more_than_3_pokemon_weak_to_a_given_typing(team: list[Pokemon]) -> bool:
+def _more_than_3_pokemon_weak_to_a_given_typing(
+    team: list[Pokemon], *, use_team_building_types: bool = True
+) -> bool:
     num_pkmn_weak_to_typing = {}
     for pkmn in team:
+        types = _team_building_types(pkmn) if use_team_building_types else pkmn.types
         for t in POKEMON_TYPE_INDICES.keys():
-            if is_super_effective(t, pkmn.types):
+            if is_super_effective(t, types):
                 num_pkmn_weak_to_typing[t] = num_pkmn_weak_to_typing.get(t, 0) + 1
 
     if any(x > 3 for x in num_pkmn_weak_to_typing.values()):
@@ -167,12 +478,14 @@ def _more_than_3_pokemon_weak_to_a_given_typing(team: list[Pokemon]) -> bool:
     return False
 
 
-def _more_than_2_pokemon_of_any_type(team: list[Pokemon]) -> bool:
+def _more_than_2_pokemon_of_any_type(
+    team: list[Pokemon], *, use_team_building_types: bool = True
+) -> bool:
     num_of_each_type = {}
     for pkmn in team:
-        num_of_each_type[pkmn.types[0]] = num_of_each_type.get(pkmn.types[0], 0) + 1
-        if len(pkmn.types) > 1:
-            num_of_each_type[pkmn.types[1]] = num_of_each_type.get(pkmn.types[1], 0) + 1
+        types = _team_building_types(pkmn) if use_team_building_types else pkmn.types
+        for pkmn_type in types:
+            num_of_each_type[pkmn_type] = num_of_each_type.get(pkmn_type, 0) + 1
 
     if any(x > 2 for x in num_of_each_type.values()):
         return True
@@ -180,17 +493,113 @@ def _more_than_2_pokemon_of_any_type(team: list[Pokemon]) -> bool:
     return False
 
 
-def _more_than_1_pokemon_with_4x_weakness(team: list[Pokemon]) -> bool:
+def _more_than_1_pokemon_with_4x_weakness(
+    team: list[Pokemon], *, use_team_building_types: bool = True
+) -> bool:
     num_of_each_4x_weakness = {}
     for pkmn in team:
+        types = _team_building_types(pkmn) if use_team_building_types else pkmn.types
         for t in POKEMON_TYPE_INDICES.keys():
-            if type_effectiveness_modifier(t, pkmn.types) == 4:
+            if type_effectiveness_modifier(t, types) == 4:
                 num_of_each_4x_weakness[t] = num_of_each_4x_weakness.get(t, 0) + 1
 
     if any(x > 1 for x in num_of_each_4x_weakness.values()):
         return True
 
     return False
+
+
+def _more_than_4_pokemon_weak_to_freeze_dry(team: list[Pokemon]) -> bool:
+    def weak_to_freeze_dry(pkmn: Pokemon) -> bool:
+        types = _team_building_types(pkmn)
+        ice_modifier = type_effectiveness_modifier("ice", types)
+        return ice_modifier > 1 or ("water" in types and ice_modifier > 0.25)
+
+    # pokemon-showdown/data/random-battles/gen9/teams.ts:1772-1775,1820-1824
+    return sum(weak_to_freeze_dry(pkmn) for pkmn in team) > 4
+
+
+def _more_than_3_pokemon_weak_to_fire_including_abilities(
+    team: list[Pokemon],
+) -> bool:
+    def weak_to_fire(pkmn: Pokemon) -> bool:
+        modifier = type_effectiveness_modifier("fire", _team_building_types(pkmn))
+        return modifier > 1 or (
+            modifier == 1 and _team_building_ability(pkmn) in _EXTRA_FIRE_WEAK_ABILITIES
+        )
+
+    # Dry Skin and Fluffy count only on the generated set when Fire is neutral.
+    # pokemon-showdown/data/random-battles/gen9/teams.ts:1811-1818,1891-1894
+    return sum(weak_to_fire(pkmn) for pkmn in team) > 3
+
+
+def _more_than_1_level_100_pokemon(team: list[Pokemon]) -> bool:
+    # pokemon-showdown/data/random-battles/gen9/teams.ts:1826-1829,1897-1898
+    return sum(pkmn.level == 100 for pkmn in team) > 1
+
+
+def _has_incompatible_pokemon(team: list[Pokemon]) -> bool:
+    names = [_team_building_name(pkmn) for pkmn in team]
+    for index, name in enumerate(names):
+        for other_name in names[index + 1 :]:
+            for group_a, group_b in _INCOMPATIBLE_POKEMON:
+                if (name in group_a and other_name in group_b) or (
+                    name in group_b and other_name in group_a
+                ):
+                    # pokemon-showdown/data/random-battles/gen9/teams.ts:1652-1717
+                    # pokemon-showdown/data/random-battles/gen9/teams.ts:1831-1832
+                    return True
+    return False
+
+
+def _violates_showdown_team_constraints(team: list[Pokemon]) -> bool:
+    if (
+        _more_than_1_species(team)
+        or _more_than_3_pokemon_weak_to_a_given_typing(team)
+        or _more_than_2_pokemon_of_any_type(team)
+        or _more_than_1_pokemon_with_4x_weakness(team)
+    ):
+        return True
+    if "gen9" not in RandomBattleTeamDatasets.pkmn_mode:
+        return False
+    return (
+        _more_than_4_pokemon_weak_to_freeze_dry(team)
+        or _more_than_3_pokemon_weak_to_fire_including_abilities(team)
+        or _more_than_1_level_100_pokemon(team)
+        or _has_incompatible_pokemon(team)
+    )
+
+
+def _sample_valid_randombattle_pokemon(
+    existing_pokemon: list[Pokemon],
+    existing_pokemon_names: set[str],
+    has_mega: bool,
+    is_mega,
+):
+    valid_candidates = []
+    valid_weights = []
+    for pkmn_name, species_weight in zip(
+        RandomBattleTeamDatasets.species_sample_names,
+        RandomBattleTeamDatasets.species_sample_weights,
+    ):
+        pkmn_sets = RandomBattleTeamDatasets.pkmn_sets[pkmn_name]
+        total_set_weight = sum(pkmn_set.pkmn_set.count for pkmn_set in pkmn_sets)
+        for pkmn_full_set in pkmn_sets:
+            pkmn = Pokemon(pkmn_name, pkmn_full_set.pkmn_set.level)
+            pkmn.ability = pkmn_full_set.pkmn_set.ability
+            if (
+                pkmn_name not in existing_pokemon_names
+                and not (is_mega(pkmn) and has_mega)
+                and not _violates_showdown_team_constraints(existing_pokemon + [pkmn])
+            ):
+                valid_candidates.append((pkmn, pkmn_full_set))
+                valid_weights.append(
+                    species_weight * pkmn_full_set.pkmn_set.count / total_set_weight
+                )
+
+    if not valid_candidates:
+        raise ValueError("No valid random-battle Pokemon can complete this team")
+    return random.choices(valid_candidates, weights=valid_weights)[0]
 
 
 # take a Battle and fill in the unrevealed pkmn for the opponent

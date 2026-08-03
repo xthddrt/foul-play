@@ -260,6 +260,15 @@ class Battler:
         # by poke_engine_helpers, which is what Supreme Overlord / Last Respects read.
         self.times_revived = 0
 
+        # PS `statsRaisedThisTurn` on this side's active (sim/battle.ts:2082, set on any
+        # positive boost from any source). Cleared at the turn boundary and on switch-out,
+        # EXCEPT on turn 1 -- PS's `nextTurn` reset is guarded by `if (this.turn !== 1)`
+        # (sim/battle.ts:1673-1675), so a switch-in ability boost applied during `|start|`
+        # (Download / Intrepid Sword / Dauntless Shield) is still "raised this turn" when
+        # turn 1's moves resolve. Forwarded to the engine by poke_engine_helpers; it is
+        # what Alluring Voice / Burning Jealousy's 100% confuse/burn secondary reads.
+        self.stats_raised_this_turn = False
+
         self.account_name = None
 
         self.team_dict = None
@@ -982,6 +991,10 @@ class Pokemon:
         self.types = pokedex[self.name][constants.TYPES]
         self.item = constants.UNKNOWN_ITEM
         self.removed_item = None
+        # Previous upkeep HP, used to rule out Leftovers/Black Sludge only
+        # across a full turn boundary. Reset per Pokemon so a switch-in never
+        # inherits another mon's history.
+        self._last_upkeep_hp = None
         self.unknown_forme = False
 
         self.moves_used_since_switch_in = set()
@@ -1049,6 +1062,16 @@ class Pokemon:
         self.gen_3_consecutive_sleep_talks = 0
         self.impossible_items = set()
         self.impossible_abilities = set()
+        # Mechanics signatures disproved by exact damage observations for this
+        # one physical pokemon.  It belongs on the object so deepcopy preserves
+        # evidence while another pokemon of the same species starts clean.
+        self.rejected_set_signatures = set()
+
+        # ENTRY-INTENT evidence: one snapshot of what OUR active looked like
+        # each time the opponent CHOSE to bring this pokemon in against it
+        # (recorded by battle_modifier.switch_or_drag; consumed by the
+        # sampler's entry_intent_multipliers)
+        self.entry_contexts = []
 
         # number of times this pkmn has been directly hit by a damaging move
         # (Rage Fist). Accumulates for the entire battle: it is never reset,

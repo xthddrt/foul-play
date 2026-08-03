@@ -544,7 +544,7 @@ _MOVE_MODELLED = frozenset(
     solarbeam solarblade freezedry struggle bodypress psyshock psystrike
     secretsword weatherball eruption waterspout dragonenergy flail reversal
     lastrespects ragefist terablast ficklebeam revelationdance gravapple
-    foulplay tripleaxel triplekick beatup
+    foulplay tripleaxel triplekick beatup aurawheel
     photongeyser shellsidearm lightthatburnsthesky""".split()
 )
 
@@ -1109,6 +1109,14 @@ def _move_type(mv: dict, move_id: str, attacker, ctx, weather) -> str:
     mtype = mv["type"]
     if move_id == "struggle":
         return "???"
+    # Aura Wheel's static dex type is Electric, but PS rewrites it from the
+    # user's current forme (data/moves.ts:801-806).
+    if move_id == "aurawheel":
+        return (
+            "dark"
+            if normalize_name(attacker.name) == "morpekohangry"
+            else "electric"
+        )
     if move_id == "terablast":
         return attacker.tera_type if getattr(attacker, "terastallized", False) else mtype
     if move_id == "weatherball":
@@ -2191,6 +2199,22 @@ def _match_exact_mon(lookup: dict, species: str) -> dict | None:
     rec = lookup.get(key)
     if rec is not None:
         return rec
+    if not os.environ.get("FP_CONTROL_NO_EXACT_TEAM_FORME_FAMILY"):
+        # A permanent detailschange names a different forme of the SAME
+        # physical pokemon; PS changes `baseSpecies` with the forme
+        # (sim/pokemon.ts:1433-1453). Prefix matching cannot recognise sibling
+        # names such as Terapagos-Terastal / Terapagos-Stellar, so the exact
+        # sidecar never reached the live form and its base-160 max HP remained
+        # reconstructed against a guessed base-95 value.
+        def family(value):
+            species_key = _species_key(value)
+            base = (pokedex.get(species_key) or {}).get("baseSpecies")
+            return _species_key(base) if base else species_key
+
+        wanted_family = family(key)
+        family_hits = [v for k, v in lookup.items() if family(k) == wanted_family]
+        if len(family_hits) == 1:
+            return family_hits[0]
     # forme drift (detailschange etc.): fall back to a unique prefix match
     hits = [v for k, v in lookup.items() if k.startswith(key) or key.startswith(k)]
     return hits[0] if len(hits) == 1 else None
@@ -2347,10 +2371,45 @@ def _rebase_hp_onto_exact_max(pkmn, hp_frac) -> None:
     pkmn.hp = round(pkmn.max_hp * hp_frac)
 
 
+def _refresh_transform_copied_stats(snap) -> None:
+    """Re-copy a Transform / Imposter user's stats from the mon it copied.
+
+    PS `transformInto` copies the target's TRUE `storedStats` (sim/pokemon.ts
+    transformInto).  fp's `-transform` handler does the same
+    (`side.active.stats = deepcopy(transformed_into.stats)`,
+    battle_modifier.transform) -- but it runs DURING the protocol replay, when an
+    OPPONENT target still carries fp's randbats-spread GUESS.  `apply_exact_team`
+    then corrects the opponent's OWN object and stops there (`if is_user:
+    continue`), so the copy keeps the guess for the rest of the battle.
+
+    synth73533 T31: Imposter Ditto copies Lugia and is left on the 85-EV guess
+    Atk 174 instead of Lugia's true 136 (that set has atk EV 0).  Struggle then
+    rolls 24..29 against Lugia's certified 20..22 HP band instead of 19..23, so
+    EVERY roll kills, the engine emits one capped kill arm at every band value,
+    and Lugia's `|-heal|p2a: Lugia|51/100` (Recover) is unreachable everywhere.
+    """
+    for battler, other in ((snap.user, snap.opponent), (snap.opponent, snap.user)):
+        active = getattr(battler, "active", None)
+        target = getattr(active, "transformed_into", None) if active is not None else None
+        if not target:
+            continue
+        target = normalize_name(target)
+        candidates = list(other.reserve)
+        if other.active is not None:
+            candidates.append(other.active)
+        for cand in candidates:
+            if normalize_name(cand.name) == target:
+                active.stats = deepcopy(cand.stats)
+                break
+
+
 def apply_exact_teams(snap, user_pid: str, exact_teams: dict) -> None:
     opp_pid = "p1" if user_pid == "p2" else "p2"
     apply_exact_team(snap.user, exact_teams.get(user_pid) or {}, is_user=True)
     apply_exact_team(snap.opponent, exact_teams.get(opp_pid) or {}, is_user=False)
+    # a transformed mon's copied stats were taken BEFORE the two calls above
+    # corrected the original's stats; refresh them (see the helper's docstring)
+    _refresh_transform_copied_stats(snap)
 
 
 # ---------------------------------------------------------------------------

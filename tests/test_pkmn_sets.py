@@ -1,6 +1,12 @@
+import logging
+import os
 import unittest
+from copy import deepcopy
+from unittest import mock
 
 from data.pkmn_sets import (
+    GRADED_EVIDENCE_RELAXATION_FLAG,
+    GRADED_EVIDENCE_RELAXATION_CONTROL_OFF,
     TeamDatasets,
     SmogonSets,
     PredictedPokemonSet,
@@ -9,7 +15,7 @@ from data.pkmn_sets import (
     RandomBattleTeamDatasets,
     random_battle_ev_iv_spread,
 )
-from fp.battle import Pokemon, Move
+from fp.battle import Pokemon, Move, StatRange
 from fp.search.helpers import populate_pkmn_from_set
 
 
@@ -541,3 +547,231 @@ class TestRandomBattleSetParsing(unittest.TestCase):
             predicted.pkmn_moveset.moves,
         )
         self.assertEqual("steel", predicted.pkmn_set.tera_type)
+
+
+class TestRejectedRandomBattleSetSignatures(unittest.TestCase):
+    def setUp(self):
+        RandomBattleTeamDatasets.__init__()
+        RandomBattleTeamDatasets.raw_pkmn_sets = {
+            "pikachu": {
+                (
+                    "85,lightball,static,irontail,surf,"
+                    "thunderbolt,voltswitch,electric"
+                ): 90,
+                (
+                    "85,choicescarf,lightningrod,irontail,surf,"
+                    "thunderbolt,voltswitch,water"
+                ): 10,
+            }
+        }
+        RandomBattleTeamDatasets._initialize_pkmn_sets()
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
+
+    @staticmethod
+    def _manual_set(count, moves=("Thunder Bolt", "Quick Attack")):
+        return PredictedPokemonSet(
+            PokemonSet(
+                ability="Static",
+                item="Light Ball",
+                nature="Serious",
+                evs=[1, 2, 3, 4, 5, 6],
+                ivs=[7, 8, 9, 10, 11, 12],
+                count=count,
+                level=85,
+                tera_type="Electric",
+            ),
+            PokemonMoveset(moves),
+        )
+
+    def test_signature_is_normalized_move_sorted_and_ignores_count(self):
+        first = self._manual_set(1)
+        second = self._manual_set(
+            999, moves=("quickattack", "thunderbolt")
+        )
+
+        self.assertEqual(
+            first.mechanics_signature(), second.mechanics_signature()
+        )
+
+    def test_full_set_filter_enforces_rejected_signature(self):
+        pkmn = Pokemon("pikachu", 85)
+        candidate = RandomBattleTeamDatasets.pkmn_sets["pikachu"][0]
+        self.assertTrue(candidate.full_set_pkmn_can_have_set(pkmn))
+
+        pkmn.rejected_set_signatures.add(candidate.mechanics_signature())
+
+        self.assertFalse(candidate.full_set_pkmn_can_have_set(pkmn))
+
+    def test_ledger_survives_deepcopy_but_not_a_second_physical_pokemon(self):
+        pkmn = Pokemon("pikachu", 85)
+        signature = RandomBattleTeamDatasets.pkmn_sets["pikachu"][
+            0
+        ].mechanics_signature()
+        pkmn.rejected_set_signatures.add(signature)
+
+        self.assertEqual(
+            {signature}, deepcopy(pkmn).rejected_set_signatures
+        )
+        self.assertEqual(
+            set(), Pokemon("pikachu", 85).rejected_set_signatures
+        )
+
+    def test_relaxed_fallback_and_fresh_lists_still_enforce_ledger(self):
+        pkmn = Pokemon("pikachu", 84)
+        first = RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(pkmn)[0]
+        pkmn.rejected_set_signatures.add(first.mechanics_signature())
+
+        first_remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+        second_remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+
+        self.assertEqual(1, len(first_remaining))
+        self.assertEqual(1, len(second_remaining))
+        self.assertNotEqual(
+            first.mechanics_signature(),
+            first_remaining[0].mechanics_signature(),
+        )
+
+
+class TestGradedRandomBattleEvidenceRelaxation(unittest.TestCase):
+    def setUp(self):
+        RandomBattleTeamDatasets.__init__()
+        RandomBattleTeamDatasets.pkmn_mode = "gen9randombattle"
+        RandomBattleTeamDatasets.raw_pkmn_sets = {
+            "pikachu": {
+                "85,lightball,static,tackle,electric": 90,
+                "84,choicescarf,lightningrod,tackle,water": 10,
+            }
+        }
+        RandomBattleTeamDatasets._initialize_pkmn_sets()
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
+        self._previous_logging_disable = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+
+    def tearDown(self):
+        logging.disable(self._previous_logging_disable)
+
+    @staticmethod
+    def _observed_pikachu():
+        pkmn = Pokemon("pikachu", 85)
+        pkmn.ability = "static"
+        pkmn.item = "lightball"
+        pkmn.terastallized = True
+        pkmn.tera_type = "electric"
+        pkmn.speed_range = StatRange(min=999, max=999)
+        return pkmn
+
+    @staticmethod
+    def _signatures(candidates):
+        return {candidate.mechanics_signature() for candidate in candidates}
+
+    def test_flag_off_keeps_all_at_once_fallback(self):
+        """Graded relaxation is the DEFAULT; this drives the disable control.
+
+        Renamed semantics per the default flip: the legacy all-at-once fallback
+        is now reachable only via FP_CONTROL_NO_GRADED_EVIDENCE_RELAXATION, so
+        this doubles as the negative control for the shipped behaviour.
+        """
+        pkmn = self._observed_pikachu()
+
+        with mock.patch.dict(
+            os.environ, {GRADED_EVIDENCE_RELAXATION_CONTROL_OFF: "1"}
+        ):
+            remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+
+        self.assertEqual(
+            self._signatures(RandomBattleTeamDatasets.pkmn_sets["pikachu"]),
+            self._signatures(remaining),
+        )
+
+    def test_flag_on_stops_after_speed_and_flips_negative_control(self):
+        pkmn = self._observed_pikachu()
+        matching_signature = RandomBattleTeamDatasets.pkmn_sets["pikachu"][
+            0
+        ].mechanics_signature()
+
+        with mock.patch.dict(
+            os.environ, {GRADED_EVIDENCE_RELAXATION_FLAG: "1"}
+        ):
+            with self.assertLogs("data.pkmn_sets", level="INFO") as logs:
+                remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+
+        self.assertEqual({matching_signature}, self._signatures(remaining))
+        self.assertIn("depth=1", logs.output[0])
+        self.assertIn("relaxing=speed", logs.output[0])
+
+    def test_second_rung_retains_ability(self):
+        pkmn = self._observed_pikachu()
+        pkmn.level = 90
+        pkmn.item = "leftovers"
+        pkmn.tera_type = "water"
+        matching_signature = RandomBattleTeamDatasets.pkmn_sets["pikachu"][
+            0
+        ].mechanics_signature()
+
+        with mock.patch.dict(
+            os.environ, {GRADED_EVIDENCE_RELAXATION_FLAG: "1"}
+        ):
+            with self.assertLogs("data.pkmn_sets", level="INFO") as logs:
+                remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+
+        self.assertEqual({matching_signature}, self._signatures(remaining))
+        self.assertIn("depth=2", logs.output[0])
+        self.assertIn("relaxing=speed,level,tera,item", logs.output[0])
+
+    def test_final_rung_matches_all_at_once_without_reviving_rejected_sets(self):
+        pkmn = self._observed_pikachu()
+        pkmn.ability = "overgrow"
+        rejected = RandomBattleTeamDatasets.pkmn_sets["pikachu"][0]
+        pkmn.rejected_set_signatures.add(rejected.mechanics_signature())
+        expected = RandomBattleTeamDatasets.pkmn_sets["pikachu"][1]
+
+        with mock.patch.dict(
+            os.environ, {GRADED_EVIDENCE_RELAXATION_FLAG: "1"}
+        ):
+            with self.assertLogs("data.pkmn_sets", level="INFO") as logs:
+                remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+
+        self.assertEqual(
+            {expected.mechanics_signature()}, self._signatures(remaining)
+        )
+        self.assertIn("depth=3", logs.output[0])
+        self.assertIn(
+            "relaxing=speed,level,tera,item,ability", logs.output[0]
+        )
+
+
+class TestCosmeticFormeShadowing(unittest.TestCase):
+    """SPEC-B4/B5: a cosmetic forme must not shadow its base species' sets.
+
+    `_merge_user_observed_sets` writes an observed set under the narrow cosmetic
+    key (e.g. `sawsbucksummer`).  The lookup used to early-return that key and
+    never reach the base family, so the opponent's true set -- present in the
+    dataset -- was never offered to the sampler.  Measured at 600 support gaps.
+    """
+
+    def test_cosmetic_forme_map_never_points_at_another_forme(self):
+        from data.pkmn_sets import COSMETIC_FORME_TO_BASE
+
+        self.assertTrue(COSMETIC_FORME_TO_BASE)
+        cycles = {k: v for k, v in COSMETIC_FORME_TO_BASE.items() if v in COSMETIC_FORME_TO_BASE}
+        self.assertEqual({}, cycles)
+        self.assertEqual("sawsbuck", COSMETIC_FORME_TO_BASE["sawsbucksummer"])
+
+    def test_cosmetic_forme_lookup_includes_base_family(self):
+        from data.pkmn_sets import RandomBattleTeamDatasets
+        from fp.battle import Pokemon
+
+        RandomBattleTeamDatasets.initialize("gen9randombattle")
+        base = RandomBattleTeamDatasets.pkmn_sets.get("sawsbuck") or []
+        if not base:
+            self.skipTest("sawsbuck absent from the sets file")
+        # inject a narrow cosmetic overlay row, as user-observed merging does
+        RandomBattleTeamDatasets.pkmn_sets["sawsbucksummer"] = [base[0]]
+        try:
+            got = RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(
+                Pokemon("sawsbucksummer", 88)
+            )
+            # must see the WHOLE base family, not just the overlay row
+            self.assertGreaterEqual(len(got), len(base))
+        finally:
+            RandomBattleTeamDatasets.pkmn_sets.pop("sawsbucksummer", None)
