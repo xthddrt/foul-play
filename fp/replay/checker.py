@@ -1395,10 +1395,36 @@ def _reattribute_disguised_item_gains(reveals) -> None:
         src = gains.get((pid, disguise))
         if not src:
             continue
-        # inclusive at BOTH ends: an acquisition resolves DURING its turn, so the
-        # bearer is in the slot on the span's entry and reveal turns too (same
-        # convention as `_species_keyed_event_is_reliable`)
+        # Inclusive at the BOTTOM: an acquisition resolves DURING its turn and the
+        # bearer enters during `start_turn`, so a gain on the entry turn is its own.
+        #
+        # NOT inclusive at the TOP when the span was closed by a SUCCESSOR.
+        # `end_turn` is the turn the occupant LEFT the slot -- `_open_occupancy`
+        # stamps the entrant's turn onto the occupancy it closes (`prev["end_turn"]
+        # = entry_turn`), which is why `_occupancy_covering` reads the window
+        # half-open at the bottom and CLOSED at the top (`start_turn < turn <=
+        # end_turn`) for PRE-turn states.  On that turn the slot changes hands, and
+        # harvest files the `-item` against whatever `open_occupancy` holds when the
+        # line is read -- i.e. the ENTRANT, because the `|switch|` precedes it in the
+        # same block.  Claiming it for the bearer robs the mon that physically got it
+        # and, via `illusion_misattributed_items` ->
+        # `_undo_disguised_item_misattribution`, wipes the item live tracking had
+        # written correctly, after which `apply_exact_teams` refills the sidecar's
+        # start-of-battle hold.  synth556425: span (p2, metagross->zoroark) 22..26;
+        # T26 switches the REAL Metagross in at 65/100 and Rotom Tricks it Leftovers.
+        # The gain was re-filed onto zoroark, Metagross reached the engine holding
+        # its original Weakness Policy, and three Leftovers residuals had no branch
+        # (T27, T30 on Metagross; T31 on Rotom, whose Trick-back then no-opped on
+        # `attacker_item == defender_item`).
+        # A span with no successor (still open at end of log, `_harvest_reveals`
+        # closes it at the last turn) keeps the bearer in the slot for all of
+        # `end_turn` and stays inclusive.
         lo, hi = il["start_turn"], il["end_turn"]
+        if any(
+            o.get("pid") == pid and o.get("start_turn") == hi
+            for o in (reveals.get("occupancies") or ())
+        ):
+            hi -= 1
         moved = [r for r in src if lo <= r[0] <= hi]
         if not moved:
             continue
@@ -2561,7 +2587,7 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
                     # Guarded so an unknown reserve item (real-corpus replays)
                     # never clobbers a known one (synth272122 T18: the bearer's
                     # Life Orb must reach the engine for recoil + seed heal)...
-                    _reserve_item = getattr(_reserve, "item", None)
+                    _reserve_item = getattr(_reserve, "item", constants.UNKNOWN_ITEM)
                     # ...and guarded on the hold still being CURRENT.  The
                     # reserve object carries the BATTLE-START hold (sidecar /
                     # `|-item|` reveal); every item event during the span is
@@ -2578,7 +2604,7 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
                     # unreachable.  Refuse-don't-guess: leave the
                     # reconstruction standing with whatever it has.
                     if _bearer_hold_superseded(reveals, pid, il, turn):
-                        _reserve_item = None
+                        _reserve_item = constants.UNKNOWN_ITEM
                     # ...and an acquisition DURING the span is the bearer's
                     # CURRENT hold, superseding the reserve's battle-start item:
                     # every |-item| printed against the disguised slot was
@@ -2603,8 +2629,41 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
                     ]
                     if _span_gains:
                         _reserve_item = max(_span_gains, key=lambda r: r[0])[1]
-                    if _reserve_item and _reserve_item != constants.UNKNOWN_ITEM:
+                    # `None` is not "nothing known", it is KNOWN-EMPTY: the
+                    # request JSON's `"item":""` becomes None (fp/battle.py:749)
+                    # and so does every consume/knock-off reveal, while a mon
+                    # whose hold has never been revealed sits at
+                    # constants.UNKNOWN_ITEM (fp/battle.py:1079).  The old
+                    # truthiness guard collapsed the two and left the DISGUISE's
+                    # item standing on an itemless bearer -- Illusion substitutes
+                    # only the printed identity (sim/pokemon.ts:532, :547-549;
+                    # nothing in `item`/`getItem` consults `this.illusion`), so
+                    # the hold is always the physical Zoroark's.  synth551055
+                    # T16: an itemless Zoroark-Hisui wearing Haxorus's face kept
+                    # Haxorus's LUM BERRY, so Umbreon's Toxic was modelled as
+                    # hit-and-instantly-cured -- poke-engine collapses that into
+                    # a bare `ChangeItem LUMBERRY -> NONE` with NO ChangeStatus,
+                    # leaving PS's plain `|-status|p1a: Haxorus|tox` (and its tox
+                    # chip) unreachable in all four branches.
+                    if _reserve_item != constants.UNKNOWN_ITEM:
                         battler.active.item = _reserve_item
+                        # ...and the item-removal LATCHES are the bearer's too:
+                        # the active object is the DISGUISE's party member, so
+                        # its knocked_off/removed_item describe THAT mon's
+                        # history.  synth601676: the real Scream Tail's
+                        # Leftovers were Knocked Off on T6, and
+                        # battler_to_poke_engine_side nulls the item of any
+                        # knocked_off mon (poke_engine_helpers.py:210) and
+                        # forwards removed_item as last_consumed_item -- so the
+                        # bearer's Choice Specs armed just above were silently
+                        # deleted again and its T45 Trick had no branch.  The
+                        # physical mon is the bearer: carry ITS latches.
+                        battler.active.knocked_off = getattr(
+                            _reserve, "knocked_off", False
+                        )
+                        battler.active.removed_item = getattr(
+                            _reserve, "removed_item", None
+                        )
                     break
         return
 

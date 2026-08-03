@@ -916,6 +916,50 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
 
                     ok = all(_eat_unreachable(b) for b in br)
             if not ok:
+                # FOLD-FAINT concession, the item-arm twin of
+                # _fold_faint_blocks_volatile: an `[eat]` (PS `pokemon.eatItem`,
+                # which refuses outright on a fainted holder -- sim/pokemon.ts
+                # useItem/eatItem gate on `this.hp`) is unreachable when the
+                # engine's COLLAPSED damage rolls faint the holder in EVERY
+                # branch.  The holder-alive state PS actually reached (its roll
+                # near the bottom of the spread left the mon at 1-2 hp, then the
+                # end-of-turn Harvest restore + re-eat fired) is simply not in
+                # the branch set, while every damage the engine used is itself a
+                # legal PS roll -- separately asserted by the exact-damage
+                # membership check.  Roll selection inside the fold, not a
+                # fidelity gap: synth573264 T37 (Arboliva 119/288 brn, Boomburst
+                # mean arm 107 + brn chip faints; PS rolled 99 -> 2 hp alive)
+                # and synth591248 T16 (Exeggutor-Alola, every arm's move+recoil+
+                # tox chip sums past its 231).  ALL damage sources count here --
+                # unlike the volatile twin, the eat resolves at END of turn, so
+                # the residual chip lands before it.  A branch where the holder
+                # survives keeps the finding: with the holder alive the engine
+                # models the restore+eat itself (the same games' neighbouring
+                # turns pass), so a survivor branch missing the ChangeItem is a
+                # genuine gap.
+                if (
+                    "[eat]" in ev.raw
+                    and hp0_i
+                    and mhp_i
+                    and not _any_branch(
+                        br, lambda i: i.kind == "Switch" and i.side == s
+                    )
+                ):
+
+                    def _holder_folds_fainted(branch):
+                        hp = hp0_i
+                        for i in branch:
+                            amt = i.amount() or 0
+                            if i.kind == "Damage" and i.side == s:
+                                hp -= max(0, amt)
+                            elif i.kind == "Heal" and i.side == s:
+                                hp += amt
+                            if hp <= 0:
+                                return True
+                        return False
+
+                    ok = all(_holder_folds_fainted(b) for b in br)
+            if not ok:
                 # A berry self-consumed on an HP threshold (`-enditem ... [eat]`,
                 # e.g. Sitrus at <=50% max HP) fires only when HP crosses the gate,
                 # which turns on the exact damage/HP magnitude -- and for the

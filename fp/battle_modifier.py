@@ -1170,6 +1170,15 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
         pkmn.hp_at_switch_in = pkmn.hp
         pkmn.status_at_switch_in = pkmn.status
         pkmn.item_at_switch_in = pkmn.item
+        # ...and the tera it was ALREADY carrying, for the same reason.  PS's
+        # `getFullDetails` takes `details` from `pokemon.illusion` but appends
+        # `, tera:` from `this.terastallized` -- the REAL entrant's
+        # (sim/pokemon.ts:544-553) -- so a |switch| printed under the disguise's
+        # name with NO `tera:` suffix says the mon actually walking in is not
+        # terastallized, while the reconstruction is reusing the impersonated
+        # party member's own (possibly terastallized) object.  Only a
+        # `|-terastallize|` seen DURING the stay can belong to the zoroark.
+        pkmn.tera_at_switch_in = (pkmn.terastallized, pkmn.tera_type)
 
         side.reserve.remove(pkmn)
 
@@ -4450,8 +4459,13 @@ def _switch_active_with_zoroark_from_reserves(
     zoroark_from_reserves.boosts = copy(pkmn.boosts)
     zoroark_from_reserves.status = pkmn.status
     zoroark_from_reserves.volatile_statuses = copy(pkmn.volatile_statuses)
-    zoroark_from_reserves.terastallized = pkmn.terastallized
-    zoroark_from_reserves.tera_type = pkmn.tera_type
+    # only a tera the disguise object did NOT already carry when this stay began
+    # belongs to the zoroark -- see the same reasoning (and its reproduced case)
+    # in `illusion_end`
+    _tera_at_switch_in = getattr(pkmn, "tera_at_switch_in", None) or (False, None)
+    if pkmn.terastallized and not _tera_at_switch_in[0]:
+        zoroark_from_reserves.terastallized = pkmn.terastallized
+        zoroark_from_reserves.tera_type = pkmn.tera_type
 
     # the zoroark was the physical pokemon on the field all along, so the
     # actions counted while disguised belong to it - PS never resets
@@ -4480,9 +4494,9 @@ def _switch_active_with_zoroark_from_reserves(
         pkmn.hp = pkmn.hp_at_switch_in
         hp_certificate.clear(pkmn, "illusion rollback")
 
-    if pkmn.terastallized:
-        pkmn.terastallized = False
-        pkmn.tera_type = None
+    # roll the impersonated mon back to the tera it held at switch-in, exactly as
+    # the hp rollback above -- NOT unconditionally to "not terastallized"
+    pkmn.terastallized, pkmn.tera_type = _tera_at_switch_in
 
     zoroark_from_reserves.zoroark_disguised_as = pkmn.name
 
@@ -4633,6 +4647,29 @@ def illusion_end(battle, split_msg):
         # entered on T17 still typed NORMAL, so Stomping Tantrum was computed
         # unresisted (rolls 62-74 instead of the Grass-resisted 31-37) and its
         # 62-hp Substitute absorption came out [survival_contradiction].
+        # ...but ONLY a tera the disguise object did not already carry when this
+        # stay began.  "The side teras at most once" does not make every tera on
+        # the disguise object the zoroark's: the impersonated party member may
+        # have spent that one tera on its OWN earlier stay, and the
+        # reconstruction reuses that same object as the disguise's stand-in.  The
+        # `tera:` suffix `getFullDetails` appends is the ACTUAL entrant's
+        # (sim/pokemon.ts:544-553), so an entry line without it proves the tera
+        # already on the object is not the entrant's.  synth552324 (holdout51):
+        # the genuine Tropius teras Steel on T3, and later a Zoroark walks in as
+        # `|switch|p1a: Tropius|Tropius, L91, F|235/235` (no `tera:`, and 235 is
+        # ZOROARK's max hp) and is revealed by `|replace|`; the unconditional
+        # clear below stripped the real Tropius' Steel tera, so when it returned
+        # (`|switch|...|Tropius, L91, F, tera:Steel|`) Mandibuzz's U-turn was
+        # computed against Grass/Flying -- neutral rolls 34-41 instead of the
+        # Steel-resisted 17-20 -- and its 82-hp Substitute absorption came out
+        # [survival_contradiction] twice.
+        tera_at_switch_in = getattr(side.active, "tera_at_switch_in", None) or (
+            False,
+            None,
+        )
+        tera_gained_under_disguise = (
+            side.active.terastallized and not tera_at_switch_in[0]
+        )
         previous_terastallized = side.active.terastallized
         previous_tera_type = side.active.tera_type
 
@@ -4748,11 +4785,14 @@ def illusion_end(battle, split_msg):
         side.active.volatile_status_durations.update(previous_volatile_durations)
         side.active.sleep_turns = previous_sleep_turns
         side.active.rest_turns = previous_rest_turns
-        side.active.terastallized = previous_terastallized
-        side.active.tera_type = previous_tera_type
-        if pkmn_disguised_as.terastallized:
-            pkmn_disguised_as.terastallized = False
-            pkmn_disguised_as.tera_type = None
+        if tera_gained_under_disguise:
+            side.active.terastallized = previous_terastallized
+            side.active.tera_type = previous_tera_type
+        # roll the impersonated mon back to the tera it held at switch-in, exactly
+        # as hp / status above -- NOT unconditionally to "not terastallized"
+        pkmn_disguised_as.terastallized, pkmn_disguised_as.tera_type = (
+            tera_at_switch_in
+        )
 
         # a |replace| is not a switch-in: the zoroark was the acting pokemon
         # all along, so the move actions counted under the disguise carry over
