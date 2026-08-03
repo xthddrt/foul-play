@@ -732,15 +732,47 @@ def _illusion_bearer_from_impossible_entry_hp(side, entrant, condition):
     bearer = side.find_pokemon_in_reserves(
         "zoroark"
     ) or side.find_pokemon_in_reserves("zoroarkhisui")
+    if (
+        bearer is None
+        and side.active is not None
+        and side.active.name in ("zoroark", "zoroarkhisui")
+        and hp_certificate.exact_display_hp(condition) is not None
+    ):
+        # OUR OWN side's very first |switch|: the request json already put the
+        # REAL Zoroark on the field (`initialize_first_turn_user_from_json`),
+        # so the bearer is the ACTIVE rather than a bench member while the
+        # protocol line names the mon it is impersonating.  Only the exact
+        # `hp/maxhp` branch below may use this fallback -- it proves the
+        # disguise from max hp alone, which a genuine switch-out of the Zoroark
+        # can never produce (that line would carry the ENTRANT's own max hp).
+        bearer = side.active
     if bearer is None or bearer is entrant:
         return None
     if (bearer.hp or 0) <= 0 or (bearer.max_hp or 0) <= 0:
         return None
-    # only the `pct/100` opponent display is in scope: an exact `hp/maxhp`
-    # display states the entrant's OWN max hp, which the bearer's would
-    # contradict outright and by a route this arithmetic does not model.
-    if hp_certificate.exact_display_hp(condition) is not None:
-        return None
+    # An EXACT `hp/maxhp` display -- which is what PS always sends a player for
+    # its OWN side (`getFullDetails` takes `health` from `this.getHealth()`,
+    # sim/pokemon.ts:544-552, and the secret side always gets the true numbers)
+    # -- states the entrant's TRUE max hp.  Max hp is a fixed species+level
+    # property, so a denominator that is not the NAMED species' max hp proves
+    # the details do not belong to the entrant, and Illusion is the only thing
+    # in gen9 that makes PS print another species' details.  That is a strictly
+    # stronger test than the percent arithmetic below, so it decides on its own;
+    # both max hps must be EXACT (`max_hp_exact`, set from the request json for
+    # our own party) or the mismatch could be a randbats guess rather than a
+    # disguise.
+    exact = hp_certificate.exact_display_hp(condition)
+    if exact is not None:
+        shown_hp, shown_max = exact
+        if not getattr(entrant, "max_hp_exact", False) or not getattr(
+            bearer, "max_hp_exact", False
+        ):
+            return None
+        if shown_max == entrant.max_hp or shown_max != bearer.max_hp:
+            return None
+        if shown_hp != bearer.hp:
+            return None
+        return bearer
     try:
         pct = int(condition.split("/")[0])
     except (ValueError, IndexError):
@@ -1037,17 +1069,28 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
     # reconstruction fainted the REAL Granbull; its genuine T22 switch-in handed
     # the engine a 0-HP entrant that produced neither hazard chip nor the observed
     # `-ability|Intimidate` / `-unboost|atk`.
-    if is_opponent(battle, split_msg):
-        _bearer = _illusion_bearer_from_impossible_entry_hp(side, pkmn, split_msg[4])
-        if _bearer is not None:
-            logger.info(
-                "{} cannot enter at {} (it is benched at {}/{}) - the entrant is the "
-                "disguised {}".format(
-                    pkmn.name, split_msg[4], pkmn.hp, pkmn.max_hp, _bearer.name
-                )
+    # BOTH sides: the health field is the real entrant's on our own side too
+    # (the secret side gets `hp/maxhp` outright), and there the max-hp branch of
+    # the test below is decisive.  Our OWN Zoroark is otherwise only recognised
+    # from `battle.user.last_selected_move` (`user_just_switched_into_zoroark`),
+    # which a replay/reconstruction never has and which a Shed-Tail/U-turn pivot
+    # does not set -- synth313658 T8 handed the engine a non-tera Ice Cryogonal
+    # in place of the Tera-Poison Zoroark that was really there.
+    _bearer = _illusion_bearer_from_impossible_entry_hp(side, pkmn, split_msg[4])
+    if _bearer is not None:
+        logger.info(
+            "{} cannot enter at {} (it is benched at {}/{}) - the entrant is the "
+            "disguised {}".format(
+                pkmn.name, split_msg[4], pkmn.hp, pkmn.max_hp, _bearer.name
             )
-            pkmn = _bearer
-            temp_pkmn = _bearer
+        )
+        if _bearer is side.active:
+            # the bearer is on the field, not on the bench: bank it the way the
+            # "entering AS the active species" branch below does, so the
+            # `side.reserve.remove(pkmn)` bookkeeping still balances
+            side.reserve.append(_bearer)
+        pkmn = _bearer
+        temp_pkmn = _bearer
 
     # ILLUSION entering AS THE SPECIES THAT IS ALREADY ACTIVE.  Species Clause makes
     # "the mon switching in is the species already standing on the field" impossible
@@ -3209,7 +3252,28 @@ def start_volatile_status(battle, split_msg):
         # true)` reads for STAB) untouched.  Mirroring that no-op is required:
         # writing the announced types onto `pkmn.types` corrupts the
         # pre-terastallization types that decide 1.5x vs 2.0x tera STAB.
-        if pkmn.terastallized:
+        if "[silent]" in split_msg[4:]:
+            # END-OF-TURN TYPE-DISPLAY REFRESH, not a type change.  PS
+            # sim/battle.ts:1709-1719 emits a BARE `-start <mon> typechange
+            # <types> [silent]` every turn whenever the client's cached
+            # `apparentType` has gone stale -- it calls no `setType` at all, so
+            # nothing about the real mon's types moved.  Worse, the string it
+            # announces is `seenPokemon.getTypes(true)` with `const seenPokemon
+            # = pokemon.illusion || pokemon` (:1711-1712): under an Illusion it
+            # is the DISGUISE's typing, and if the disguise is terastallized it
+            # is the disguise's TERA type.  synth311316 T15: a Zoroark-Hisui
+            # wearing a Tera-Dark Toxicroak's face was retyped to ['dark'], so
+            # the Close Combat its real Normal/Ghost body was IMMUNE to on T21
+            # existed in no branch.  Every emitter that really does change types
+            # carries a `[from]` tag and its own non-silent line, which the
+            # branches below apply.
+            logger.info(
+                "{} got a [silent] typechange display refresh ({}) - PS changes "
+                "no types there, ignoring".format(
+                    pkmn.name, split_msg[4] if len(split_msg) > 4 else ""
+                )
+            )
+        elif pkmn.terastallized:
             logger.info(
                 "{} is terastallized - ignoring typechange announcement {} "
                 "(PS setType is a no-op while terastallized)".format(
@@ -4717,7 +4781,14 @@ def cant(battle, split_msg):
     # Oricorio|par`, after which Oricorio still takes its OWN untagged action),
     # and an ability-flavored `|cant|` names the BLOCKER rather than the dancer
     # -- clear BOTH actives so the one-shot marker can never leak onto a real
-    # move.  Deliberately only clears: this line's own accounting is unchanged.
+    # move.  Remember whether THIS line's actor was the pending dancer first:
+    # a BeforeMove blocker (Taunt/Disable/Imprison/Heal Block/Gravity) aborts
+    # the copy with `this.add('cant', attacker, 'move: X', move)` naming the
+    # COPIED move, which the reveal branch below would otherwise stamp onto the
+    # dancer's own moveset.
+    dancer_copy_pending = side.active is not None and getattr(
+        side.active, "dancer_copy_pending", False
+    )
     for _dancer_side in (battle.user, battle.opponent):
         if _dancer_side.active is not None:
             _dancer_side.active.dancer_copy_pending = False
@@ -4859,7 +4930,18 @@ def cant(battle, split_msg):
     if len(split_msg) == 5 and split_msg[3].startswith("move: "):
         move_name = normalize_name(split_msg[4])
         move_object = side.active.get_move(move_name)
-        if move_object is None:
+        if move_object is None and dancer_copy_pending:
+            # The blocked move is the DANCER COPY, not this mon's own: PS
+            # re-entered runMove with `externalMove: true` and the BeforeMove
+            # blocker returned false (sim/battle-actions.ts:255-262), so
+            # deductPP (:282) and moveUsed (:291) never ran and nothing about
+            # this mon's moveset was revealed.  Same reasoning as the aborted-
+            # copy branch in `move()`.
+            logger.info(
+                "{}'s Dancer copy of {} was blocked before it ran - not "
+                "recording it".format(side.active.name, move_name)
+            )
+        elif move_object is None:
             _record_used_move(battle, side, side.active, move_name)
             logger.info(
                 "Adding {} to {}'s moves from 'cant'".format(

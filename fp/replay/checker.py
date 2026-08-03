@@ -2472,6 +2472,30 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
                     # reconstruction standing with whatever it has.
                     if _bearer_hold_superseded(reveals, pid, il, turn):
                         _reserve_item = None
+                    # ...and an acquisition DURING the span is the bearer's
+                    # CURRENT hold, superseding the reserve's battle-start item:
+                    # every |-item| printed against the disguised slot was
+                    # re-keyed to the bearer by _reattribute_disguised_item_gains,
+                    # and a gain both closes the old hold and names its
+                    # replacement.  synth315121 T16: the disguised Zoroark-Hisui
+                    # Tricks its Choice Specs to Hitmontop on T15 and receives
+                    # Leftovers, but the only removal record is keyed by the
+                    # disguise and dated after the span (`_bearer_hold_superseded`
+                    # sees nothing), so the stale Choice Specs were re-armed --
+                    # choice-locking the bearer and leaving its observed
+                    # Leftovers heal with no branch.
+                    _bearer_key = (reveals.get("illusion_bearers") or {}).get(
+                        pid
+                    ) or _species_key(il.get("true_species") or "")
+                    _span_gains = [
+                        r
+                        for r in (reveals.get("item_gains") or {}).get(
+                            (pid, _bearer_key), ()
+                        )
+                        if il["start_turn"] <= r[0] < turn
+                    ]
+                    if _span_gains:
+                        _reserve_item = max(_span_gains, key=lambda r: r[0])[1]
                     if _reserve_item and _reserve_item != constants.UNKNOWN_ITEM:
                         battler.active.item = _reserve_item
                     break

@@ -75,4 +75,14 @@ for g in 255690 257312 250868 252421 257004 257619; do check $U $g; done
 for g in 260116; do check $V $g; done
 for g in 271522 272122 278377 278925; do check $W $g; done
 for g in 284909 286069; do check $X $g; done
+
+echo "=== round 10 (gate attempt 5 / wave 13) ==="
+Y=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout25
+Z=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout26
+AA=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout27
+AB=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout28
+for g in 292619; do check $Y $g; done
+for g in 308864; do check $Z $g; done
+for g in 314041 317904 315121 313658; do check $AA $g; done
+for g in 326469 327926 320336 325657; do check $AB $g; done
 echo "GRAND TOTAL NON-CLEAN: $FAIL"

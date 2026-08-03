@@ -629,6 +629,23 @@ def consume(
         return False
 
     # Super Fang family: exact out only if exact in.
+    # ...and only if the line actually LANDED.  Same trap as the Endeavor arm
+    # above: PS prints the move's `-damage` line even when an onDamage handler
+    # ate the whole hit, re-showing the target at its CURRENT HP.  Ice Face
+    # `return 0`s any Physical move -- fixed-damage ones included
+    # (data/abilities.ts iceface onDamage, `effect.category === 'Physical'`,
+    # no damageCallback exemption) -- so `|move|Super Fang` +
+    # `|-activate| ability: Ice Face` + `|-damage|p2a: Eiscue|100/100` halved a
+    # mon that was never touched.  synth325657 T40: Eiscue was certified to
+    # 137/274 while it was really at 274/274, and the `|detailschange|` to
+    # Eiscue-Noice on the very next line cleared `hp_exact`, which makes
+    # `verify_against_exact_max` early-return -- so the stored 100%% deferred
+    # check never caught it.  T41's Belly Drum then took the phantom 137 to
+    # exactly 0, fainting the engine's Eiscue and making Thunderbolt's
+    # paralysis secondary unreachable in every branch.  Refusing only ever
+    # gives up exactness; it can never pin a wrong value.
+    if prior_hp is not None and int(prior_hp) == int(target.hp):
+        return False
     if not prior_exact:
         return False
     prior_hp = int(prior_hp)

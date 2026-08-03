@@ -1103,6 +1103,42 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 br, lambda i: i.kind in ("Heal", "Revive", "ChangeMaxHP") and i.side == s
             )
             if not ok:
+                # BRANCH-FOLD FAINT, the same rule as the volatile_end arm
+                # above: end-of-turn residual heals (Grassy Terrain, Leftovers,
+                # ...) are skipped by BOTH engines for a fainted holder, and
+                # poke-engine folds the 16 damage rolls of a hit into a kill arm
+                # and a survivor MEAN, so when PS's actual roll left the mon
+                # alive (it healed) while every folded arm faints it, no branch
+                # can carry the Heal.  synth308864 T11: Phione 250 hp, Mirror
+                # Coat returns 2x the folded Scald mean (2*126 >= 250) in every
+                # branch while PS rolled 118 (2*118 = 236, Phione lives at 14
+                # and heals); synth320336 T25: Typhlosion 203 hp, folded
+                # Acrobatics mean 136 + fixed Struggle recoil 67 == 203 in every
+                # branch while PS rolled 130, leaving 6 -> Grassy Terrain heal.
+                # If running-hp arithmetic on this side's Damage/Heal
+                # instructions shows the mon fainted at the end of EVERY branch
+                # (skipped when any branch switches this side), the missing heal
+                # is the damage fold's roll selection, not a fidelity gap; the
+                # roll itself is separately asserted by the exact-damage
+                # membership check.  Any branch that leaves the mon alive keeps
+                # the report.
+                hp0 = ctx.side_hp.get(s)
+                if hp0 and not _any_branch(
+                    br, lambda i: i.kind == "Switch" and i.side == s
+                ):
+
+                    def _side_faints(branch):
+                        hp = hp0
+                        for i in branch:
+                            amt = i.amount() or 0
+                            if i.kind == "Damage" and i.side == s:
+                                hp -= max(0, amt)
+                            elif i.kind == "Heal" and i.side == s:
+                                hp += amt
+                        return hp <= 0
+
+                    ok = all(_side_faints(b) for b in br)
+            if not ok:
                 findings.append(
                     Finding(
                         ctx.turn,
