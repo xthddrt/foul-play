@@ -77,11 +77,11 @@ right. Never silence a report you cannot prove is false.
 |---|---|---|
 | `synthetic-corpus` | 1–50000 | original training corpus (fixes derived from it; cannot certify) |
 | `synthetic-corpus-holdout` | 50001–60000 | old, pre-dates current engine |
-| `synthetic-corpus-holdout2` | 60001–70000 | **corpus A** — round 1, 10 findings, all fixed |
-| `synthetic-corpus-holdout3` | 70001–80000 | **corpus B** — round 2, 16 findings, all fixed |
-| `synthetic-corpus-holdout4` | 80001–90000 | **corpus C** — round 3, 9 findings, IN PROGRESS |
-| `synthetic-corpus-holdout5` | 90001–100000 | **corpus D** — ready, unused |
-| `synthetic-corpus-holdout6/7/8` | 100001–130000 | **E/F/G** — generating now |
+| `holdout2`–`holdout16` | 60001–170000 | **all CONSUMED** (rounds 1–7). PRUNED to just the finding games `verify_all.sh` replays — regenerable in full from their seed ranges if ever needed |
+| `holdout17`–`holdout20` | 210001–250000 | **gate attempt 3** — fresh, unseen, reserved |
+
+**Prune each corpus right after its findings are diagnosed.** 19 corpora at
+~1.5 GB filled a 228 GB disk and silently killed a generation run mid-flight.
 
 Generate more:
 ```bash
