@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from copy import deepcopy
 
 import constants
@@ -15,6 +16,7 @@ from fp.battle import DamageDealt
 from fp.battle import StatRange
 from fp.battle import boost_multiplier_lookup
 from fp.search.poke_engine_helpers import poke_engine_get_damage_rolls
+from fp.search.poke_engine_helpers import poke_engine_get_damage_roll_sets
 from fp.helpers import (
     normalize_name,
     random_battles_evs,
@@ -31,6 +33,20 @@ from fp.helpers import (
 logger = logging.getLogger(__name__)
 
 MOVE_END_STRINGS = {"move", "switch", "upkeep", "-miss", ""}
+
+# {(check_type, move, reason): count} -- damage observations the reverse damage
+# calc DECLINED to act on. Modelled on `hp_certificate.CERTIFICATE_REFUSALS`: a
+# refusal changes nothing externally, but a channel that refuses constantly is
+# a channel whose premises are wrong, and that has to be visible without a
+# rework cycle. Unlike CERTIFICATE_REFUSALS (dumped by the corpus sweep at
+# fp/replay/checker.py and check_replays.py), this counter has no sweep
+# consumer yet -- every refusal also logs at WARNING, so visibility is via
+# logs; wire it into a stats dump if a live run ever needs the aggregate.
+DAMAGE_CHECK_REFUSALS = Counter()
+
+
+def reset_damage_check_refusals():
+    DAMAGE_CHECK_REFUSALS.clear()
 
 
 def can_have_priority_modified(battle, pokemon, move_name):
@@ -138,6 +154,33 @@ def get_move_information(m):
         return m.split("|")[2], {constants.ID: "unknown", constants.PRIORITY: 0}
 
 
+def _opponent_could_move_last_regardless(battle):
+    """True if the opponent could have selected a negative-priority move.
+
+    A `|cant|<opponent>|flinch` proves the opponent's action came after ours,
+    which is only a SPEED fact if nothing else could have put it last. Any
+    negative-priority candidate (Roar, Dragon Tail, Circle Throw, Trick Room,
+    Teleport, ...) breaks the proof. Conservative outside random battles, where
+    there is no candidate-move dataset to consult.
+    """
+    if battle.opponent.active is None:
+        return True
+    for mv in battle.opponent.active.moves:
+        if mv.name in all_move_json and all_move_json[mv.name][constants.PRIORITY] < 0:
+            return True
+    if battle.battle_type != BattleType.RANDOM_BATTLE:
+        return True
+    possible_moves = RandomBattleTeamDatasets.get_all_possible_moves(
+        battle.opponent.active
+    )
+    if not possible_moves:
+        return True
+    for mv in possible_moves:
+        if mv in all_move_json and all_move_json[mv][constants.PRIORITY] < 0:
+            return True
+    return False
+
+
 def check_speed_ranges(battle, msg_lines):
     """
     Intention:
@@ -164,16 +207,57 @@ def check_speed_ranges(battle, msg_lines):
             - the opponent COULD have prankster and it used a status move
             - Grassy Glide is used when Grassy Terrain is up
     """
+    seen_move = False
+    actions = []
     for ln in msg_lines:
-        # If either side switched this turn - don't do this check
-        if ln.startswith("|switch|"):
+        if ln.startswith("|move|"):
+            seen_move = True
+            actions.append(get_move_information(ln))
+
+        # A |switch|/|drag| BEFORE the first |move| line means the mons that
+        # resolved the moves are not the ones this check would compare - bail.
+        #
+        # A |switch|/|drag| AFTER a |move| line cannot have changed the
+        # ordering of the |move| lines already emitted: it is a pivot
+        # follow-up (U-turn/Volt Switch/Flip Turn/Parting Shot/Chilly
+        # Reception), an Eject Button/Red Card, or a faint replacement. Turn
+        # order was fixed before any of them. `check_speed_ranges` runs BEFORE
+        # any line of this block is applied (process_battle_updates), so the
+        # battle state read below is still the state those moves were ordered
+        # under. Bailing on these threw away a large fraction of randbats
+        # turns' speed evidence.
+        if (ln.startswith("|switch|") or ln.startswith("|drag|")) and not seen_move:
             return
 
-        # if anyone got `cant` or hit themselves in confusion
+        # A |cant| line occupies the pokemon's action slot in the protocol, so
+        # its POSITION is an ordering fact even though no move resolved. Two
+        # shapes on the OPPONENT are usable:
+        #   - `recharge`: a fixed 0-priority pseudo-action (no move choice to
+        #     be wrong about), so it can stand in for the opponent's action.
+        #   - `flinch`: the opponent demonstrably acted after our hit. Sound
+        #     only if it could not have selected a negative-priority move
+        #     (Roar/Dragon Tail/... would explain the ordering without speed).
+        # Every other shape (slp/par/frz/truant/nopp/ability blocks) keeps the
+        # original bail: we do not know what priority the blocked move had.
+        if ln.startswith("|cant|"):
+            split_cant = ln.split("|")
+            cant_actor = split_cant[2] if len(split_cant) > 2 else ""
+            cant_reason = split_cant[3].strip() if len(split_cant) > 3 else ""
+            if not cant_actor.startswith(battle.opponent.name) or cant_reason not in (
+                "recharge",
+                "flinch",
+            ):
+                return
+            if cant_reason == "flinch" and _opponent_could_move_last_regardless(battle):
+                return
+            actions.append(
+                (cant_actor, {constants.ID: cant_reason, constants.PRIORITY: 0})
+            )
+            continue
+
+        # if anyone hit themselves in confusion
         # skip this check as we don't know if they used a priority move
-        if ln.startswith("|cant|") or (
-            ln.startswith("|-activate|") and ln.endswith("confusion")
-        ):
+        if ln.startswith("|-activate|") and ln.endswith("confusion"):
             return
 
         # If anyone used a custapberry, skip this check
@@ -197,7 +281,7 @@ def check_speed_ranges(battle, msg_lines):
     if battle.user.last_selected_move.move.startswith("switch "):
         return
 
-    moves = [get_move_information(m) for m in msg_lines if m.startswith("|move|")]
+    moves = actions
     number_of_moves = len(moves)
     if number_of_moves not in [1, 2]:
         return
@@ -363,24 +447,50 @@ def check_opponent_hiddenpower(battle, msg_line):
 
 
 def check_choicescarf(battle, msg_lines):
-    # If either side switched this turn - don't do this check
-    if any(
-        battle.generation in ["gen1", "gen2", "gen3"]
-        or ln.startswith("|switch|")
-        or ln.startswith("|cant|")
-        or (ln.startswith("|-activate|") and ln.endswith("confusion"))
-        for ln in msg_lines
-    ) or battle.user.last_selected_move.move.startswith("switch "):
+    if battle.generation in ["gen1", "gen2", "gen3"] or (
+        battle.user.last_selected_move.move.startswith("switch ")
+    ):
         return
+
+    # Same positional scan as `check_speed_ranges`: a |switch|/|drag| AFTER a
+    # |move| line is a pivot follow-up / faint replacement and cannot have
+    # changed the ordering of the moves already emitted. `check_choicescarf`
+    # is only ever reached at the OPPONENT's |move| line and only proceeds
+    # when the opponent moved first, so every later line of the block
+    # (including such a switch) is still unapplied when this runs.
+    seen_move = False
+    for ln in msg_lines:
+        if ln.startswith("|move|"):
+            seen_move = True
+        if (ln.startswith("|switch|") or ln.startswith("|drag|")) and not seen_move:
+            return
+        if ln.startswith("|cant|") or (
+            ln.startswith("|-activate|") and ln.endswith("confusion")
+        ):
+            return
 
     moves = [get_move_information(m) for m in msg_lines if m.startswith("|move|")]
     number_of_moves = len(moves)
 
-    # if the bot went first we cannot ever infer a choicescarf
-    if number_of_moves not in [1, 2] or moves[0][0].startswith(battle.user.name):
+    if number_of_moves not in [1, 2]:
         return
 
-    elif number_of_moves == 1:
+    bot_went_first = moves[0][0].startswith(battle.user.name)
+
+    # NEGATIVE ARM: the bot went first, so a scarf can be RULED OUT whenever
+    # even the scarfed opponent would have outsped us. Only sound where the
+    # opponent's spread is exactly known (random battles), and only outside
+    # trick room (there a scarf makes the opponent MORE likely to move last,
+    # so moving last proves nothing). Both |move| lines must be present: an
+    # opponent that never acted has an unknown selected priority.
+    if bot_went_first and (
+        number_of_moves != 2
+        or battle.trick_room
+        or battle.battle_type != BattleType.RANDOM_BATTLE
+    ):
+        return
+
+    if number_of_moves == 1:
         moves.append(
             (
                 "{}a: {}".format(battle.opponent.name, battle.user.active.name),
@@ -391,6 +501,9 @@ def check_choicescarf(battle, msg_lines):
     if moves[0][1][constants.PRIORITY] != moves[1][1][constants.PRIORITY]:
         return
 
+    opponent_move_index = 1 if bot_went_first else 0
+    user_move_index = 0 if bot_went_first else 1
+
     battle_copy = deepcopy(battle)
     if (
         battle.opponent.active is None
@@ -398,10 +511,10 @@ def check_choicescarf(battle, msg_lines):
         or not battle.opponent.active.can_have_choice_item
         or can_have_speed_modified(battle, battle.opponent.active)
         or can_have_priority_modified(
-            battle, battle.opponent.active, moves[0][1][constants.ID]
+            battle, battle.opponent.active, moves[opponent_move_index][1][constants.ID]
         )
         or can_have_priority_modified(
-            battle, battle.user.active, moves[1][1][constants.ID]
+            battle, battle.user.active, moves[user_move_index][1][constants.ID]
         )
         or (
             battle_copy.user.active.ability == "unburden"
@@ -427,6 +540,18 @@ def check_choicescarf(battle, msg_lines):
     opponent_effective_speed = battle_copy.get_effective_speed(battle_copy.opponent)
     bot_effective_speed = battle_copy.get_effective_speed(battle_copy.user)
 
+    if bot_went_first:
+        # a scarf would have made the opponent strictly faster than us, yet it
+        # moved second: it cannot be holding one. (Strict `>` keeps speed ties,
+        # which are coin-flips, out of the elimination.)
+        if int(opponent_effective_speed * 1.5) > bot_effective_speed:
+            logger.info(
+                "Opponent {} moved second but a choicescarf would have outsped "
+                "us - ruling out choicescarf".format(battle.opponent.active.name)
+            )
+            battle.opponent.active.impossible_items.add("choicescarf")
+        return
+
     if battle.trick_room:
         has_scarf = opponent_effective_speed > bot_effective_speed
     else:
@@ -440,6 +565,26 @@ def check_choicescarf(battle, msg_lines):
         )
         battle.opponent.active.item = "choicescarf"
         battle.opponent.active.item_inferred = True
+
+
+_DAMAGE_CAP_MARKERS = ("focus sash", "ability: sturdy", "move: endure")
+
+
+def _damage_was_capped(lines, defender_name):
+    """True if a Focus Sash / Sturdy / Endure marker capped this hit at 1hp.
+
+    PS clamps the damage it PRINTS to the target's remaining hp, so a capped
+    hit's observed delta is only a LOWER bound on the roll that was computed.
+    Treating it as the roll prunes exactly the strongest (true) candidate sets.
+    """
+    for line in lines:
+        split_line = line.split("|")
+        if len(split_line) < 2 or split_line[1] in MOVE_END_STRINGS:
+            break
+        lowered = line.lower()
+        if defender_name in line and any(m in lowered for m in _DAMAGE_CAP_MARKERS):
+            return True
+    return False
 
 
 def get_damage_dealt(battle, split_msg, next_messages):
@@ -469,6 +614,7 @@ def get_damage_dealt(battle, split_msg, next_messages):
             and defending_side.name in next_line_split[2]
         ):
             final_health, maxhp, _ = get_pokemon_info_from_condition(next_line_split[3])
+            lethal = maxhp == 0
             # maxhp can be 0 if the targetted pokemon fainted
             # the message would be: "0 fnt"
             if maxhp == 0:
@@ -478,6 +624,12 @@ def get_damage_dealt(battle, split_msg, next_messages):
                 defending_side.active.hp / defending_side.active.max_hp
             ) * maxhp - final_health
             damage_percentage = round(damage_dealt / maxhp, 4)
+
+            # OUR hp is request-exact on both ends, so the delta is an integer
+            # FACT rather than a percentage estimate
+            exact_damage = None
+            if defending_side is battle.user:
+                exact_damage = int(defending_side.active.hp) - int(final_health)
 
             logger.info(
                 "{} did {}% damage to {} with {}".format(
@@ -493,7 +645,44 @@ def get_damage_dealt(battle, split_msg, next_messages):
                 move=move_name,
                 percent_damage=damage_percentage,
                 crit=critical_hit,
+                exact_damage=exact_damage,
+                lethal=lethal,
+                capped=_damage_was_capped(next_messages, defending_side.name),
             )
+
+
+def _use_exact_membership(damage_dealt, check_type):
+    """Can this observation be tested as EXACT roll-set membership?
+
+    Only when the opponent hit US (our hp is request-exact on both ends, so the
+    delta is an integer) with a single-strike move. Multi-hit moves sum an
+    unknown number of independent rolls and keep the old band test.
+    """
+    return (
+        check_type == "damage_dealt"
+        and getattr(damage_dealt, "exact_damage", None) is not None
+        and damage_dealt.move in all_move_json
+        and "multihit" not in all_move_json[damage_dealt.move]
+    )
+
+
+def _refuse(check_type, move, reason, detail=""):
+    """Record a damage check we declined to act on instead of silently dropping it.
+
+    A refusal is not a neutral event: a channel that refuses constantly is
+    producing false eliminations that the would-empty guard is absorbing. The
+    counter (modelled on `hp_certificate.CERTIFICATE_REFUSALS`, but read from
+    logs rather than a sweep dump) makes one ladder run enough to see WHICH
+    channel is wrong.
+    """
+    DAMAGE_CHECK_REFUSALS[(check_type, move, reason)] += 1
+    logger.warning(
+        "Refusing damage check: check_type=%s move=%s reason=%s %s",
+        check_type,
+        move,
+        reason,
+        detail,
+    )
 
 
 def _do_check(
@@ -507,13 +696,17 @@ def _do_check(
     allow_emptying=False,
 ):
     actual_damage_dealt = damage_dealt.percent_damage * battle_copy.user.active.max_hp
+    use_membership = _use_exact_membership(damage_dealt, check_type)
+    exact_damage = getattr(damage_dealt, "exact_damage", None)
 
     indicies_to_remove = []
+    candidate_ranges = []
     num_starting_possibilites = len(possibilites)
     for i in range(num_starting_possibilites):
         p = possibilites[i]
         if isinstance(p, PredictedPokemonSet):
             p = p.pkmn_set
+
 
         if not battle.opponent.active.ability:
             battle_copy.opponent.active.ability = p.ability
@@ -522,6 +715,43 @@ def _do_check(
         battle_copy.opponent.active.set_spread(
             p.nature, ",".join(str(x) for x in p.evs)
         )
+
+        rolls = None
+        if use_membership:
+            _, opponent_roll_sets = poke_engine_get_damage_roll_sets(
+                battle_copy,
+                battle_copy.user.last_selected_move.move,
+                damage_dealt.move,
+                bot_went_first,
+            )
+            if opponent_roll_sets:
+                rolls = list(
+                    opponent_roll_sets[1]
+                    if damage_dealt.crit
+                    else opponent_roll_sets[0]
+                )
+
+        if rolls:
+            # EXACT: the delta must be one of the 16 rolls the engine
+            # computes for this candidate (+-1hp for PS rounding). This is
+            # the distinction the band test could not make: a Choice Band
+            # roll set and an item-less one overlap inside +-10hp.
+            max_roll = max(rolls)
+            if not check_lower_bound:
+                # a lethal / Sash-capped hit only proves the roll was AT LEAST
+                # the observed delta
+                is_invalid = exact_damage > max_roll + 1
+            else:
+                is_invalid = not any(abs(r - exact_damage) <= 1 for r in rolls)
+            candidate_ranges.append((p, min(rolls), max_roll))
+            if is_invalid:
+                logger.debug(
+                    "{} is invalid: exact damage {} is not in roll set [{}, {}]".format(
+                        p, exact_damage, min(rolls), max_roll
+                    )
+                )
+                indicies_to_remove.append(i)
+            continue
 
         if check_type == "damage_received":
             actual_damage_dealt = (
@@ -552,6 +782,7 @@ def _do_check(
             max_damage = damage[0]
 
         damage = [max_damage * 0.85, max_damage]
+        candidate_ranges.append((p, damage[0], damage[1]))
         lower_bound_violated = check_lower_bound and (
             actual_damage_dealt < (damage[0] * 0.975 - 5)
         )
@@ -565,18 +796,69 @@ def _do_check(
             indicies_to_remove.append(i)
 
     if len(indicies_to_remove) == num_starting_possibilites and not allow_emptying:
-        logger.warning("Would remove all possibilities, not removing any")
-        logger.warning(f"{actual_damage_dealt=}")
+        _refuse(
+            check_type,
+            damage_dealt.move,
+            "would_empty",
+            "observed={} exact={} ranges={}".format(
+                actual_damage_dealt, exact_damage, candidate_ranges
+            ),
+        )
         return
+
+    # PERSIST the verdict. `possibilites` here is a FRESH list built by
+    # `get_pkmn_sets_from_pkmn_name` (data/pkmn_sets.py `ret = []`), so the
+    # pops below are thrown away the moment this function returns - the whole
+    # reverse-damage pipeline bought nothing. The signature ledger on the
+    # pokemon is the durable channel, and it is already fully plumbed on the
+    # consumer side (`full_set_pkmn_can_have_set`).
+    #
+    # Gated on `not exact_roster_known` like every other live-only heuristic.
+    # The replay checker also stubs out `update_dataset_possibilities` (see
+    # fp/replay/checker.py), so today this ledger is unreachable there anyway --
+    # but that stub is an unrelated crash workaround, and relying on it to keep
+    # a live-only inference out of the checker is a silent coupling. This gate
+    # is the load-bearing one; it survives the stub being removed.
+    if (
+        battle.battle_type == BattleType.RANDOM_BATTLE
+        and not getattr(battle, "exact_roster_known", False)
+        and hasattr(battle.opponent.active, "rejected_set_signatures")
+    ):
+        for i in indicies_to_remove:
+            element = possibilites[i]
+            if isinstance(element, PredictedPokemonSet):
+                battle.opponent.active.rejected_set_signatures.add(
+                    element.mechanics_signature()
+                )
 
     for i in reversed(indicies_to_remove):
         possibilites.pop(i)
+
+
+def _block_is_confounded(battle, preceding_lines):
+    """True if something earlier in this block invalidates the roll computation.
+
+    The reverse damage calc rebuilds the state as it stands AFTER the whole
+    block, so an opponent boost or item consumption that resolved BEFORE the
+    checked move was not in effect when the damage was rolled. Refusing beats
+    eliminating the true set on a premise the model cannot represent.
+    """
+    for line in preceding_lines or ():
+        split_line = line.split("|")
+        if len(split_line) < 3:
+            continue
+        if split_line[1] in ("-boost", "-unboost", "-enditem") and split_line[
+            2
+        ].startswith(battle.opponent.name):
+            return True
+    return False
 
 
 def update_dataset_possibilities(
     battle,
     damage_dealt,
     check_type,
+    preceding_lines=(),
 ):
     if (
         battle.wait
@@ -619,6 +901,10 @@ def update_dataset_possibilities(
     ):
         return
 
+    if _block_is_confounded(battle, preceding_lines):
+        _refuse(check_type, damage_dealt.move, "confound")
+        return
+
     battle_copy = deepcopy(battle)
 
     if battle.battle_type == BattleType.RANDOM_BATTLE:
@@ -638,20 +924,22 @@ def update_dataset_possibilities(
         )
         allow_emptying = True
 
-    check_lower_bound = True
+    # The lower bound is only unusable when the observation was CLAMPED: PS
+    # prints damage capped at the target's remaining hp, so a KO ('0 fnt') or a
+    # Focus Sash / Sturdy / Endure survival reports less than the roll that was
+    # computed. The old proxy for this ("the damage happens to be within 2% of
+    # the target's hp") was both too loose - it silently discarded the lower
+    # bound on any near-full-hp reading, throwing away pruning power - and too
+    # tight: it did not recognise a capped hit at all, so a capped observation
+    # pruned the TRUE (strongest) set, which is exactly what empties the list.
+    check_lower_bound = not (
+        getattr(damage_dealt, "lethal", False) or getattr(damage_dealt, "capped", False)
+    )
     if check_type == "damage_dealt":
-        user_percent_hp = round(battle.user.active.hp / battle.user.active.max_hp, 2)
-        if abs(damage_dealt.percent_damage - user_percent_hp) < 0.02:
-            check_lower_bound = False
         bot_went_first = (
             battle.user.last_used_move.turn == battle.opponent.last_used_move.turn
         )
     elif check_type == "damage_received":
-        opponent_percent_hp = round(
-            battle.opponent.active.hp / battle.opponent.active.max_hp, 2
-        )
-        if abs(damage_dealt.percent_damage - opponent_percent_hp) < 0.02:
-            check_lower_bound = False
         bot_went_first = (
             battle.opponent.last_used_move.turn != battle.user.last_used_move.turn
         )

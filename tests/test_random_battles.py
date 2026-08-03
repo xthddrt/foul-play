@@ -548,3 +548,53 @@ class TestRevengeCertainSets(unittest.TestCase):
         espeon.stats[constants.SPEED] = 150
         certain, moves = random_battles.revenge_certain_sets(pikachu, espeon, sets)
         self.assertIsNone(certain)
+
+
+class TestEmptyCandidateSetFallback(unittest.TestCase):
+    """A mon whose evidence eliminated every set must still be populated."""
+
+    def setUp(self):
+        RandomBattleTeamDatasets.__init__()
+        RandomBattleTeamDatasets.raw_pkmn_sets = {
+            "eevee": {EEVEE_SET_KEY: 90},
+        }
+        RandomBattleTeamDatasets._initialize_pkmn_sets()
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
+
+        self.battle = Battle("battle-tag")
+        self.battle.battle_type = BattleType.RANDOM_BATTLE
+        self.battle.opponent.active = Pokemon("eevee", 88)
+        self.battle.user.active = Pokemon("pikachu", 80)
+        for _ in range(5):
+            filler = Pokemon("caterpie", 80)
+            filler.hp = 0
+            self.battle.opponent.reserve.append(filler)
+
+    def test_mon_matching_no_set_is_populated_from_the_unfiltered_list(self):
+        # a move no eevee set has (illusion residue / dataset drift) empties
+        # the candidate list via full_set_pkmn_can_have_moves
+        active = self.battle.opponent.active
+        active.add_move("willowisp")
+        self.assertEqual(
+            [], RandomBattleTeamDatasets.get_all_remaining_sets(active)
+        )
+
+        sampled = prepare_random_battles(self.battle, 1)
+        world_active = sampled[0][0].opponent.active
+
+        # the revealed move survives, and it comes first
+        self.assertEqual("willowisp", world_active.moves[0].name)
+        # the mon is no longer a blank: item / ability / moveset are filled
+        self.assertNotEqual(constants.UNKNOWN_ITEM, world_active.item)
+        self.assertIsNotNone(world_active.ability)
+        self.assertEqual(4, len(world_active.moves))
+
+    def test_unknown_species_leaves_todays_behaviour(self):
+        active = self.battle.opponent.active = Pokemon("mrmime", 88)
+        active.add_move("willowisp")
+
+        sampled = prepare_random_battles(self.battle, 1)
+        world_active = sampled[0][0].opponent.active
+
+        self.assertEqual([("willowisp")], [m.name for m in world_active.moves])
+        self.assertEqual(constants.UNKNOWN_ITEM, world_active.item)

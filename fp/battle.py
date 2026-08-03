@@ -34,7 +34,26 @@ def base_species_name(name):
 
 LastUsedMove = namedtuple("LastUsedMove", ["pokemon_name", "move", "turn"])
 DamageDealt = namedtuple(
-    "DamageDealt", ["attacker", "defender", "move", "percent_damage", "crit"]
+    "DamageDealt",
+    [
+        "attacker",
+        "defender",
+        "move",
+        "percent_damage",
+        "crit",
+        # EXACT integer hp delta, only ever set when the defender is OUR side
+        # (the request json makes our hp exact, so `hp_before - final_health`
+        # is an integer fact rather than a percentage estimate). None means
+        # "no exact reading available".
+        "exact_damage",
+        # the damage line read '0 fnt': PS clamps damage to remaining hp, so
+        # the observation is a LOWER bound on the true roll, not the roll
+        "lethal",
+        # a Focus Sash / Sturdy / Endure marker capped the hit at 1hp, same
+        # weakening of the observation as `lethal`
+        "capped",
+    ],
+    defaults=(None, False, False),
 )
 StatRange = namedtuple("Range", ["min", "max"])
 
@@ -242,6 +261,12 @@ class Battler:
         self.shed_tailing = False
         self.wish = (0, 0)
         self.future_sight = (0, "")
+
+        # {screen name: name of the pokemon that set it}. Reflect / Light
+        # Screen / Aurora Veil run 5 turns, or 8 with Light Clay, so how long
+        # the screen actually lasts is evidence about the SETTER's item -- and
+        # the setter may well be off the field by the time the screen ends.
+        self.screen_setters = {}
 
         # True once this side's terastallization has been consumed by a pkmn
         # that later FAINTED. PS deletes `terastallized` on faint

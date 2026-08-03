@@ -942,6 +942,23 @@ class _RandomBattleSets(PokemonSets):
                 )
                 return remaining_sets
 
+        # FINAL RUNG. `mechanics_signature() in rejected_set_signatures` is
+        # checked FIRST and UNCONDITIONALLY in `full_set_pkmn_can_have_set`, so
+        # the ladder above can never relax it: one wrong damage verdict would
+        # otherwise be permanent. Damage evidence must never leave us worse off
+        # than not having recorded it at all, so if everything is gone, drop
+        # the ledger and try the whole ladder once more.
+        rejected = getattr(pkmn, "rejected_set_signatures", None)
+        if rejected:
+            logger.warning(
+                "Evidence relaxation for %s exhausted with %d rejected-set "
+                "signatures recorded - clearing them and retrying",
+                pkmn.name,
+                len(rejected),
+            )
+            rejected.clear()
+            return self.get_all_remaining_sets(pkmn)
+
         logger.info(
             "Evidence relaxation for %s exhausted at depth=3 after "
             "relaxing=speed,level,tera,item,ability with no candidates",

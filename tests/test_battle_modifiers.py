@@ -33,6 +33,9 @@ from fp.battle_modifier import (
     set_item,
     ITEMS_REVEALED_ON_SWITCH_IN,
     sidestart,
+    sideend,
+    check_opponent_custapberry,
+    check_opponent_reactive_items,
 )
 from fp.battle_modifier import fail
 from fp.battle_modifier import terastallize
@@ -4396,6 +4399,54 @@ class TestIllusionEnd(unittest.TestCase):
         self.assertEqual(4, len(self.battle.opponent.active.moves))
 
 
+class TestLiveIllusionMoveDeattribution(unittest.TestCase):
+    """Live (no exact-teams sidecar) purge of moves the disguise cannot own.
+
+    `moves_used_since_switch_in` only remembers the LATEST stay, so a disguise
+    that had an earlier disguised stay keeps the bearer's moves forever.
+    """
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.battle_type = BattleType.RANDOM_BATTLE
+        self.battle.generation = "gen9"
+        RandomBattleTeamDatasets.initialize("gen9randombattle")
+
+        self.battle.user.active = Pokemon("weedle", 100)
+
+        # gyarados' randbats movepool has no poltergeist: it was used by the
+        # disguised zoroark during an EARLIER stay
+        self.gyarados = Pokemon("gyarados", 79)
+        self.gyarados.moves = [Move("waterfall"), Move("poltergeist")]
+        self.gyarados.moves_used_since_switch_in = []
+        self.battle.opponent.active = self.gyarados
+        self.battle.opponent.reserve = []
+
+    def test_earlier_stay_move_is_migrated_to_zoroark(self):
+        illusion_end(self.battle, ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"])
+
+        self.assertEqual("zoroark", self.battle.opponent.active.name)
+        self.assertEqual([Move("waterfall")], self.gyarados.moves)
+        self.assertEqual(
+            [Move("poltergeist")],
+            self.battle.opponent.active.moves,
+        )
+
+    def test_no_purge_when_exact_roster_known(self):
+        self.battle.exact_roster_known = True
+
+        illusion_end(self.battle, ["", "replace", "p2a: Zoroark", "Zoroark, L82, M"])
+
+        self.assertEqual("zoroark", self.battle.opponent.active.name)
+        self.assertEqual(
+            [Move("waterfall"), Move("poltergeist")],
+            self.gyarados.moves,
+        )
+        self.assertEqual([], self.battle.opponent.active.moves)
+
+
 class TestSwitchActiveWithZoroarkFromReserves(unittest.TestCase):
     def setUp(self):
         self.battle = Battle(None)
@@ -6226,6 +6277,119 @@ class TestCheckSpeedRanges(unittest.TestCase):
         self.assertEqual(0, self.battle.opponent.active.speed_range.min)
 
 
+    def test_pivot_switch_after_both_moves_still_sets_speed_range(self):
+        # U-turn's own |switch| is emitted AFTER both |move| lines: it cannot
+        # have changed the ordering of moves that already resolved
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+
+        messages = [
+            "|move|p2a: Caterpie|Tackle|p1a: Caterpie",
+            "|-damage|p1a: Caterpie|150/255",
+            "|move|p1a: Caterpie|U-turn|p2a: Caterpie",
+            "|-damage|p2a: Caterpie|150/255",
+            "|switch|p1a: Weedle|Weedle, M|255/255",
+        ]
+
+        check_speed_ranges(self.battle, messages)
+
+        self.assertEqual(150, self.battle.opponent.active.speed_range.min)
+
+    def test_opponent_flinch_sets_max_speed(self):
+        # the opponent's action slot came after our 0-priority hit
+        self.battle.battle_type = BattleType.RANDOM_BATTLE
+        RandomBattleTeamDatasets.initialize("gen9randombattle")
+        # gyarados' randbats movepool has no negative-priority move
+        self.battle.opponent.active = Pokemon("gyarados", 79)
+        self.battle.opponent.active.ability = None
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+
+        messages = [
+            "|move|p1a: Caterpie|Tackle|p2a: Gyarados",
+            "|-damage|p2a: Gyarados|150/255",
+            "|cant|p2a: Gyarados|flinch",
+        ]
+
+        check_speed_ranges(self.battle, messages)
+
+        self.assertEqual(150, self.battle.opponent.active.speed_range.max)
+
+    def test_opponent_flinch_with_negative_priority_candidate_bails(self):
+        self.battle.battle_type = BattleType.RANDOM_BATTLE
+        RandomBattleTeamDatasets.initialize("gen9randombattle")
+        self.battle.opponent.active = Pokemon("gyarados", 79)
+        self.battle.opponent.active.ability = None
+        self.battle.opponent.active.add_move("dragontail")  # priority -6
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+
+        messages = [
+            "|move|p1a: Caterpie|Tackle|p2a: Gyarados",
+            "|-damage|p2a: Gyarados|150/255",
+            "|cant|p2a: Gyarados|flinch",
+        ]
+
+        check_speed_ranges(self.battle, messages)
+
+        self.assertEqual(float("inf"), self.battle.opponent.active.speed_range.max)
+
+    def test_opponent_recharge_before_our_move_sets_min_speed(self):
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+
+        messages = [
+            "|cant|p2a: Caterpie|recharge",
+            "|move|p1a: Caterpie|Tackle|p2a: Caterpie",
+            "|-damage|p2a: Caterpie|150/255",
+        ]
+
+        check_speed_ranges(self.battle, messages)
+
+        self.assertEqual(150, self.battle.opponent.active.speed_range.min)
+
+    def test_our_own_cant_still_bails(self):
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+
+        messages = [
+            "|cant|p1a: Caterpie|par",
+            "|move|p2a: Caterpie|Tackle|p1a: Caterpie",
+        ]
+
+        check_speed_ranges(self.battle, messages)
+
+        self.assertEqual(0, self.battle.opponent.active.speed_range.min)
+
+    def test_opponent_paralysis_cant_still_bails(self):
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+
+        messages = [
+            "|move|p1a: Caterpie|Tackle|p2a: Caterpie",
+            "|cant|p2a: Caterpie|par",
+        ]
+
+        check_speed_ranges(self.battle, messages)
+
+        self.assertEqual(float("inf"), self.battle.opponent.active.speed_range.max)
+
+    def test_switch_before_moves_still_bails(self):
+        self.battle.user.active.stats[constants.SPEED] = 150
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+
+        messages = [
+            "|switch|p2a: Caterpie|Caterpie, F|255/255",
+            "|move|p2a: Caterpie|Tackle|p1a: Caterpie",
+            "|move|p1a: Caterpie|Tackle|p2a: Caterpie",
+        ]
+
+        check_speed_ranges(self.battle, messages)
+
+        self.assertEqual(0, self.battle.opponent.active.speed_range.min)
+        self.assertEqual(float("inf"), self.battle.opponent.active.speed_range.max)
+
+
 class TestGuessChoiceScarf(unittest.TestCase):
     def setUp(self):
         self.battle = Battle(None)
@@ -6285,6 +6449,33 @@ class TestGuessChoiceScarf(unittest.TestCase):
         check_choicescarf(self.battle, messages)
 
         self.assertEqual("choicescarf", self.battle.opponent.active.item)
+
+    def test_pivot_switch_after_both_moves_still_infers_scarf(self):
+        self.battle.user.active.stats[constants.SPEED] = 210
+
+        messages = [
+            "|move|p2a: Caterpie|Stealth Rock|",
+            "|move|p1a: Caterpie|U-turn|p2a: Caterpie",
+            "|-damage|p2a: Caterpie|150/255",
+            "|switch|p1a: Weedle|Weedle, M|255/255",
+        ]
+
+        check_choicescarf(self.battle, messages)
+
+        self.assertEqual("choicescarf", self.battle.opponent.active.item)
+
+    def test_switch_before_moves_still_bails_for_scarf(self):
+        self.battle.user.active.stats[constants.SPEED] = 210
+
+        messages = [
+            "|switch|p2a: Caterpie|Caterpie, F|255/255",
+            "|move|p2a: Caterpie|Stealth Rock|",
+            "|move|p1a: Caterpie|Stealth Rock|",
+        ]
+
+        check_choicescarf(self.battle, messages)
+
+        self.assertEqual(constants.UNKNOWN_ITEM, self.battle.opponent.active.item)
 
     def test_guesses_choicescarf_when_enemy_knocks_out_user(self):
         self.battle.user.active.stats[constants.SPEED] = (
@@ -7749,6 +7940,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=0.20,
             crit=False,
+            exact_damage=50,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7774,6 +7966,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=0.20,
             crit=False,
+            exact_damage=50,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7800,6 +7993,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=0.60,
             crit=False,
+            exact_damage=150,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7826,6 +8020,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=0.60,
             crit=True,
+            exact_damage=150,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7851,6 +8046,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=0.20,
             crit=False,
+            exact_damage=50,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7918,6 +8114,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="thunderbolt",
             percent_damage=0.20,
             crit=False,
+            exact_damage=50,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7943,6 +8140,8 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=1 / 250,
             crit=False,
+            exact_damage=1,
+            lethal=True,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7966,6 +8165,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=0.01,
             crit=False,
+            lethal=True,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -7991,6 +8191,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=1 / 250,
             crit=False,
+            lethal=True,
         )
         self.assertEqual(expected_damage_amount_dealt, damage_dealt)
 
@@ -8032,6 +8233,7 @@ class TestGetDamageDealt(unittest.TestCase):
             move="tackle",
             percent_damage=0.20,
             crit=False,
+            exact_damage=50,
         )
         self.assertEqual(damage_dealt, expected_damage_dealt)
 
@@ -8388,3 +8590,234 @@ class TestStellarBoostedTypes(unittest.TestCase):
         # cannot un-spend the type
         miss(self.battle, ["", "-miss", "p1a: Dragonite", "p2a: Caterpie"])
         self.assertEqual({"normal"}, self.user_active.stellar_boosted_types)
+
+
+class TestNegativeArmItemEliminations(unittest.TestCase):
+    """Item eliminations from an effect ending exactly on its base schedule."""
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.battle_type = BattleType.RANDOM_BATTLE
+
+        self.battle.opponent.active = Pokemon("caterpie", 100)
+        self.battle.opponent.active.ability = None
+        self.battle.user.active = Pokemon("caterpie", 100)
+        self.battle.user.last_selected_move = LastUsedMove("caterpie", "tackle", 0)
+        self.battle.request_json = {
+            constants.ACTIVE: [{constants.MOVES: []}],
+            constants.SIDE: {
+                constants.ID: None,
+                constants.NAME: None,
+                constants.POKEMON: [],
+                constants.RQID: None,
+            },
+        }
+
+    def test_opponent_moving_second_rules_out_choicescarf(self):
+        # a scarfed caterpie (max 207 * 1.5) would have outsped 100
+        self.battle.user.active.stats[constants.SPEED] = 100
+
+        messages = [
+            "|move|p1a: Caterpie|Tackle|p2a: Caterpie",
+            "|move|p2a: Caterpie|Tackle|p1a: Caterpie",
+        ]
+
+        check_choicescarf(self.battle, messages)
+
+        self.assertIn("choicescarf", self.battle.opponent.active.impossible_items)
+        self.assertEqual(constants.UNKNOWN_ITEM, self.battle.opponent.active.item)
+
+    def test_opponent_moving_second_when_far_slower_does_not_rule_out_choicescarf(self):
+        # even scarfed, caterpie could not reach 1000: moving second is expected
+        self.battle.user.active.stats[constants.SPEED] = 1000
+
+        messages = [
+            "|move|p1a: Caterpie|Tackle|p2a: Caterpie",
+            "|move|p2a: Caterpie|Tackle|p1a: Caterpie",
+        ]
+
+        check_choicescarf(self.battle, messages)
+
+        self.assertNotIn("choicescarf", self.battle.opponent.active.impossible_items)
+
+    def test_weather_ending_on_schedule_rules_out_the_rock(self):
+        self.battle.weather = constants.RAIN
+        self.battle.weather_source = "opponent:caterpie"
+        self.battle.weather_turns_remaining = 1
+
+        weather(self.battle, ["", "-weather", "none"])
+
+        self.assertIn("damprock", self.battle.opponent.active.impossible_items)
+
+    def test_weather_ending_early_does_not_rule_out_the_rock(self):
+        self.battle.weather = constants.RAIN
+        self.battle.weather_source = "opponent:caterpie"
+        self.battle.weather_turns_remaining = 3
+
+        weather(self.battle, ["", "-weather", "none"])
+
+        self.assertNotIn("damprock", self.battle.opponent.active.impossible_items)
+
+    def test_screen_ending_on_schedule_rules_out_lightclay(self):
+        sidestart(self.battle, ["", "-sidestart", "p2", "Reflect"])
+        self.assertEqual(5, self.battle.opponent.side_conditions[constants.REFLECT])
+        self.battle.opponent.side_conditions[constants.REFLECT] = 1
+
+        sideend(self.battle, ["", "-sideend", "p2", "Reflect"])
+
+        self.assertIn("lightclay", self.battle.opponent.active.impossible_items)
+
+    def test_screen_broken_early_does_not_rule_out_lightclay(self):
+        sidestart(self.battle, ["", "-sidestart", "p2", "Reflect"])
+        self.battle.opponent.side_conditions[constants.REFLECT] = 1
+
+        sideend(
+            self.battle,
+            ["", "-sideend", "p2", "Reflect", "[from] move: Brick Break"],
+        )
+
+        self.assertNotIn("lightclay", self.battle.opponent.active.impossible_items)
+
+    def test_screen_outlasting_five_turns_infers_lightclay(self):
+        sidestart(self.battle, ["", "-sidestart", "p2", "Reflect"])
+        self.battle.opponent.side_conditions[constants.REFLECT] = 1
+
+        upkeep(self.battle, "")
+
+        self.assertEqual("lightclay", self.battle.opponent.active.item)
+
+    def test_screen_setter_is_remembered_after_it_leaves_the_field(self):
+        sidestart(self.battle, ["", "-sidestart", "p2", "Light Screen"])
+        setter = self.battle.opponent.active
+        self.battle.opponent.reserve = [setter]
+        self.battle.opponent.active = Pokemon("weedle", 100)
+        self.battle.opponent.side_conditions[constants.LIGHT_SCREEN] = 1
+
+        sideend(self.battle, ["", "-sideend", "p2", "Light Screen"])
+
+        self.assertIn("lightclay", setter.impossible_items)
+        self.assertNotIn("lightclay", self.battle.opponent.active.impossible_items)
+
+
+class TestConsumableNonActivationMining(unittest.TestCase):
+    """Non-activation of a consumable is a free elimination."""
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.battle_type = BattleType.RANDOM_BATTLE
+        self.battle.turn = 3
+
+        self.battle.opponent.active = Pokemon("caterpie", 100)
+        self.battle.opponent.active.ability = None
+        self.battle.user.active = Pokemon("weedle", 100)
+        self.battle.user.active.ability = "shielddust"
+        self.battle.user.last_used_move = LastUsedMove("weedle", "tackle", 1)
+
+    def test_sitrusberry_ruled_out_below_half_at_upkeep(self):
+        self.battle.opponent.active.hp = int(
+            self.battle.opponent.active.max_hp * 0.4
+        )
+        upkeep(self.battle, "")
+        self.assertIn("sitrusberry", self.battle.opponent.active.impossible_items)
+
+    def test_sitrusberry_not_ruled_out_above_half(self):
+        self.battle.opponent.active.hp = int(
+            self.battle.opponent.active.max_hp * 0.6
+        )
+        upkeep(self.battle, "")
+        self.assertNotIn("sitrusberry", self.battle.opponent.active.impossible_items)
+
+    def test_sitrusberry_not_ruled_out_under_unnerve(self):
+        self.battle.user.active.ability = "unnerve"
+        self.battle.opponent.active.hp = int(
+            self.battle.opponent.active.max_hp * 0.4
+        )
+        upkeep(self.battle, "")
+        self.assertNotIn("sitrusberry", self.battle.opponent.active.impossible_items)
+
+    def test_custapberry_ruled_out_when_moving_below_quarter_hp(self):
+        self.battle.opponent.active.hp = int(
+            self.battle.opponent.active.max_hp * 0.2
+        )
+        check_opponent_custapberry(
+            self.battle, ["", "move", "p2a: Caterpie", "Tackle", "p1a: Weedle"]
+        )
+        self.assertIn("custapberry", self.battle.opponent.active.impossible_items)
+
+    def test_custapberry_not_ruled_out_when_we_already_moved_this_turn(self):
+        self.battle.user.last_used_move = LastUsedMove("weedle", "tackle", 3)
+        self.battle.opponent.active.hp = int(
+            self.battle.opponent.active.max_hp * 0.2
+        )
+        check_opponent_custapberry(
+            self.battle, ["", "move", "p2a: Caterpie", "Tackle", "p1a: Weedle"]
+        )
+        self.assertNotIn("custapberry", self.battle.opponent.active.impossible_items)
+
+    def test_rockyhelmet_ruled_out_on_unanswered_contact_move(self):
+        check_opponent_reactive_items(
+            self.battle,
+            ["", "move", "p1a: Weedle", "Tackle", "p2a: Caterpie"],
+            ["|-damage|p2a: Caterpie|150/255"],
+        )
+        self.assertIn("rockyhelmet", self.battle.opponent.active.impossible_items)
+
+    def test_rockyhelmet_not_ruled_out_when_it_activates(self):
+        check_opponent_reactive_items(
+            self.battle,
+            ["", "move", "p1a: Weedle", "Tackle", "p2a: Caterpie"],
+            [
+                "|-damage|p2a: Caterpie|150/255",
+                "|-damage|p1a: Weedle|200/255|[from] item: Rocky Helmet|[of] p2a: Caterpie",
+            ],
+        )
+        self.assertNotIn("rockyhelmet", self.battle.opponent.active.impossible_items)
+
+    def test_rockyhelmet_not_ruled_out_behind_a_substitute(self):
+        check_opponent_reactive_items(
+            self.battle,
+            ["", "move", "p1a: Weedle", "Tackle", "p2a: Caterpie"],
+            [
+                "|-activate|p2a: Caterpie|move: Substitute|[damage]",
+                "|-damage|p2a: Caterpie|150/255",
+            ],
+        )
+        self.assertNotIn("rockyhelmet", self.battle.opponent.active.impossible_items)
+
+    def test_weaknesspolicy_ruled_out_on_unanswered_super_effective_hit(self):
+        check_opponent_reactive_items(
+            self.battle,
+            ["", "move", "p1a: Weedle", "Ember", "p2a: Caterpie"],
+            [
+                "|-supereffective|p2a: Caterpie",
+                "|-damage|p2a: Caterpie|150/255",
+            ],
+        )
+        self.assertIn("weaknesspolicy", self.battle.opponent.active.impossible_items)
+        # ember is not a contact move
+        self.assertNotIn("rockyhelmet", self.battle.opponent.active.impossible_items)
+
+    def test_weaknesspolicy_not_ruled_out_when_it_activates(self):
+        check_opponent_reactive_items(
+            self.battle,
+            ["", "move", "p1a: Weedle", "Ember", "p2a: Caterpie"],
+            [
+                "|-supereffective|p2a: Caterpie",
+                "|-damage|p2a: Caterpie|150/255",
+                "|-boost|p2a: Caterpie|atk|2|[from] item: Weakness Policy",
+                "|-enditem|p2a: Caterpie|Weakness Policy",
+            ],
+        )
+        self.assertNotIn("weaknesspolicy", self.battle.opponent.active.impossible_items)
+
+    def test_nothing_ruled_out_when_the_target_faints(self):
+        check_opponent_reactive_items(
+            self.battle,
+            ["", "move", "p1a: Weedle", "Tackle", "p2a: Caterpie"],
+            ["|-damage|p2a: Caterpie|0 fnt", "|faint|p2a: Caterpie"],
+        )
+        self.assertNotIn("rockyhelmet", self.battle.opponent.active.impossible_items)

@@ -580,33 +580,57 @@ class TestMoreThan4RevealedMoves(unittest.TestCase):
             self.battler.active.add_move(mv)
         self.battler.reserve = []
 
-    def test_pkmn_with_5_moves_truncates_to_first_4(self):
+    def test_pkmn_with_5_moves_keeps_the_most_recent_4(self):
+        # `pkmn.moves` is in REVEAL order: the newest evidence is the most
+        # decision-relevant, so the window is the TAIL, not the head
         engine_pkmn = pokemon_to_poke_engine_pkmn(self.battler.active)
 
         self.assertEqual(4, len(engine_pkmn.moves))
-        self.assertEqual(self.FIVE_MOVES[:4], [m.id for m in engine_pkmn.moves])
+        self.assertEqual(self.FIVE_MOVES[1:], [m.id for m in engine_pkmn.moves])
+
+    def test_conversion_does_not_mutate_the_input_pokemon(self):
+        pokemon_to_poke_engine_pkmn(self.battler.active)
+
+        self.assertEqual(
+            self.FIVE_MOVES, [m.name for m in self.battler.active.moves]
+        )
 
     def test_side_with_5_move_active_converts_without_error(self):
         side = battler_to_poke_engine_side(self.battler)
 
         self.assertEqual(4, len(side.pokemon[0].moves))
 
-    def test_last_used_move_within_first_4_slots_uses_matching_index(self):
+    def test_last_used_move_inside_the_window_uses_its_window_index(self):
         self.battler.last_used_move = LastUsedMove("ambipom", "knockoff", 1)
 
         side = battler_to_poke_engine_side(self.battler)
 
-        self.assertEqual("move:3", side.last_used_move)
+        # knockoff is slot 3 of 5 revealed, slot 2 of the kept tail window
+        self.assertEqual("move:2", side.last_used_move)
+        self.assertEqual(
+            "knockoff", side.pokemon[0].moves[2].id
+        )
 
-    def test_last_used_move_in_truncated_away_slot_falls_back_to_move_0(self):
-        # "gunkshot" is the 5th revealed move: serializing "move:4" would make
-        # the engine's PokemonMoveIndex::deserialize panic, so the conversion
-        # must fall back to an in-range index
+    def test_newest_move_survives_truncation_and_keeps_its_index(self):
+        # "gunkshot" is the 5th revealed move: under the old head-window it was
+        # truncated away and last_used_move silently relabelled as slot 0,
+        # Encore/choice-locking the engine onto the wrong move
         self.battler.last_used_move = LastUsedMove("ambipom", "gunkshot", 1)
 
         side = battler_to_poke_engine_side(self.battler)
 
+        self.assertEqual("move:3", side.last_used_move)
+        self.assertEqual("gunkshot", side.pokemon[0].moves[3].id)
+
+    def test_last_used_move_outside_the_window_is_pulled_into_it(self):
+        # fakeout is the OLDEST revealed move: the tail window would drop it,
+        # but a move the side actually just used must keep an index
+        self.battler.last_used_move = LastUsedMove("ambipom", "fakeout", 1)
+
+        side = battler_to_poke_engine_side(self.battler)
+
         self.assertEqual("move:0", side.last_used_move)
+        self.assertEqual("fakeout", side.pokemon[0].moves[0].id)
 
 
 class TestEngineToleratesOutOfRangeLastUsedMoveIndex(unittest.TestCase):
@@ -638,3 +662,36 @@ class TestEngineToleratesOutOfRangeLastUsedMoveIndex(unittest.TestCase):
         reparsed = PokeEngineState.from_string(patched)
 
         self.assertEqual("move:none", reparsed.side_one.last_used_move)
+
+
+class TestBaseAbilitySeeding(unittest.TestCase):
+    """The engine reverts `ability` to `base_ability` on every in-tree
+    switch-out, so an empty base_ability permanently strips the real ability
+    from both sides after the first simulated pivot."""
+
+    def setUp(self):
+        self.pkmn = Pokemon("slowbro", 84)
+        self.pkmn.ability = "regenerator"
+
+    def test_real_ability_is_used_as_base_ability(self):
+        engine_pkmn = pokemon_to_poke_engine_pkmn(self.pkmn)
+
+        self.assertEqual("regenerator", engine_pkmn.base_ability)
+
+    def test_original_ability_still_wins(self):
+        # something CHANGED the ability mid-battle: the pre-change ability is
+        # the one the engine must revert to
+        self.pkmn.original_ability = "oblivious"
+        self.pkmn.ability = "regenerator"
+
+        engine_pkmn = pokemon_to_poke_engine_pkmn(self.pkmn)
+
+        self.assertEqual("oblivious", engine_pkmn.base_ability)
+
+    def test_unknown_ability_stays_empty(self):
+        self.pkmn.ability = None
+
+        engine_pkmn = pokemon_to_poke_engine_pkmn(self.pkmn)
+
+        # the engine renders its NONE ability as "None"
+        self.assertEqual("None", engine_pkmn.base_ability)

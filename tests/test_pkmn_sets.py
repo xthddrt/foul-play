@@ -616,6 +616,19 @@ class TestRejectedRandomBattleSetSignatures(unittest.TestCase):
             set(), Pokemon("pikachu", 85).rejected_set_signatures
         )
 
+    def test_rejecting_every_set_clears_the_ledger_and_retries(self):
+        # damage evidence must never leave the sampler worse off than not
+        # having recorded it: signatures are checked FIRST and are never
+        # relaxed by the ladder, so a total wipe has to drop them
+        pkmn = Pokemon("pikachu", 85)
+        for candidate in RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(pkmn):
+            pkmn.rejected_set_signatures.add(candidate.mechanics_signature())
+
+        remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+
+        self.assertEqual(2, len(remaining))
+        self.assertEqual(set(), pkmn.rejected_set_signatures)
+
     def test_relaxed_fallback_and_fresh_lists_still_enforce_ledger(self):
         pkmn = Pokemon("pikachu", 84)
         first = RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(pkmn)[0]

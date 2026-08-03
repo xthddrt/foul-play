@@ -169,7 +169,33 @@ def status_to_string(status):
     raise ValueError(f"Unknown status: {status}")
 
 
-def pokemon_to_poke_engine_pkmn(pkmn: Pokemon, mark_terastallized=False):
+def engine_move_window(moves, last_used_move=None):
+    """The <=4 moves that reach the engine's fixed move slots.
+
+    `pkmn.moves` is in REVEAL order, so the old `moves[:4]` kept the OLDEST
+    four and discarded the newest, most decision-relevant evidence - exactly
+    backwards in the Zoroark pile-up cases that produce >4 moves. Keep the most
+    recent four, and never drop the move the side actually just used: the
+    `last_used_move` index lookup falls back to "move:0" when its move is
+    outside the window, which Encore/choice-locks the engine onto the wrong
+    slot. Both callers use this one helper so they cannot disagree.
+    """
+    moves = list(moves)
+    if len(moves) <= 4:
+        return moves
+
+    kept = moves[-4:]
+    if last_used_move and all(m.name != last_used_move for m in kept):
+        for mv in moves:
+            if mv.name == last_used_move:
+                kept = [mv] + kept[1:]
+                break
+    return kept
+
+
+def pokemon_to_poke_engine_pkmn(
+    pkmn: Pokemon, mark_terastallized=False, last_used_move=None
+):
     """
     id,level,type0,type1,hp,maxhp,ability,item,atk,def,spa,spd,spe,atkb,defb,spab,spdb,speb,accb,evab,status,subhp,restturns
     nature,volatiles,m0,m1,m2,m3
@@ -200,27 +226,34 @@ def pokemon_to_poke_engine_pkmn(pkmn: Pokemon, mark_terastallized=False):
         base_types = (base_types[0], "typeless")
     if len(pkmn.types) == 1:
         pkmn.types = (pkmn.types[0], "typeless")
-    num_moves = len(pkmn.moves)
-    if num_moves > 4:
+    # NOTE: a LOCAL window - never `pkmn.moves = ...`. The old in-place slice
+    # mutated the caller's Pokemon and was safe only because every caller
+    # happened to pass a copy.
+    kept_moves = engine_move_window(pkmn.moves, last_used_move)
+    if len(pkmn.moves) > 4:
         logger.warning(
-            "More than 4 moves on pokemon: {} moves: {}".format(
-                pkmn.name, [m.name for m in pkmn.moves]
+            "More than 4 moves on pokemon: {} moves: {} - sending {}".format(
+                pkmn.name,
+                [m.name for m in pkmn.moves],
+                [m.name for m in kept_moves],
             )
         )
-        logger.warning("Truncating moves to first 4")
-        pkmn.moves = pkmn.moves[:4]
 
     pkmn_moves = [
         PokeEngineMove(id=str(m.name), disabled=m.disabled, pp=m.current_pp)
-        for m in pkmn.moves
+        for m in kept_moves
     ]
-    while num_moves < 4:
+    while len(pkmn_moves) < 4:
         pkmn_moves.append(PokeEngineMove(id="none", disabled=True, pp=0))
-        num_moves += 1
 
-    base_ability = ""
-    if pkmn.original_ability:
-        base_ability = str(pkmn.original_ability)
+    # `original_ability` is only set when something CHANGED the ability
+    # mid-battle, so for virtually every mon it is None and base_ability went
+    # to the engine as "". The engine reverts ability to base_ability on every
+    # in-tree switch-out (genx/abilities.rs), so an empty base_ability
+    # permanently strips Regenerator / Intimidate / Levitate / ... from BOTH
+    # sides after the first simulated pivot - a depth-dependent corruption of
+    # the whole search. Fall back to the ability the mon actually has.
+    base_ability = str(pkmn.original_ability or pkmn.ability or "")
 
     extra_kwargs = {}
     if POKE_ENGINE_SUPPORTS_REVEALED:
@@ -375,8 +408,13 @@ def _padded_party(battler: Battler):
                 tera_marked_index = i
                 break
 
+    # party[0] is the active: it is the only slot `last_used_move` can name
     pokemon = [
-        pokemon_to_poke_engine_pkmn(p, mark_terastallized=(i == tera_marked_index))
+        pokemon_to_poke_engine_pkmn(
+            p,
+            mark_terastallized=(i == tera_marked_index),
+            last_used_move=(battler.last_used_move.move if i == 0 else None),
+        )
         for i, p in enumerate(party)
     ]
     while len(pokemon) < 6:
@@ -399,14 +437,20 @@ def battler_to_poke_engine_side(
         # move there (synth30440 T20 Gogoat's Bulk Up, synth46824 T60 Snorlax's Curse).
         last_used_move = "move:struggle"
     elif battler.last_used_move.move:
-        # The engine pokemon has at most 4 move slots (indices 0-3);
-        # pokemon_to_poke_engine_pokemon truncates via pkmn.moves[:4]. When a
+        # The engine pokemon has at most 4 move slots (indices 0-3). When a
         # pokemon reveals >4 moves (e.g. a Zoroark illusion piling its own moves
-        # onto the disguised species), match against the same first-4 window so
-        # last_used_move can never serialize an index the engine would reject
-        # (PokemonMoveIndex::deserialize panics on "4"). If the last used move
-        # was the truncated-away slot, fall through to the "move:0" default.
-        pkmn_moves = [m.name for m in battler.active.moves[:4]]
+        # onto the disguised species), match against the SAME window
+        # `pokemon_to_poke_engine_pkmn` sends, so last_used_move can never
+        # serialize an index the engine would reject (PokemonMoveIndex::
+        # deserialize panics on "4"). The window keeps last_used_move whenever
+        # the mon has it, so the "move:0" fallback is now unreachable except
+        # for a move the mon does not own at all.
+        pkmn_moves = [
+            m.name
+            for m in engine_move_window(
+                battler.active.moves, battler.last_used_move.move
+            )
+        ]
         for i, move in enumerate(pkmn_moves):
             if move == battler.last_used_move.move:
                 last_used_move = "move:{}".format(i)

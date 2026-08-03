@@ -7,6 +7,7 @@ from config import FoulPlayConfig
 from fp.search.main import (
     _discard_search_executor,
     _get_search_executor,
+    dedupe_states,
     gather_mcts_results,
     search_time_num_battles_randombattles,
     search_time_num_battles_standard_battle,
@@ -1195,3 +1196,31 @@ class TestUpsidePhantomSwitchFilter(unittest.TestCase):
         self.assertEqual(
             "heatwave", select_move_from_mcts_results([(r, 1.0, 0)], {"corviknight"})
         )
+
+
+class TestPhase1WorldDedupe(unittest.TestCase):
+    """Identical sampled worlds are duplicate compute, not information."""
+
+    def test_eight_worlds_over_two_states_reduce_to_four_entries(self):
+        states = [("A", 0.125)] * 5 + [("B", 0.125)] * 3
+
+        reduced = dedupe_states(states)
+
+        self.assertEqual(4, len(reduced))
+        self.assertAlmostEqual(1.0, sum(c for _s, c in reduced))
+        by_state = {}
+        for state_string, chance in reduced:
+            by_state[state_string] = by_state.get(state_string, 0.0) + chance
+        # per-state weight matches the original multiplicity
+        self.assertAlmostEqual(5 * 0.125, by_state["A"])
+        self.assertAlmostEqual(3 * 0.125, by_state["B"])
+
+    def test_a_state_sampled_once_keeps_exactly_one_replica(self):
+        reduced = dedupe_states([("A", 0.5), ("B", 0.5)])
+
+        self.assertEqual([("A", 0.5), ("B", 0.5)], reduced)
+
+    def test_all_unique_states_are_untouched(self):
+        states = [(chr(ord("A") + i), 0.25) for i in range(4)]
+
+        self.assertEqual(states, dedupe_states(states))

@@ -250,13 +250,59 @@ _INCOMPATIBLE_POKEMON = (
 _EXTRA_FIRE_WEAK_ABILITIES = {"dryskin", "fluffy"}
 
 
-def get_all_remaining_sets_for_revealed_pkmn(battle: Battle) -> dict:
+def _datasets_for(battle: Battle):
     if battle.battle_type == BattleType.RANDOM_BATTLE:
-        datasets = RandomBattleTeamDatasets
+        return RandomBattleTeamDatasets
     elif battle.battle_type == BattleType.BATTLE_FACTORY:
-        datasets = TeamDatasets
-    else:
-        raise ValueError("Only random battles are supported")
+        return TeamDatasets
+    raise ValueError("Only random battles are supported")
+
+
+def populate_pkmn_from_fallback_set(pkmn: Pokemon, datasets) -> bool:
+    """Last resort when the evidence eliminated EVERY candidate set.
+
+    Leaving the mon un-populated is the worst possible answer: it reaches the
+    engine with 1-3 moves, ability NONE and item UNKNOWNITEM, i.e. a live
+    threat priced as nearly harmless - and that happens in exactly the
+    Zoroark / transform / dataset-drift cases that punish it hardest.
+
+    Draw from the species' UNFILTERED set list (count-weighted) and merge:
+    every revealed move is kept (they are facts, and they come first), the
+    sampled set tops the list up to 4, and item/ability/tera are filled only
+    where they are still unknown. Returns False when even the unfiltered list
+    is empty, leaving the old behaviour.
+    """
+    unfiltered = datasets.get_pkmn_sets_from_pkmn_name(pkmn)
+    if not unfiltered:
+        return False
+
+    known_moves = list(pkmn.moves)
+    sampled = random.choices(
+        unfiltered, weights=[s.pkmn_set.count for s in unfiltered]
+    )[0]
+    logger.warning(
+        "No candidate set survived the evidence for {} - falling back to an "
+        "unfiltered set. revealed_moves={} item={} ability={}".format(
+            pkmn.name,
+            [m.name for m in known_moves],
+            pkmn.item,
+            pkmn.ability,
+        )
+    )
+    populate_pkmn_from_set(pkmn, sampled, source="empty-candidate fallback")
+
+    merged = list(known_moves)
+    for mv in pkmn.moves:
+        if len(merged) >= 4:
+            break
+        if all(mv.name != known.name for known in merged):
+            merged.append(mv)
+    pkmn.moves = merged[:4]
+    return True
+
+
+def get_all_remaining_sets_for_revealed_pkmn(battle: Battle) -> dict:
+    datasets = _datasets_for(battle)
 
     revealed_pkmn = []
     for pkmn in battle.opponent.reserve:
@@ -275,6 +321,7 @@ def get_all_remaining_sets_for_revealed_pkmn(battle: Battle) -> dict:
 
 def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, float)]:
     revealed_pkmn_sets = get_all_remaining_sets_for_revealed_pkmn(deepcopy(battle))
+    datasets = _datasets_for(battle)
 
     sampled_battles = []
     for index in range(num_battles):
@@ -321,11 +368,15 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
                     kept = [m for m in active.moves if m.name in certain_moves]
                     if kept:
                         active.moves = kept
+        elif not getattr(active, "transformed_into", None):
+            populate_pkmn_from_fallback_set(active, datasets)
 
         # fainted reserves are included so that a pkmn revived by
         # Revival Blessing has a predicted set for the search
         for pkmn in battle_copy.opponent.reserve:
             if not revealed_pkmn_sets[pkmn.name]:
+                if not getattr(pkmn, "transformed_into", None):
+                    populate_pkmn_from_fallback_set(pkmn, datasets)
                 continue
             pkmn_full_set = random.choices(
                 revealed_pkmn_sets[pkmn.name],

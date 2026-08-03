@@ -78,6 +78,42 @@ def _per_world_search_ms(wall_ms: int, num_battles: int) -> int:
     return int(wall_ms // waves)
 
 
+def _wave_count(num_battles: int) -> int:
+    pool = (
+        getattr(FoulPlayConfig, "search_pool_workers", None) or FoulPlayConfig.parallelism
+    )
+    return max(1, math.ceil(num_battles / pool))
+
+
+def dedupe_states(states, max_replicas=2):
+    """Collapse identical sampled worlds, summing their chance.
+
+    Late-game inference narrows the opponent to 1-3 candidate sets, so 16-32
+    MCTS searches can run over 1-3 DISTINCT engine states - up to ~90%
+    duplicate compute. `_probe_and_choose` already does this for phase 2 for
+    exactly this reason. Up to `max_replicas` copies of each unique state are
+    kept because duplicate worlds are the only source of RNG diversity in the
+    search; the summed chance is split evenly across the kept replicas so the
+    downstream weighting is unchanged.
+    """
+    order = []
+    merged = {}
+    for state_string, chance in states:
+        if state_string not in merged:
+            merged[state_string] = [0.0, 0]
+            order.append(state_string)
+        merged[state_string][0] += chance
+        merged[state_string][1] += 1
+
+    reduced = []
+    for state_string in order:
+        total_chance, multiplicity = merged[state_string]
+        replicas = min(multiplicity, max_replicas)
+        for _ in range(replicas):
+            reduced.append((state_string, total_chance / replicas))
+    return reduced
+
+
 def search_time_num_battles_randombattles(battle):
     revealed_pkmn = len(battle.opponent.reserve)
     if battle.opponent.active is not None:
@@ -272,6 +308,17 @@ def find_best_move(battle: Battle) -> str:
     states = [
         (battle_to_poke_engine_state(b).to_string(), chance) for b, chance in battles
     ]
+    deduped_states = dedupe_states(states)
+    if len(deduped_states) < len(states):
+        # give the freed wall time back as DEPTH on the states that exist
+        wall_ms = search_time_per_battle * _wave_count(len(states))
+        search_time_per_battle = _per_world_search_ms(wall_ms, len(deduped_states))
+        logger.info(
+            "World dedupe: {} sampled -> {} unique-with-replicas, {}ms each".format(
+                len(states), len(deduped_states), search_time_per_battle
+            )
+        )
+        states = deduped_states
     # forensic artifact: the EXACT engine state each world searches, replayable
     # later with State.from_string (DEBUG => file log only). Without this,
     # post-game review has to reconstruct worlds from the sampled-set lines.

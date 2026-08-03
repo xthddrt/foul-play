@@ -130,6 +130,18 @@ SELF_TRAPPING_VOLATILES = {
 # (data/mods/gen5/typechart.ts:24-44 vs data/typechart.ts:202-204)
 GENS_WITHOUT_GHOST_TRAP_IMMUNITY = {"gen1", "gen2", "gen3", "gen4", "gen5"}
 
+UNNERVE_ABILITIES = ("unnerve", "asoneglastrier", "asonespectrier")
+
+# lines that mean the current move's resolution block is over (mirrors
+# `fp.inference.MOVE_END_STRINGS`)
+_MOVE_BLOCK_END_STRINGS = {"move", "switch", "upkeep", "-miss", ""}
+
+SCREEN_CONDITIONS = (
+    constants.REFLECT,
+    constants.LIGHT_SCREEN,
+    constants.AURORA_VEIL,
+)
+
 SIDE_CONDITION_DEFAULT_DURATION = {
     constants.REFLECT: 5,
     constants.LIGHT_SCREEN: 5,
@@ -2053,6 +2065,11 @@ def move(battle, split_msg):
             )
             _switch_active_with_zoroark_from_reserves(side, actual_zoroark)
 
+            # the demoted disguise may still carry moves from an EARLIER
+            # disguised stay (moves_used_since_switch_in only remembers the
+            # latest one) - drop anything outside its own randbats movepool
+            _purge_live_illusion_moves(battle, pkmn, actual_zoroark)
+
             # the rest of this function uses `pkmn`, so we need to set it to the correct pkmn
             pkmn = actual_zoroark
 
@@ -3616,6 +3633,48 @@ def cureteam(battle, split_msg):
         pkmn.sleep_turns = 0
 
 
+def _weather_rock(weather_name):
+    if weather_name == constants.SUN:
+        return "heatrock"
+    elif weather_name == constants.RAIN:
+        return "damprock"
+    elif weather_name == constants.SAND:
+        return "smoothrock"
+    elif weather_name in constants.HAIL_OR_SNOW:
+        return "icyrock"
+    return None
+
+
+def _weather_source_pkmn(battle, weather_source):
+    """The opponent's pokemon named by `weather_source`, or None."""
+    if not weather_source or not weather_source.startswith("opponent"):
+        return None
+    pkmn_name = weather_source.split(":")[-1]
+    side = battle.opponent
+    if side.active is not None and side.active.name == pkmn_name:
+        return side.active
+    return side.find_pokemon_in_reserves(pkmn_name)
+
+
+def _rule_out_weather_rock(battle, weather_name, weather_source, turns_remaining):
+    if turns_remaining != 1:
+        return
+    item = _weather_rock(weather_name)
+    if item is None:
+        return
+    pkmn = _weather_source_pkmn(battle, weather_source)
+    # `item == UNKNOWN_ITEM` also excludes the "did not end when expected"
+    # path, which has already ASSERTED the rock on this pokemon
+    if pkmn is None or pkmn.item != constants.UNKNOWN_ITEM:
+        return
+    logger.info(
+        "{}'s {} ended on schedule - ruling out {}".format(
+            pkmn.name, weather_name, item
+        )
+    )
+    pkmn.impossible_items.add(item)
+
+
 def weather(battle, split_msg):
     # The weather message on its own `|-weather|RainDance` does not contain information about
     #  which side caused it unless it was from an ability
@@ -3632,6 +3691,10 @@ def weather(battle, split_msg):
             side = battle.user
             side_name = "user"
 
+    previous_weather = battle.weather
+    previous_weather_source = battle.weather_source
+    previous_weather_turns_remaining = battle.weather_turns_remaining
+
     weather_name = normalize_name(split_msg[2].split(":")[-1].strip())
     logger.info("Weather {} is active".format(weather_name))
     # `|-weather|none` means CLEARED weather, not a weather called "none".  PS's
@@ -3645,6 +3708,18 @@ def weather(battle, split_msg):
 
     if weather_name == "none":
         logger.info("Resetting weather source to None")
+        # NEGATIVE ARM of the weather-rock inference below: an unmodified
+        # weather runs 5 turns, so the bookkeeping counter is at 1 when the
+        # `|-weather|none` for an on-schedule end arrives (the counter reaching
+        # 0 on an upkeep is what the positive arm reads as "a rock extended
+        # it"). Ending on schedule rules the rock OUT. Only ever writes
+        # `impossible_items`, which the replay checker never consumes.
+        _rule_out_weather_rock(
+            battle,
+            previous_weather,
+            previous_weather_source,
+            previous_weather_turns_remaining,
+        )
         battle.weather_source = None
     elif side is not None and side_name is not None:
         battle.weather_source = f"{side_name}:{side.active.name}"
@@ -3794,11 +3869,13 @@ def sidestart(battle, split_msg):
 
     if condition in SIDE_CONDITION_DEFAULT_DURATION:
         increment_amount = SIDE_CONDITION_DEFAULT_DURATION[condition]
-        if (
-            condition in ["reflect", "lightscreen", "auroraveil"]
-            and side.active.item == "lightclay"
-        ):
-            increment_amount += 3
+        if condition in SCREEN_CONDITIONS:
+            # remember WHO set it: how long it lasts is evidence about that
+            # pokemon's item, and it may be off the field when the screen ends
+            if side.active is not None:
+                getattr(side, "screen_setters", {})[condition] = side.active.name
+            if side.active is not None and side.active.item == "lightclay":
+                increment_amount += 3
 
         side.side_conditions[condition] = increment_amount
         logger.info(
@@ -3815,12 +3892,73 @@ def sidestart(battle, split_msg):
         )
 
 
+def _screen_setter_pkmn(battle, side, condition):
+    """The OPPONENT pokemon that set `condition`, or None.
+
+    Screens outlive their setter's stay on the field, so the setter is looked
+    up by the name recorded at `-sidestart` time rather than assumed active.
+    """
+    if side is not battle.opponent:
+        return None
+    setter_name = getattr(side, "screen_setters", {}).get(condition)
+    if not setter_name:
+        return None
+    if side.active is not None and side.active.name == setter_name:
+        return side.active
+    return side.find_pokemon_in_reserves(setter_name)
+
+
+def _rule_out_lightclay(battle, side, condition):
+    """A screen that expired on its 5-turn schedule was not Light-Clay extended.
+
+    Negative evidence only (`impossible_items`), which the replay checker
+    never consumes.
+    """
+    if side.side_conditions[condition] != 1:
+        return
+    pkmn = _screen_setter_pkmn(battle, side, condition)
+    if pkmn is None or pkmn.item != constants.UNKNOWN_ITEM:
+        return
+    logger.info(
+        "{}'s {} ended on schedule - ruling out lightclay".format(pkmn.name, condition)
+    )
+    pkmn.impossible_items.add("lightclay")
+
+
+def _infer_lightclay(battle, side, condition):
+    """A screen still standing after 5 turns can only be a Light Clay screen.
+
+    Mirrors the weather-rock inference: asserted ONLY when the item is still
+    unknown. This is the only new POSITIVE item write in this batch, so it is
+    additionally gated behind `zoroark_inference_allowed` (== `not
+    exact_roster_known`) like every other live-only heuristic - the checker
+    fills items from its sidecar and must never race an inference for them.
+    """
+    if not zoroark_inference_allowed(battle):
+        return
+    pkmn = _screen_setter_pkmn(battle, side, condition)
+    if pkmn is None or pkmn.item != constants.UNKNOWN_ITEM:
+        return
+    logger.info(
+        "{} outlasting 5 turns means that opponent's {} has a lightclay".format(
+            condition, pkmn.name
+        )
+    )
+    pkmn.item = "lightclay"
+
+
 def sideend(battle, split_msg):
     """Remove a side effect such as stealth rock or sticky web"""
     condition = split_msg[3].split(":")[-1].strip()
     condition = normalize_name(condition)
 
     if is_opponent(battle, split_msg):
+        # a screen removed EARLY by Brick Break/Defog/Court Change carries a
+        # `[from]` tag and says nothing about its scheduled duration
+        if condition in SCREEN_CONDITIONS and not any(
+            "[from]" in part for part in split_msg[4:]
+        ):
+            _rule_out_lightclay(battle, battle.opponent, condition)
         logger.info("Side condition {} ending for opponent".format(condition))
         battle.opponent.side_conditions[condition] = 0
     else:
@@ -4227,6 +4365,43 @@ def immune(battle, split_msg):
                 _switch_active_with_zoroark_from_reserves(side, actual_zoroark)
 
 
+def _purge_live_illusion_moves(battle, disguise: Pokemon, zoroark: Pokemon):
+    """Live counterpart of the exact-teams purge done when an Illusion breaks.
+
+    `moves_used_since_switch_in` only remembers the disguise's LATEST stay, so
+    moves it used while disguised during an EARLIER stay stay stuck on the
+    disguise forever, over-revealing its movepool. `full_set_pkmn_can_have_moves`
+    is ANDed OUTSIDE every relaxation rung (data/pkmn_sets.py), so a single
+    foreign move empties the candidate list and the mon is sampled as nearly
+    harmless. The sidecar purge is replay-only; here the randbats dataset is the
+    only available notion of "really this species' move".
+
+    Gated on `zoroark_inference_allowed` (== `not exact_roster_known`), so this
+    is unreachable whenever the checker's sidecar is loaded.
+    """
+    if (
+        not zoroark_inference_allowed(battle)
+        or battle.battle_type != BattleType.RANDOM_BATTLE
+        or disguise is None
+    ):
+        return
+    legal_moves = RandomBattleTeamDatasets.get_all_possible_moves(disguise)
+    if not legal_moves:
+        # no dataset entry for this species: no notion of illegal, purging
+        # would wipe every move
+        return
+    for mv in [m.name for m in disguise.moves]:
+        if mv in legal_moves:
+            continue
+        logger.info(
+            "Removing {} from {}: not in its randbats movepool, it belongs to "
+            "the illusion bearer".format(mv, disguise.name)
+        )
+        disguise.remove_move(mv)
+        if zoroark is not None and zoroark.get_move(mv) is None:
+            zoroark.add_move(mv)
+
+
 def _switch_active_with_zoroark_from_reserves(
     opponent_side: Battler, zoroark_from_reserves: Pokemon
 ):
@@ -4497,6 +4672,8 @@ def illusion_end(battle, split_msg):
             for mv in [m.name for m in pkmn_disguised_as.moves]:
                 if mv not in true_moves:
                     pkmn_disguised_as.remove_move(mv)
+        else:
+            _purge_live_illusion_moves(battle, pkmn_disguised_as, side.active)
 
         # the pokemon that we thought was active needs some attributes reset to
         # whatever the values were at switch-in as any changes that happened to zoroark
@@ -5260,6 +5437,7 @@ def upkeep(battle, _):
                         side_string
                     )
                 )
+                _infer_lightclay(battle, side, constants.REFLECT)
                 side.side_conditions[constants.REFLECT] = 3
 
         if side.side_conditions[constants.LIGHT_SCREEN] > 0:
@@ -5275,6 +5453,7 @@ def upkeep(battle, _):
                         side_string
                     )
                 )
+                _infer_lightclay(battle, side, constants.LIGHT_SCREEN)
                 side.side_conditions[constants.LIGHT_SCREEN] = 3
 
         if side.side_conditions[constants.AURORA_VEIL] > 0:
@@ -5290,6 +5469,7 @@ def upkeep(battle, _):
                         side_string
                     )
                 )
+                _infer_lightclay(battle, side, constants.AURORA_VEIL)
                 side.side_conditions[constants.AURORA_VEIL] = 3
 
         if side.side_conditions[constants.TAILWIND] > 0:
@@ -5541,6 +5721,134 @@ def upkeep(battle, _):
         opp_pkmn.impossible_items.add("flameorb")
         opp_pkmn.impossible_items.add("toxicorb")
 
+    # Sitrus Berry heals the INSTANT hp crosses 50%, so a mon sitting below
+    # half at the end of a turn with its item still unrevealed cannot be
+    # holding one (a consumed berry prints `-enditem`, which clears `item`
+    # away from UNKNOWN_ITEM). Unnerve on our side suppresses berries entirely.
+    if (
+        opp_pkmn.item == constants.UNKNOWN_ITEM
+        and 0 < opp_pkmn.hp < opp_pkmn.max_hp * 0.5
+        and battle.user.active is not None
+        and battle.user.active.ability not in UNNERVE_ABILITIES
+    ):
+        opp_pkmn.impossible_items.add("sitrusberry")
+
+
+def check_opponent_custapberry(battle, split_msg):
+    """The opponent took a move action below the Custap threshold without it firing.
+
+    Custap Berry's fractional-priority hook runs at TURN START, so its HP
+    reading is only trustworthy when the opponent acted before we did (our
+    damage this turn has not landed yet). Pure negative evidence.
+    """
+    pkmn = battle.opponent.active
+    if (
+        pkmn is None
+        or pkmn.item != constants.UNKNOWN_ITEM
+        or pkmn.max_hp <= 0
+        or pkmn.hp <= 0
+        # a called move (Dancer / Sleep Talk / Magic Bounce) is not an action
+        # of its own and never consults fractional priority
+        or "from" in split_msg[-1]
+        # we already acted this turn -> the opponent moved SECOND and the hp we
+        # see has our damage in it, which is not the hp Custap looked at
+        or battle.user.last_used_move.turn == battle.turn
+    ):
+        return
+
+    threshold = 0.25
+    if "gluttony" in [
+        normalize_name(a) for a in pokedex[pkmn.name][constants.ABILITIES].values()
+    ]:
+        threshold = 0.5
+
+    if pkmn.hp < pkmn.max_hp * threshold:
+        logger.info(
+            "{} moved below the custapberry threshold without it activating - "
+            "ruling out custapberry".format(pkmn.name)
+        )
+        pkmn.impossible_items.add("custapberry")
+
+
+def check_opponent_reactive_items(battle, split_msg, next_messages):
+    """OUR move resolved on the opponent without a reactive item firing.
+
+    Rocky Helmet (contact) and Weakness Policy (super-effective damaging hit)
+    both announce themselves in the same protocol block as the hit that
+    triggers them. Their ABSENCE is a free elimination. Pure negative evidence
+    (`impossible_items`), which the replay checker never consumes.
+    """
+    pkmn = battle.opponent.active
+    if pkmn is None or pkmn.item != constants.UNKNOWN_ITEM:
+        return
+
+    move_name = normalize_name(split_msg[3])
+    if (
+        move_name not in all_move_json
+        or all_move_json[move_name][constants.CATEGORY] == constants.STATUS
+    ):
+        return
+
+    damaged = False
+    fainted = False
+    super_effective = False
+    saw_helmet = False
+    saw_policy = False
+    behind_substitute = False
+    for line in next_messages:
+        split_line = line.split("|")
+        if len(split_line) < 2 or split_line[1] in _MOVE_BLOCK_END_STRINGS:
+            break
+
+        if "rocky helmet" in line.lower():
+            saw_helmet = True
+        if "weakness policy" in line.lower():
+            saw_policy = True
+
+        if split_line[1] == "-activate" and "substitute" in line.lower():
+            behind_substitute = True
+        elif split_line[1] == "-supereffective" and battle.opponent.name in line:
+            super_effective = True
+        elif (
+            split_line[1] == "-damage"
+            and len(split_line) > 3
+            and battle.opponent.name in split_line[2]
+            and "[from]" not in line
+        ):
+            damaged = True
+            if split_line[3].startswith("0 "):
+                fainted = True
+
+    if not damaged or behind_substitute or fainted:
+        return
+
+    our_active = battle.user.active
+    if (
+        all_move_json[move_name].get("flags", {}).get("contact")
+        and not saw_helmet
+        and our_active is not None
+        and our_active.ability not in ("longreach", "magicguard")
+        and our_active.item not in ("protectivepads", "punchingglove")
+    ):
+        logger.info(
+            "contact move on {} did not trigger a rockyhelmet - ruling it out".format(
+                pkmn.name
+            )
+        )
+        pkmn.impossible_items.add("rockyhelmet")
+
+    if (
+        super_effective
+        and not saw_policy
+        and pkmn.boosts[constants.ATTACK] < 6
+        and pkmn.boosts[constants.SPECIAL_ATTACK] < 6
+    ):
+        logger.info(
+            "super-effective hit on {} did not trigger a weaknesspolicy - "
+            "ruling it out".format(pkmn.name)
+        )
+        pkmn.impossible_items.add("weaknesspolicy")
+
 
 def mega(battle, split_msg):
     if is_opponent(battle, split_msg):
@@ -5765,14 +6073,20 @@ def process_battle_updates(battle: Battle):
             if normalize_name(split_msg[3].strip()) == constants.HIDDEN_POWER:
                 check_opponent_hiddenpower(battle, msg_lines[i + 1])
             check_choicescarf(battle, msg_lines)
+            check_opponent_custapberry(battle, split_msg)
             damage_dealt = get_damage_dealt(battle, split_msg, msg_lines[i + 1 :])
             if damage_dealt:
-                update_dataset_possibilities(battle, damage_dealt, "damage_dealt")
+                update_dataset_possibilities(
+                    battle, damage_dealt, "damage_dealt", msg_lines[:i]
+                )
 
         elif action == "move" and not is_opponent(battle, split_msg):
+            check_opponent_reactive_items(battle, split_msg, msg_lines[i + 1 :])
             damage_dealt = get_damage_dealt(battle, split_msg, msg_lines[i + 1 :])
             if damage_dealt:
-                update_dataset_possibilities(battle, damage_dealt, "damage_received")
+                update_dataset_possibilities(
+                    battle, damage_dealt, "damage_received", msg_lines[:i]
+                )
 
         elif action == "switch" and is_opponent(battle, split_msg):
             check_heavydutyboots(battle, msg_lines[i + 1 :])
