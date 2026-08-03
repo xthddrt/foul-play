@@ -55,4 +55,14 @@ for g in 170016 173111 173863 175989 176064 177397 179436; do check $M $g; done
 for g in 181081 184764 188593 189323; do check $N $g; done
 for g in 194692 194889 195487 195800 197392; do check $O $g; done
 for g in 201582 201762 202076 203675 203684 203784 204129 205395 206196 209162; do check $P $g; done
+
+echo "=== round 8 (gate attempt 3) ==="
+Q=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout17
+R=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout18
+S=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout19
+T=/Users/sallyliu/pokemon-ai/synthetic-corpus-holdout20
+for g in 210836 211526 213459; do check $Q $g; done
+for g in 222712 224619 229623 222884 226284 226341 229653; do check $R $g; done
+for g in 235750 236572 237447 231620 235737; do check $S $g; done
+for g in 247654; do check $T $g; done
 echo "GRAND TOTAL NON-CLEAN: $FAIL"
