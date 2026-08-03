@@ -189,11 +189,39 @@ games `verify_all.sh` replays. **Prune each corpus right after its findings
 are diagnosed** — every corpus is byte-for-byte regenerable from its seed
 range via `gen_corpus.js --start <seed>`.
 
-### IN FLIGHT right now
+### IN FLIGHT right now — RESUME POINT (Mac was restarted here)
 
-- Gate attempt 3 corpora generating: holdout17/18/19 done (10k each),
-  holdout20 in progress. Seeds 210001-250000, all unseen.
-- Nothing else pending on Track A; all known findings are fixed and verified.
+NOTHING is running: no AWS instances, no local jobs. Safe state, everything
+committed and pushed. ~$40 of $1,000 spent.
+
+State at pause:
+- Waves 1-11 complete: ~118 root causes fixed, ALL 117 finding games from
+  every round verify clean, engine suite 1889 passing, tracker silent,
+  damage never diverged (~2.9M events).
+- Gate attempts 1-3 all failed (7 / 50 / 25 findings) — every finding since
+  fixed. Corpora holdout2-20 are consumed and PRUNED to just the regression
+  games. Trend per fresh 10k: 12.5 -> 6.25 findings.
+- Gate-4 corpora (holdout21-24, seeds 250001-290000) were GENERATING when
+  paused: holdout21 partial, 22-24 not started. gen_corpus.js is resumable
+  (skips existing games).
+
+TO RESUME (scripts preserved in foul-play/tools/conformance/ — the scratchpad
+copies die with the session):
+1. bash foul-play/tools/conformance/gen_gate4.sh     # finishes corpora 21-24
+2. Adapt gate3_chain.sh: corpus numbers 17-20 -> 21-24, tarball/NAME g17-g20
+   -> g21-g24. It packages, uploads, launches 4 parallel cloud sweeps
+   (instance-type fallback included), and prints the four verdicts.
+3. If findings: harvest ALL FOUR inventories, one Opus diagnosis wave
+   (structured fields: is_incomplete_prior_fix, could_break_other_classes),
+   apply serially via tools/conformance/apply_patches.py, cargo test to
+   1889/0, REBUILD THE WHEEL, run tools/conformance/verify_all.sh (must be
+   0 non-clean), AND re-sweep one old corpus (resweepA pattern) before the
+   next attempt.
+4. Track B next milestone: the Rust inference port (M4) of valuenet/encoder.py
+   + the 350k-param net (winner: lam=1.0, 4 epochs, s3://.../train/
+   valuenet_v1_lam1.0.pt), bit-exactness test against the Python encoder,
+   then SPRT net-vs-hand-eval. After the gate passes: regenerate the 1M-game
+   dataset on the certified engine before the iteration rounds.
 
 ### Next actions for Track A
 
