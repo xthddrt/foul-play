@@ -1733,7 +1733,10 @@ class TestIllusion(unittest.TestCase):
         after = _Pkmn("flamigo")
         after.types = ["flying", "fighting"]
         _apply_illusion(_Battler(active=after), "p1", {"illusions": [span]}, turn=6)
-        self.assertEqual(after.types, ["normal"])
+        # `types` stays the BEARER'S BASE types -- the engine reads it as PS's
+        # `getTypes(false, true)` for STAB and takes the defensive typing from
+        # `terastallized`/`tera_type`
+        self.assertEqual(after.types, ["normal", "ghost"])
         self.assertTrue(after.terastallized)
         self.assertEqual(after.tera_type, "normal")
 
@@ -1760,7 +1763,9 @@ class TestIllusion(unittest.TestCase):
         _apply_illusion(battler, "p1", reveals, turn=3)
         self.assertTrue(revealed.terastallized)
         self.assertEqual(revealed.tera_type, "fighting")
-        self.assertEqual(revealed.types, ["fighting"])
+        # the tera reaches it through `terastallized`/`tera_type`; `types` keeps
+        # the base pair the offensive STAB stage needs
+        self.assertEqual(revealed.types, ["normal", "ghost"])
 
     def test_true_species_types_are_not_re_derived_from_the_pokedex(self):
         # standing under its own name, its types are already right -- a Soak /

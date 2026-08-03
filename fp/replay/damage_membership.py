@@ -2304,7 +2304,24 @@ def apply_exact_team(battler, lookup: dict, is_user: bool) -> None:
             continue
         try:
             hp_frac = pkmn.hp / pkmn.max_hp if pkmn.max_hp else 0.0
-            if getattr(pkmn, "forme_changed", False):
+            # The question is "is the LIVE forme the SIDECAR's forme?", which is
+            # a species comparison -- NOT `forme_changed`, a live-tracking flag
+            # that battle_modifier clears on switch-out (battle_modifier.py:353)
+            # while the forme itself persists across that switch.  Shields Down
+            # is where the two come apart: PS's randbats set species is `Minior`
+            # (Core, base atk 100) and data/abilities.ts:4229-4242 flips it to
+            # Minior-Meteor (base atk 60) at switch-in, so the corpus's
+            # mid-battle team dump records species `Minior-Meteor` with METEOR's
+            # computed stats (setSpecies recomputes storedStats per forme,
+            # sim/pokemon.ts:1404-1418).  A Minior that flipped to Core below
+            # 1/2 HP, switched OUT (flag cleared; PS's clearVolatile revert
+            # target is baseSpecies = Core) and walked back in still Core
+            # (abilities.ts:4237-4241 onStart only flips Meteor->Core, so no
+            # forme line is emitted) therefore had `forme_changed` False and was
+            # handed Meteor's 140 Attack in place of Core's 204.  synth112113
+            # T25: Minior L79 Earthquake vs Houndstone L86 -- roll set capped at
+            # 43 against PS's true band 52..62, observed 53.
+            if _species_key(pkmn.name) != _species_key(rec.get("species") or ""):
                 computed = calculate_stats(
                     pkmn.base_stats,
                     pkmn.level,

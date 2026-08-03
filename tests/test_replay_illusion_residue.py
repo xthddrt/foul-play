@@ -469,7 +469,10 @@ class TestApplyIllusion(unittest.TestCase):
 
         self.assertTrue(self.active.terastallized)
         self.assertEqual("dark", self.active.tera_type)
-        self.assertEqual(["dark"], self.active.types)
+        # `types` is the BEARER'S BASE pair: the engine reads it as PS's
+        # `getTypes(false, true)` for the STAB stage and takes the defensive
+        # typing from `terastallized`/`tera_type`
+        self.assertEqual(["normal", "ghost"], self.active.types)
 
 
 if __name__ == "__main__":

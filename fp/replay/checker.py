@@ -163,6 +163,19 @@ def _extract_side_action(block_lines: list[str], slot: str):
             # drag before any move line means the side's own decision never
             # visibly resolved -> not a clean 1-action turn, skip it.
             return None
+        if act == "cant" and len(sp) >= 4 and sp[3].strip() == "slp":
+            # NOT a prevention for a `sleepUsable` move.  PS's slp onBeforeMove
+            # (data/conditions.ts:66-81) prints `|cant|<mon>|slp` and then
+            # `return`s - not `return false` - when `move.sleepUsable`, so Sleep
+            # Talk / Snore (data/moves.ts:16869 / :17155, the complete gen9 set)
+            # EXECUTE and emit their own `|move|` line right after the `cant`.
+            # Stopping here declared a fully VISIBLE action unnamable and sent the
+            # turn through the membership fan with an arbitrary primary candidate
+            # (synth132960 T45: `curse` instead of the observed Sleep Talk, whose
+            # called Wave Crash is what ended Whimsicott's Substitute).  Keep
+            # scanning: a non-sleepUsable move emits no later `|move|` line for the
+            # slot, so the loop still falls through to the `return None` below.
+            continue
         if act in ("faint", "cant"):
             return None  # fainted / prevented before a clean action
     return None
@@ -1268,6 +1281,27 @@ def _backfill_revealed_knowledge(battler, pid, reveals, snapshot_turn) -> None:
                 end_turn is not None and snapshot_turn > end_turn
             ):
                 continue
+            # A live-tracked EMPTY slot is KNOWLEDGE, not ignorance: `item is None`
+            # means the reconstruction WATCHED the item leave (`remove_item` ->
+            # `pkmn.item = None`), which is strictly newer than any acquisition record.
+            # The timeline must not resurrect it, because its own `end_turn` is blind to
+            # a loss PS printed against an Illusion DISGUISE: `_harvest_reveals._end_gain`
+            # closes a record only on a loss line for the SAME species key, and
+            # `-enditem|p2a: Glimmora|Choice Specs|[silent]|[from] move: Trick` for a
+            # Zoroark wearing Glimmora's face carries the disguise's key, so the earlier
+            # `|-item|p2a: Zoroark|Choice Specs` record never closes and `_bounded_item_gains`
+            # has no later acquisition to bound it with either.  MEASURED (synth142136):
+            # the T15 record put the Specs back on Zoroark for the T22 snapshot; the engine's
+            # Trick then no-opped on `attacker_item == defender_item`
+            # (genx/choice_effects.rs:2664) and removed nothing, a HARD item finding.
+            # This is the REVISIT TRIGGER recorded in the `NOT DONE HERE` note below, and
+            # it is the same rule `apply_exact_team` already applies to
+            # `removed_item` / `knocked_off`: a protocol-established removal is never
+            # overwritten.  Fill-if-unknown is untouched -- `UNKNOWN_ITEM` still falls
+            # through to the override, so the synth15565 composition this timeline exists
+            # for is unaffected.
+            if pkmn.item is None:
+                continue
             if pkmn.item != constants.UNKNOWN_ITEM and not (
                 may_override
                 and _species_keyed_event_is_reliable(
@@ -1669,6 +1703,56 @@ def _infer_illusion_spans(reveals: dict, exact_teams) -> None:
                     }
                 )
                 continue
+        # THE MOVE AND ITEM EVIDENCE ARE BOTH SPENT -- try the TERA.
+        #
+        # A side terastallizes at most ONCE per battle (PS
+        # sim/battle-actions.ts:1946 `for (const ally of pokemon.side.pokemon)
+        # ally.canTerastallize = null`), and the `tera:` suffix on a |switch|
+        # line describes the ENTERING pokemon, never its illusion:
+        # `getFullDetails` overwrites `details` with `this.illusion`'s details
+        # and only THEN appends `, tera:${this.terastallized}` off `this`
+        # (sim/pokemon.ts:544-553).  So once a span has PROVEN the bearer is the
+        # mon that spent this side's one tera, the suffix settles every later
+        # occupancy: carrying it means the entrant IS the bearer, and entering
+        # WITHOUT it after the tera turn means it is not.  synth165815 T51: the
+        # Zoroark-Hisui announced on T2 walks back in wearing Snorlax's face
+        # with `tera:Normal` and never |replace|s again, so the stay stayed
+        # undecided and `_illusion_switch_target` handed the engine `snorlax` --
+        # Dusknoir's Pain Split then averaged against the real Snorlax's 277 hp
+        # instead of the Zoroark's 124, filling Dusknoir to 225/225 and erasing
+        # its Leftovers tick from every branch.
+        bearer_tera_turn = None
+        for il in illusions:
+            if (
+                il["pid"] == occ["pid"]
+                and il.get("true_species") == bearer_key
+                and il.get("bearer_tera")
+                and il.get("bearer_tera_from") is not None
+            ):
+                bearer_tera_turn = il["bearer_tera_from"]
+                break
+        if bearer_tera_turn is not None:
+            entrant_tera = occ["tera_during"] or occ["entry_tera"]
+            if entrant_tera:
+                illusions.append(
+                    {
+                        "pid": occ["pid"],
+                        "disguise": occ["species"],
+                        "true_species": occ.get("revealed_true_species") or bearer_key,
+                        "start_turn": occ["start_turn"],
+                        "end_turn": occ["end_turn"],
+                        "bearer_tera": entrant_tera,
+                        "bearer_tera_from": _bearer_tera_from(occ),
+                        "inferred_from": ["tera:" + entrant_tera],
+                    }
+                )
+                continue
+            # `_bearer_tera_from`'s convention is half-open: the bearer reads as
+            # tera'd only for turns STRICTLY GREATER than the bound, so an
+            # un-tera'd entrant is disconfirming from there on and proves
+            # nothing at or before it.
+            if occ["start_turn"] > bearer_tera_turn:
+                continue
         # neither proof fired: this stay is a coin-flip between the real mon and
         # the bearer wearing its face, and nothing in the protocol or the sidecar
         # decides it.  Record the window so both the categorical gate and the
@@ -1807,6 +1891,75 @@ def _apply_slot_tera(battler, pid, reveals, turn) -> None:
         active.terastallized = False
 
 
+def _entering_occupancy(reveals, pid: str, turn: int):
+    """The slot occupancy this turn's switch OPENS.  `start_turn` is the turn during
+    whose RESOLUTION the mon walked in, so `start_turn == turn` is exactly the window
+    `_occupancy_covering`'s half-open test excludes.  The LAST match wins."""
+    found = None
+    for occ in (reveals or {}).get("occupancies", ()):
+        if occ["pid"] == pid and occ["start_turn"] == turn:
+            found = occ
+    return found
+
+
+def _apply_entrant_tera(battler, pid, reveals, turn) -> None:
+    """`_apply_slot_tera`'s missing twin for the mon that walks IN during this turn.
+
+    `_apply_slot_tera` resolves the tera of the ACTIVE, i.e. of whoever holds the slot
+    in this turn's PRE-state.  The entrant is still in the RESERVE there, so nothing
+    corrects it -- and BOTH directions of the correction are needed:
+
+      * SET.  `update_from_request_json` rebuilds the user's reserve from every request
+        and never reads `terastallized` (fp/battle.py:891-893 carries only `teraType`),
+        so a user mon that terastallized and later switches back in re-enters un-tera'd.
+        The active self-heals on the NEXT turn via `_apply_slot_tera`; the entry turn is
+        the hole.  synth168701 T14: the Zoroark wearing Houndstone's face is tera-POISON
+        (the `tera:` suffix on its own |switch| line), so it absorbs the two Toxic Spikes
+        layers on entry (PS data/moves.ts toxicspikes onEntryHazard `hasType('Poison')`;
+        engine genx/generate_instructions.rs:1246-1256).  Reconstructed as a plain Dark
+        Zoroark it was given TOXIC instead and the observed `-sideend` existed in no
+        branch.
+      * CLEAR.  `|-terastallize|` names a SLOT and renders the occupant through the
+        ILLUSION's name (sim/pokemon.ts:531), so a bearer's tera is credited to the
+        disguise species' real owner -- a different party member that can switch in
+        itself later.  synth147555 T19: Zoroark-Hisui tera'd Fighting while wearing
+        Arceus-Poison's face, the REAL Arceus-Poison entered flagged tera-Fighting, lost
+        its Poison typing and did not absorb the Toxic Spikes it observably absorbed.
+
+    Same three arms, same evidence and same illusion-bearer gate as `_apply_slot_tera`,
+    read off the occupancy this turn's switch opens.  The species is taken from that
+    occupancy and put through `_illusion_switch_target`, so a disguised entrant lands on
+    the reserve slot the engine will actually switch in (the bearer), not on the
+    disguise species' real owner."""
+    occ = _entering_occupancy(reveals, pid, turn)
+    if occ is None:
+        return
+    species = _illusion_switch_target(reveals, pid, turn, occ.get("species"))
+    if not species:
+        return
+    want = _species_key(species)
+    pkmn = None
+    for cand in getattr(battler, "reserve", ()):
+        if _species_key(cand.name) == want:
+            pkmn = cand
+            break
+    if pkmn is None:
+        return
+    if occ.get("entry_tera"):
+        # `getFullDetails` appends `tera:` iff the pokemon ACTUALLY entering is
+        # terastallized (sim/pokemon.ts:544-553), so this is decisive for the entrant
+        pkmn.tera_type = occ["entry_tera"]
+        pkmn.terastallized = True
+    elif occ.get("tera_during"):
+        # the |-terastallize| lands mid-resolution, after the switch: the mon walks in
+        # un-tera'd and the engine applies the tera from the ACTION, but the type must
+        # be known for that application to resolve
+        pkmn.tera_type = occ["tera_during"]
+        pkmn.terastallized = False
+    elif (reveals or {}).get("illusion_bearers", {}).get(pid):
+        pkmn.terastallized = False
+
+
 def illusion_unresolved_turn(reveals, pid: str, turn: int) -> bool:
     """True when this side's active on `turn` is a stay `_infer_illusion_spans`
     could prove neither a disguise nor genuine.  Same half-open window as the
@@ -1923,9 +2076,19 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
             if bearer_tera is not None:
                 battler.active.tera_type = bearer_tera
         true_types = pokedex.get(il["true_species"], {}).get(constants.TYPES)
-        if bearer_tera:
-            battler.active.types = [bearer_tera]
-        elif standing_as_disguise and true_types:
+        # NOT the tera type: `Pokemon.types` is the engine's BASE-type array and
+        # the offensive STAB stage reads it as PS's `getTypes(false, true)` --
+        # the PRE-terastallized types (sim/battle-actions.ts:1786
+        # `pokemon.terastallized === type && pokemon.getTypes(false, true)
+        # .includes(type)` is what promotes 1.5x to 2x).  poke-engine mirrors
+        # that with `move_has_basic_stab` over `active_pkmn.types`
+        # (src/genx/damage_calc.rs:327-331) and derives the DEFENSIVE typing
+        # from `terastallized`/`tera_type` on its own (:661-668), both of which
+        # are already set just above.  Writing the tera type here gave a Tera
+        # Poison Zoroark 2x STAB on Sludge Bomb instead of 1.5x, and the
+        # over-damage killed Leavanny in every branch, so PS's `psn` secondary
+        # was unreachable (synth95171 T4).
+        if standing_as_disguise and true_types:
             # only the disguise carries the WRONG species' types; once the
             # reconstruction stands the mon under its true name its types are
             # already right and must not be re-derived from the pokedex (a
@@ -2274,17 +2437,25 @@ _RESIDUAL_HEAL_SOURCES = frozenset(
 # whose unreachability the fold argument below actually proves.
 _RESIDUAL_BOOST_ABILITIES = frozenset(("speedboost",))
 
-# `cur/max` in an HP field.  A `max` of 100 is the opponent's PERCENT display and
-# is REJECTED: the certificate below is an absolute-HP claim and a percent cannot
-# express it (1% of a 300 HP mon is 3 HP, the whole band).
+# `cur/max` in an HP field.  A `max` of 100 is the opponent's PERCENT display;
+# it is usable only with the mon's true max HP, which converts it to an upper
+# BOUND (see _protocol_min_exact_hp).
 _ABS_HP_FIELD = re.compile(r"\b(\d+)/(\d+)\b")
 
 
-def _protocol_min_exact_hp(block_lines, pid) -> int | None:
-    """Lowest EXACT (non-percent) HP the protocol shows for `pid`'s slot in this
-    block, or None when the block never prints one.  This is the certificate that
-    a KO disagreement really is inside the discarded damage spread: PS itself has
-    to have brought the mon to within `_KO_MARGIN_HP` of fainting."""
+def _protocol_min_exact_hp(block_lines, pid, maxhp=None) -> int | None:
+    """Lowest HP the protocol PROVES for `pid`'s slot in this block, or None when
+    the block never prints one.  This is the certificate that a KO disagreement
+    really is inside the discarded damage spread: PS itself has to have brought
+    the mon to within `_KO_MARGIN_HP` of fainting.
+
+    An `hp/maxhp` field is that HP exactly.  The opponent's `pct/100` display is
+    still a hard PS claim once `maxhp` is known, because gen9 prints
+    `Math.ceil(100 * hp / maxhp)` (sim/pokemon.ts:2080-2086), so
+    `hp <= pct * maxhp / 100` and the floor of that product is a sound upper
+    bound -- e.g. Blaziken at `2/100` with maxhp 247 is at most 4 HP
+    (synth99472 T26).  Without it the KO-fold arm below could never engage on
+    the opponent's side at all, since PS never prints its exact HP."""
     lo = None
     for line in block_lines:
         sp = line.split("|")
@@ -2293,9 +2464,13 @@ def _protocol_min_exact_hp(block_lines, pid) -> int | None:
         if sp[2].split(":")[0].strip()[:2] != pid:
             continue
         m = _ABS_HP_FIELD.search(sp[3])
-        if m is None or m.group(2) == "100":
+        if m is None:
             continue
         cur = int(m.group(1))
+        if m.group(2) == "100":
+            if not maxhp:
+                continue
+            cur = (cur * int(maxhp)) // 100
         lo = cur if lo is None else min(lo, cur)
     return lo
 
@@ -2317,6 +2492,102 @@ def _residual_ability_boost_slot(finding, block_lines) -> str | None:
             if re.sub(r"[^a-z0-9]", "", sp[3].lower()) in _RESIDUAL_BOOST_ABILITIES:
                 return sp[2].split(":")[0].strip()[:2]
     return None
+
+
+# HP-THRESHOLD (`onUpdate`) berries: the ones whose consumption is decided by the holder's
+# HP crossing a fraction of its max, i.e. exactly the class poke-engine's joint multi-hit
+# end-state fan (genx/generate_instructions.rs:13542 `multihit_berry_threshold_split`)
+# exists to resolve.  Damage-reactive berries (Enigma / Kee / Maranga) are deliberately NOT
+# here: their trigger is a hit, not an HP level, so the fold cannot hide them.
+_THRESHOLD_BERRIES = (
+    "sitrusberry",
+    "oranberry",
+    "berryjuice",
+    "figyberry",
+    "wikiberry",
+    "magoberry",
+    "aguavberry",
+    "iapapaberry",
+    "apicotberry",
+    "ganlonberry",
+    "lansatberry",
+    "liechiberry",
+    "petayaberry",
+    "salacberry",
+    "starfberry",
+    "custapberry",
+    "micleberry",
+)
+
+
+def _suppress_forme_blocked_multihit_threshold_berry(
+    turn_findings, block_lines, stats
+) -> None:
+    """Drop the `item`/`heal` pair of an HP-THRESHOLD berry eaten mid-multi-hit on a turn
+    where Ice Face / Disguise blocked the FIRST hit.
+
+    poke-engine normally resolves a threshold berry inside a multi-hit move with an EXACT
+    joint end-state fan over the per-hit crit bit and the 16-way roll
+    (genx/generate_instructions.rs:13542 `multihit_berry_threshold_split`), so the hit that
+    eats the berry is modelled to PS precision.  That fan is DELIBERATELY switched off when
+    a breakable forme blocks hit one: `build_multihit_damage_plans` (:14156-14165)
+    downgrades `DamageBranching::Branch` to `CritFoldedAverage` whenever
+    `choice.connected_zero_hit` is set, and `multihit_count_plan` (:14104-14116) only calls
+    the berry fan under `Branch`/`ThresholdBranch`.  The reason is in that function's own
+    comment -- the split's weights assume n FULL-damage hits and hit one is about to be
+    zeroed -- so every hit collapses to one crit-folded mean and no branch can cross an HP
+    gate PS crossed only because it critted.
+
+    synth118590 T1: Loaded Dice Scale Shot into Eiscue (274 HP, Sitrus gate 137).  The
+    engine's plans are 4-or-5 hits with hit one zeroed by Ice Face and every landing hit the
+    folded 32 -- 96 or 128 total, both strictly above the gate.  PS critted on hit two
+    (`|-crit|p2a: Eiscue` between the `-damage` lines) for ~148, ate the Sitrus and healed.
+    Neither the `-enditem` nor the `-heal` it produced is reachable from the folded plan
+    set, so neither carries engine-fidelity information; they are ONE berry event and are
+    suppressed together.
+
+    All conditions required, and together they name that code path exactly:
+      * the block carries `|-activate|<slot>|ability: Ice Face` or `ability: Disguise` --
+        the only two producers of `connected_zero_hit` on a multi-hit choice;
+      * the block carries `|-hitcount|<slot>` for the SAME slot, so the move really was
+        multi-hit and the downgraded plan is the one that ran;
+      * the finding is an `[eat]`-tagged `-enditem` of a threshold berry on that slot, or
+        the `-heal` naming that berry.
+    A forced item loss (Knock Off / Trick / Incinerate), a damage-reactive berry, a
+    single-hit turn, or a turn with no forme block all stay reported."""
+    if not turn_findings:
+        return
+    blocked = set()
+    hitcount = set()
+    for line in block_lines:
+        sp = line.split("|")
+        if len(sp) > 3 and sp[1] == "-activate":
+            if re.sub(r"[^a-z0-9]", "", sp[3].lower()) in (
+                "abilityiceface",
+                "abilitydisguise",
+            ):
+                blocked.add(sp[2].split(":")[0].strip())
+        elif len(sp) > 2 and sp[1] == "-hitcount":
+            hitcount.add(sp[2].split(":")[0].strip())
+    victims = blocked & hitcount
+    if not victims:
+        return
+    for f in list(turn_findings):
+        if f.category not in ("heal", "item"):
+            continue
+        raw = f.observed or ""
+        sp = raw.split("|")
+        if len(sp) < 4 or sp[2].split(":")[0].strip() not in victims:
+            continue
+        if f.category == "item" and "[eat]" not in raw:
+            continue
+        tail = re.sub(r"[^a-z0-9]", "", "".join(sp[3:]).lower())
+        if not any(b in tail for b in _THRESHOLD_BERRIES):
+            continue
+        turn_findings.remove(f)
+        stats["forme_blocked_multihit_threshold_berry"] = (
+            stats.get("forme_blocked_multihit_threshold_berry", 0) + 1
+        )
 
 
 def _suppress_dead_mon_residual_heals(
@@ -2405,7 +2676,10 @@ def _suppress_dead_mon_residual_heals(
             and all(_branch_hp_after(b, side_key, hp) <= 0 for b in parsed)
         )
         dead_everywhere[side] = dead and faints[side]
-        protocol_low = _protocol_min_exact_hp(block_lines, pid)
+        _sim = _simulated_pokemon(battler, action)
+        protocol_low = _protocol_min_exact_hp(
+            block_lines, pid, getattr(_sim, "max_hp", None)
+        )
         folded_ko[side] = bool(
             dead
             and not faints[side]
@@ -2413,6 +2687,36 @@ def _suppress_dead_mon_residual_heals(
             and protocol_low is not None
             and protocol_low <= _KO_MARGIN_HP
         )
+    # ARM C -- the folded KO WIPES THAT SIDE OUT, so the engine omits the WHOLE residual
+    # phase and no branch can heal EITHER active.  poke-engine drops end-of-turn wholesale
+    # once the move pair has already decided the battle
+    # (genx/generate_instructions.rs:16098-16101, `let battle_decided = state.battle_is_over()
+    # != 0.0;` -> `run_end_of_turn = false`), citing PS sim/battle.ts:2832-2833
+    # `this.faintMessages(); if (this.ended) return true;` -- turnLoop bails BEFORE the
+    # separately queued `residual` action (:2808-2815).  So when arm B's certificate holds
+    # for a side whose ENTIRE remaining team is already fainted, every branch ends the
+    # battle and the residual heal of the SURVIVING opponent is unreachable too.
+    #
+    # synth116131 T27: Calyrex 72/337 is p1's last mon (all five reserves 0 HP).  Surf folds
+    # to 40 (crit arm 60) and Giga Drain's Liquid Ooze recoil to 34 (crit arm 50), so all
+    # four branches put it at <= 0; PS rolled 38 and 32 and left it at 2 HP, after which
+    # Tentacruel took its Leftovers tick.  Arm B already certifies that the KO sits inside
+    # the spread the fold discarded (protocol low 2 <= _KO_MARGIN_HP); this arm adds only
+    # "and that side was wiped", which is exactly what removes the OTHER side's residual
+    # from the branch set.  Nothing is suppressed on a turn the engine survives anywhere.
+    #
+    # The reserve list must be COMPLETE before its all-fainted reading is trusted: a partly
+    # revealed opponent would otherwise read as wiped after two knocked-out mons.  A full
+    # team is active + 5 reserve, so require >= 5 entries.
+    battle_over_everywhere = False
+    for _side, _battler in (("user", snap.user), ("opp", snap.opponent)):
+        if not folded_ko.get(_side):
+            continue
+        _reserve = list(getattr(_battler, "reserve", None) or [])
+        if len(_reserve) >= 5 and all(
+            (getattr(p, "hp", 0) or 0) <= 0 for p in _reserve
+        ):
+            battle_over_everywhere = True
     for f in list(turn_findings):
         if f.category == "heal":
             sp = (f.observed or "").split("|")
@@ -2423,7 +2727,11 @@ def _suppress_dead_mon_residual_heals(
             src = re.sub(r"[^a-z0-9]", "", sp[4].replace("[from]", "").lower())
             if src not in _RESIDUAL_HEAL_SOURCES:
                 continue
-            if not (dead_everywhere.get(side) or folded_ko.get(side)):
+            if not (
+                dead_everywhere.get(side)
+                or folded_ko.get(side)
+                or battle_over_everywhere
+            ):
                 continue
             turn_findings.remove(f)
             stats["residual_heal_after_folded_ko"] = (
@@ -3333,6 +3641,9 @@ def _evaluate_turn(
         _suppress_dead_mon_residual_heals(
             turn_findings, parsed, snap, u_action, o_action, block_lines, user_pid, stats
         )
+        _suppress_forme_blocked_multihit_threshold_berry(
+            turn_findings, block_lines, stats
+        )
     except Exception:
         pass
     if turn_findings:
@@ -3490,6 +3801,102 @@ def _finding_key(f) -> tuple:
     the same defect must compare equal whether or not a given evaluation
     demoted it."""
     return (f.category, f.observed, f.message.replace(" [ko-margin]", ""))
+
+
+# ---------------------------------------------------------------------------
+# HP-FRACTION `onTry` GATES the folded damage roll can flip
+# ---------------------------------------------------------------------------
+# The fold that makes _KO_MARGIN_HP necessary (the installed wheel collapses a hit to a
+# single 0.925 * max_damage roll) decides more than the KO threshold: it also decides the
+# HP-FRACTION `onTry` guards of the self-HP-cost moves, which PS evaluates AFTER the
+# opponent's move has landed in the same turn.
+#
+# synth152043 T10.  Keldeo's Secret Sword rolls {151,153,154,156,157,160,162,163,165,166,
+# 169,171,172,174,175,178} -- the checker's own exact-damage pass reports the engine's
+# roll set as byte-identical to PS's and the observed 157 as a +0 member.  PS rolled 157,
+# leaving Kommo-o at 85 > floor(242*33/100) = 79, so Clangorous Soul passed
+# `if (source.hp <= source.maxhp * 33 / 100) return false` (data/moves.ts:2507-2509) and
+# fired all five boosts plus its 79 HP cut.  The wheel folds to 165, leaving 77 <= 79, so
+# the gate FAILS in every branch and all five `-boost` lines go missing.  The engine's
+# gate is exact -- fed that same turn's state with Kommo-o at 86/85/81/80 it emits
+# `Heal SideOne: -79` and the five `Boost SideOne` instructions, and at 79/78/77 it emits
+# neither -- so nothing is wrong with the engine: the fold cannot decide the turn, exactly
+# as at the KO boundary.
+#
+# The gate is as narrow as the KO one.  It fires only when, for EVERY branch,
+#   * the side's declared move is one whose PS gate is an HP fraction of the user's max,
+#   * the mon took same-turn damage (`taken > 0`) and the folded post-hit HP is at or
+#     below the gate, and
+#   * the lowest roll the fold discarded would have left it ABOVE the gate.  With
+#     f = floor(0.925 * B) the pre-roll damage is B >= f / 0.925, so the minimum roll
+#     floor(0.85 * B) >= floor(0.85 * f / 0.925) -- a sound lower bound (151 for f = 165,
+#     the true minimum).
+# A mon damaged well past the gate, or one the engine fails at FULL HP (taken == 0), keeps
+# every finding.
+_HP_FRACTION_GATE_MOVES = {
+    # PS `hp <= maxhp * n / d` -> fails; integer hp makes floor(maxhp*n/d) the exact gate
+    "bellydrum": (1, 2),  # data/moves.ts:1226
+    "clangoroussoul": (33, 100),  # data/moves.ts:2508
+    "filletaway": (1, 2),  # data/moves.ts:5285
+    "substitute": (1, 4),  # data/moves.ts:18313
+}
+
+
+def _finding_slot(f) -> str:
+    """Slot pid (`p1`/`p2`) the finding's observed protocol line is about."""
+    sp = (f.observed or "").split("|")
+    return sp[2].split(":")[0].strip()[:2] if len(sp) > 2 else ""
+
+
+def _hp_gate_fold_drops(
+    turn_findings, parsed, snap, u_move, o_move, u_action, o_action, user_pid
+) -> set:
+    """_finding_key()s the folded roll leaves undecidable at an HP-fraction `onTry`
+    gate (see the block comment above)."""
+    if not parsed:
+        return set()
+    opp_pid = "p2" if user_pid == "p1" else "p1"
+    drop: set = set()
+    for battler, move, action, side_key, pid in (
+        (snap.user, u_move, u_action, "s1", user_pid),
+        (snap.opponent, o_move, o_action, "s2", opp_pid),
+    ):
+        frac = _HP_FRACTION_GATE_MOVES.get(re.sub(r"[^a-z0-9]", "", (move or "").lower()))
+        if frac is None:
+            continue
+        pkmn = _simulated_pokemon(battler, action)
+        if pkmn is None:
+            continue
+        hp0, maxhp = int(pkmn.hp), int(getattr(pkmn, "max_hp", 0) or 0)
+        if hp0 <= 0 or maxhp <= 0:
+            continue
+        gate = maxhp * frac[0] // frac[1]
+        undecidable, surviving = True, 0
+        for branch in parsed:
+            taken = sum(
+                (i.amount() or 0)
+                for i in branch
+                if i.side == side_key and i.kind == "Damage"
+            )
+            if taken <= 0:
+                undecidable = False  # the engine reached the move at FULL hp
+                break
+            if hp0 - taken <= 0:
+                # a KO branch (the fold's crit arm): the observed events prove the
+                # mon survived and acted, so this branch is not the observed world
+                continue
+            surviving += 1
+            if hp0 - taken > gate:
+                undecidable = False  # the engine passed the gate here
+                break
+            if hp0 - int(taken * 85.0 / 92.5) <= gate:
+                undecidable = False  # even the lowest discarded roll fails the gate
+                break
+        if undecidable and surviving:
+            drop |= {
+                _finding_key(f) for f in turn_findings if _finding_slot(f) == pid
+            }
+    return drop
 
 
 # ---------------------------------------------------------------------------
@@ -4050,6 +4457,12 @@ def _fire_turn(
                 _apply_slot_tera(_bt, _pid, reveals, turn)
             except Exception:
                 pass
+            # ...and the same resolution for the mon that walks IN during this turn:
+            # it is still in the reserve here, so _apply_slot_tera never sees it
+            try:
+                _apply_entrant_tera(_bt, _pid, reveals, turn)
+            except Exception:
+                pass
         # a disguised Zoroark is reconstructed with the disguise's types on EITHER
         # side (the |switch| line shows the disguise even to its own owner);
         # substitute Zoroark's real types so type checks resolve
@@ -4333,6 +4746,21 @@ def _fire_turn(
         _bump(stats, "skipped_engine_build_failed")
         return
     turn_findings, parsed, state = evaluated
+    if turn_findings:
+        # HP-FRACTION `onTry` GATE the folded damage roll cannot decide (see
+        # _HP_FRACTION_GATE_MOVES): dropped, not demoted -- the engine's gate is exact
+        # and the disagreement lives entirely inside the spread the fold discarded.
+        _gate_drop = _hp_gate_fold_drops(
+            turn_findings, parsed, snap, u_move, o_move, u_action, o_action, user_pid
+        )
+        if _gate_drop:
+            _before = len(turn_findings)
+            turn_findings = [
+                f for f in turn_findings if _finding_key(f) not in _gate_drop
+            ]
+            stats["hp_gate_fold_drops"] = stats.get("hp_gate_fold_drops", 0) + (
+                _before - len(turn_findings)
+            )
     if illusion_capped and turn_findings:
         # the un-evaluated species hypothesis (see the gate above) makes every
         # finding on this turn undecidable at HARD

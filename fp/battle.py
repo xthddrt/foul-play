@@ -555,6 +555,68 @@ class Battler:
                     m.can_z = False
                 return
 
+            # STRUGGLE is not a locked move slot at all: PS SUBSTITUTES this
+            # entry for an EMPTY move list (sim/pokemon.ts:1109-1111 `} else if
+            # (!moves.length) { moves = [{move: 'Struggle', id: 'struggle',
+            # target: 'randomNormal', disabled: false}]; lockedMove =
+            # 'struggle' }`) and leaves `moveSlots` -- and `lastMove` --
+            # untouched.  `get_move('struggle')` therefore misses and the
+            # generic path below used to `clear()` the moveset and rebuild it as
+            # a single `struggle` slot at the default 1 PP.  That is not a
+            # cosmetic loss: `last_used_move` is a slot INDEX, so it then
+            # resolved to STRUGGLE instead of the move actually used, and
+            # poke-engine correctly failed Encore against it (data/moves.ts:4745
+            # encore onStart -> `move.flags['failencore']`, with struggle
+            # carrying that flag at data/moves.ts:617).  synth86252 T8: Mamoswine
+            # is Choice-locked into Earthquake and Cursed Body Disables it, the
+            # request offers only Struggle, and the observed `|-start|p1a:
+            # Mamoswine|Encore` appeared in NO engine branch.
+            # Keep the tracked moveset (real PP, real last-used-move index) and
+            # express "nothing is selectable" the way the engine already consumes
+            # it -- poke-engine pushes MoveChoice::Struggle itself once no move
+            # passes `add_available_moves` (src/genx/state.rs:506-510).
+            if request_moves[0][constants.ID] == "struggle" and self.active.moves:
+                logger.info(
+                    "Request offers only Struggle - keeping {}'s moveset and "
+                    "disabling every move".format(self.active.name)
+                )
+                for m in self.active.moves:
+                    m.disabled = True
+                    m.can_z = False
+                return
+
+            # RECHARGE is the OTHER pseudo-move PS invents for this slot
+            # (sim/pokemon.ts:973-977) and it has exactly the Struggle defect the
+            # branch above fixes.  Rebuilding the moveset as a single `recharge`
+            # slot at the default 1 PP threw away the real moves, and
+            # `last_used_move` is a slot INDEX - so poke_engine_helpers'
+            # "move not found" fallback (:415) resolved it to `move:0`, i.e. that
+            # 1-PP pseudo-slot.  The engine then decremented it to 0 and Encore's
+            # PS-exact `moveSlot.pp <= 0` guard (data/moves.ts encore onStart)
+            # correctly FAILED - synth137727 T15: Slaking is recharging off Giga
+            # Impact, Quaquaval Encores it, and the observed `|-start|p1a:
+            # Slaking|Encore` appeared in none of the 5 candidate branches.
+            # (Verified: the same engine state with only that slot's PP raised
+            # 1 -> 8 emits `ApplyVolatileStatus SideOne: ENCORE`.)
+            #
+            # Keep the tracked moveset (real PP, real last-used-move index) and
+            # express the recharge the way the engine already consumes it for the
+            # OPPONENT: the `mustrecharge` volatile, which short-circuits
+            # `add_available_moves` and leaves `MoveChoice::None` as the side's
+            # only legal action (poke-engine src/genx/state.rs:1276-1281), exactly
+            # PS's own `trapped` + single-action recharge request.
+            if request_moves[0][constants.ID] == "recharge" and self.active.moves:
+                logger.info(
+                    "Request offers only Recharge - keeping {}'s moveset and "
+                    "setting mustrecharge".format(self.active.name)
+                )
+                for m in self.active.moves:
+                    m.disabled = True
+                    m.can_z = False
+                if "mustrecharge" not in self.active.volatile_statuses:
+                    self.active.volatile_statuses.append("mustrecharge")
+                return
+
         # request JSON gives detailed information about the moves
         # available to the active pkmn. Take those as the source of truth
         self.active.moves.clear()
@@ -1001,6 +1063,10 @@ class Pokemon:
         self.zoroark_disguised_as = None
         self.hp_at_switch_in = self.max_hp
         self.status_at_switch_in = None
+        # Item held when this object last switched IN.  Only an item that changed
+        # DURING a stay can belong to an Illusion bearer wearing this species' face;
+        # anything already established beforehand is this mon's own (illusion_end).
+        self.item_at_switch_in = self.item
         self.terastallized = False
         self.tera_type = None
         self.forme_changed = False

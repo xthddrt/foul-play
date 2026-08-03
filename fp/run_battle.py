@@ -24,6 +24,15 @@ def format_decision(battle, decision):
     # Formats a decision for communication with Pokemon-Showdown
     # If the move can be used as a Z-Move, it will be
 
+    # A recharge turn is the one move request where the engine's only legal
+    # action is `MoveChoice::None`: the `mustrecharge` volatile short-circuits
+    # `add_available_moves` (poke-engine src/genx/state.rs:1276-1281).  PS expects
+    # the `recharge` pseudo-move it invented for that slot (sim/pokemon.ts:973-977),
+    # which owns no moveset entry - so this must be answered before the
+    # `battle.user.active.get_move(decision)` lookup below.
+    if decision == "none":
+        return "/choose move recharge"
+
     if decision.startswith(constants.SWITCH_STRING + " "):
         switch_pokemon = decision.split("switch ")[-1]
         for pkmn in battle.user.reserve:

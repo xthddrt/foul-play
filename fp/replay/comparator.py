@@ -578,6 +578,25 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 and i.side == s
                 and _norm(i.payload) == vol,
             )
+            if not ok and vol == "SUBSTITUTE":
+                # BRANCH-FOLD RESIDUAL, not a mechanic miss.  A Substitute breaks
+                # exactly when the hit's damage reaches its stored HP, but the
+                # engine's Branch model folds the 16 exact rolls into a kill arm and
+                # a survivor MEAN - it fans at the defender-KO threshold only, never
+                # at the substitute-break threshold - so a roll spread that STRADDLES
+                # the sub's HP is presented as the single folded value and no branch
+                # carries the break.  synth132960 T45: Sleep Talk -> Wave Crash, sub
+                # health 59, folded damage 58, while the engine's OWN exact roll set
+                # for that hit is [54,54,54,55,56,57,57,58,59,59,60,60,61,62,63,63] -
+                # 8 of the 16 rolls do break it, i.e. PS's `|-end|Substitute` is
+                # inside the engine's damage model and only the fold misses it.
+                # A branch that damaged the substitute on this side proves the
+                # mechanic ran; the break is then a roll selection the fold cannot
+                # express, the same class as the residual suppressions in the other
+                # direction.  Without that evidence the report still stands.
+                ok = _any_branch(
+                    br, lambda i: i.kind == "DamageSubstitute" and i.side == s
+                )
             if not ok:
                 findings.append(
                     Finding(

@@ -16,6 +16,7 @@ from data.pkmn_sets import (
     PredictedPokemonSet,
 )
 from fp.battle import Pokemon, Battler, Battle
+from fp.battle import base_species_name
 from fp.battle import LastUsedMove
 from fp.battle import DamageDealt
 from fp.battle import StatRange
@@ -517,10 +518,21 @@ def _find_bench_pokemon_by_protocol_name(side, protocol_name: str):
     exact = side.find_pokemon_in_reserves(name)
     if exact is not None:
         return exact
+    # A COSMETIC forme (Gastrodon-East, Alcremie-Rainbow-Swirl) has no pokedex
+    # entry of its own: PS synthesises it from the base species' `cosmeticFormes`
+    # list and sets `baseSpecies` on the fly (sim/dex-species.ts:464-480), and the
+    # bundled pokedex simply aliases the forme id to the BASE entry -- which has
+    # no `baseSpecies` key but whose `name` IS the base species.  Reading both
+    # keys resolves `p1: Gastrodon` to the tracked `gastrodoneast`
+    # (synth95074 Heal Bell, synth94787 Alcremie).
     matches = [
         p
         for p in side.reserve
-        if normalize_name(pokedex.get(p.name, {}).get("baseSpecies", "") or "") == name
+        if name
+        in (
+            normalize_name(pokedex.get(p.name, {}).get("baseSpecies", "") or ""),
+            normalize_name(pokedex.get(p.name, {}).get("name", "") or ""),
+        )
     ]
     return matches[0] if len(matches) == 1 else None
 
@@ -959,8 +971,12 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
     if (
         pkmn is None
         and side.active is not None
-        and side.active.name == temp_pkmn.name
         and not side.active.fainted
+        and (
+            side.active.name == temp_pkmn.name
+            or base_species_name(side.active.name)
+            == base_species_name(temp_pkmn.name)
+        )
     ):
         pkmn = side.active
         side.reserve.append(pkmn)
@@ -999,6 +1015,7 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
         # turns out to be zoroark
         pkmn.hp_at_switch_in = pkmn.hp
         pkmn.status_at_switch_in = pkmn.status
+        pkmn.item_at_switch_in = pkmn.item
 
         side.reserve.remove(pkmn)
 
@@ -1687,6 +1704,32 @@ def move(battle, split_msg):
 
     move_name = normalize_name(split_msg[3].strip().lower())
 
+    # A DANCER COPY THAT NEVER RAN.  `-activate ... ability: Dancer` armed this
+    # marker (see activate()); PS then re-entered runMove and a Choice lock /
+    # Gorilla Tactics aborted the copy in onBeforeMove, printing an UNTAGGED
+    # `|move|<mon>|<Move>||[still]` + `|-fail|` (data/conditions.ts:342-345,
+    # data/abilities.ts:1652-1655).  A copy that actually executed carries
+    # `[from] ability: Dancer` and is handled by the from-tag branch below, so
+    # an untagged line while this marker is set is always the aborted form.
+    # Nothing about this mon's own moveset is revealed, no PP is spent and
+    # `moveUsed()` is never reached (:279-292) -- record nothing.  Only
+    # `activeMoveActions` really happened: runMove increments it on entry
+    # (:217), before the BeforeMove event ran.  Without this the copied dance
+    # was appended as a 5th/6th move and `poke_engine_helpers` truncated the
+    # real moveset away (synth82810: a Choice-Scarf Gardevoir that Traced
+    # Oricorio's Dancer grew Quiver Dance and Revelation Dance; synth80012's
+    # Oricorio grew Swords Dance).
+    dancer_copy_pending = getattr(pkmn, "dancer_copy_pending", False)
+    pkmn.dancer_copy_pending = False
+    if dancer_copy_pending and not has_non_lockedmove_from_tag(split_msg):
+        logger.info(
+            "{}'s Dancer copy of {} was aborted before it ran - not recording it".format(
+                pkmn.name, move_name
+            )
+        )
+        pkmn.active_move_actions += 1
+        return
+
     # HP-CERTIFYING FIXED-DAMAGE MOVES (fp/hp_certificate.py): Endeavor states
     # `target.hp == attacker.hp` and the Super Fang family states
     # `target.hp -= max(1, target.hp // 2)`.  Arm the identity on the TARGET now
@@ -1697,6 +1740,50 @@ def move(battle, split_msg):
     zoroark_from_reserves = side.find_pokemon_in_reserves(
         "zoroark"
     ) or side.find_pokemon_in_reserves("zoroarkhisui")
+
+    # SIDECAR-PROVEN disguise.  The two heuristics below are gated off wherever
+    # the exact-teams sidecar is loaded (`zoroark_inference_allowed`), but the
+    # sidecar PROVES the same thing outright: movesets are fixed for the whole
+    # battle, so a move the shown species provably does not own and that side's
+    # Illusion bearer provably does cannot have come from the shown species (PS
+    # renders the actor through `toString()` -> the illusion's name,
+    # sim/pokemon.ts:531).  `_record_used_move` already credits the MOVE to the
+    # bearer, but it leaves the DISGUISE standing as the active, so every later
+    # `-damage` -- and the `|faint|` -- lands on the wrong party member, and the
+    # protocol never corrects it: PS adds the `|faint|` line while the illusion
+    # is still up and only clears it afterwards (sim/battle.ts:2549 vs :2560),
+    # so a bearer that dies disguised is never announced at all.
+    # synth84252: p2's Zoroark spent T10-T13 wearing "Deoxys" and died there, so
+    # the reconstruction fainted the REAL Deoxys-Defense; when it genuinely
+    # switched in on T18 the engine was handed a 0-HP entrant, produced no Close
+    # Combat resolution whatsoever, and the observed `-unboost def`/`-unboost
+    # spd` + White Herb `-enditem` were unreachable in every branch.
+    if (
+        is_opponent(battle, split_msg)
+        and not zoroark_inference_allowed(battle)
+        and zoroark_from_reserves is not None
+        and pkmn is not zoroark_from_reserves
+        and "transform" not in pkmn.volatile_statuses
+        and "from" not in split_msg[-1]
+    ):
+        shown_moves = _sidecar_moveset(battle, side, pkmn)
+        bearer_moves = _sidecar_moveset(battle, side, zoroark_from_reserves)
+        if (
+            shown_moves is not None
+            and bearer_moves is not None
+            and move_name not in shown_moves
+            and move_name in bearer_moves
+        ):
+            logger.info(
+                "{} cannot own {} but {} can - the active is the disguised {}".format(
+                    pkmn.name,
+                    move_name,
+                    zoroark_from_reserves.name,
+                    zoroark_from_reserves.name,
+                )
+            )
+            _switch_active_with_zoroark_from_reserves(side, zoroark_from_reserves)
+            pkmn = zoroark_from_reserves
 
     # in battle factory we can deduce that there is a zoroark in front of us
     # if we see a move that is not in the known moveset and a zoroark is in the reserves
@@ -2313,7 +2400,9 @@ def reset_substitute_absorb_refusals():
 # SUBSTITUTE_ABSORB_REFUSALS and exported per-name into the checker's stats
 # (fp/replay/checker.py:2915-2919), so the gate loses no visibility.  Every other
 # bucket stays at error level: those DO mean something upstream is wrong.
-_EXPECTED_SUBSTITUTE_REFUSALS = frozenset(("multi_hit_context", "delayed_move"))
+_EXPECTED_SUBSTITUTE_REFUSALS = frozenset(
+    ("multi_hit_context", "delayed_move", "callback_damage")
+)
 
 
 def _refuse_substitute_absorb(reason, detail=""):
@@ -2499,10 +2588,29 @@ def _substitute_absorbed_damage_interval(battle, defending_pkmn, ctx):
         return _refuse_substitute_absorb(
             "delayed_move", "{} into {}".format(ctx["move"], defending_pkmn.name)
         )
-    if ctx["hits"] != 1:
-        # one `-activate` per landed hit of a multi-hit move, but
-        # calculate_damage_rolls_full takes no hit index (it returns the flat
-        # whole-move set), so subtracting it once per ping would over-count.
+    if (
+        ctx["hits"] != 1
+        or all_move_json.get(ctx["move"], {}).get("multihit")
+        or ctx["move"] == "beatup"
+    ):
+        # `calculate_damage_rolls_full` takes no hit index: for a multi-hit move
+        # it previews ONE hit at the move's nominal `Choice::base_power`, which
+        # is the base power of no particular strike -- Triple Axel's engine base
+        # is 40 (poke-engine src/choices.rs:18434-18446) while the real per-hit
+        # powers 20/40/60 are applied only on the search path, in
+        # `build_multihit_damage_plans` (src/genx/generate_instructions.rs:
+        # 14014-14025).  So the set cannot be subtracted for ANY multi-hit move,
+        # whatever the ping count.  The old `hits != 1` test only caught a move
+        # that produced MORE THAN ONE absorption ping and missed the common
+        # shape where hit 1 is absorbed and hit 2 breaks the sub, which emits
+        # exactly one `-activate` (synth82368 T27: Technician Cinccino's Triple
+        # Axel into Enamorus' 61 hp sub previewed 96-114 -- hit 2's damage --
+        # against an honest hit-1 set of 49-58, producing a bogus
+        # [survival_contradiction] while both the sub HP and the engine were
+        # right).  Beat Up is listed by name because PS builds its hit count in
+        # `onModifyMove` (data/moves.ts:1165-1168, one hit per healthy team
+        # member, each at its own basePowerCallback power), so the static dex
+        # entry this reads carries no `multihit` key.
         return _refuse_substitute_absorb(
             "multi_hit_context", "{} x{}".format(ctx["move"], ctx["hits"])
         )
@@ -2531,6 +2639,19 @@ def _substitute_absorbed_damage_interval(battle, defending_pkmn, ctx):
         return _refuse_substitute_absorb("empty_roll_set", ctx["move"])
     lo, hi = int(min(rolls)), int(max(rolls))
     if hi <= 0:
+        # An all-zero roll set is the CORRECT output of the active-vs-active
+        # preview for a move whose damage the FORMULA does not produce: PS gives
+        # these `basePower: 0` plus a `damageCallback` (data/moves.ts counter
+        # :2987 / mirrorcoat :11986 / metalburst / comeuppance / superfang /
+        # endeavor / psywave / finalgambit / ruination / naturesmadness /
+        # guardianofalola), and poke-engine mirrors that with a `Choice` whose
+        # base_power is left at 0, pushing the real amount from `choice_effects`
+        # (src/genx/choice_effects.rs:2204 MIRRORCOAT doubles
+        # `damage_dealt.damage`).  Nothing upstream is wrong and nothing is
+        # derivable, so this is an EXPECTED refusal -- unlike a zero on a move
+        # that DOES have base power, which keeps its error-level report.
+        if all_move_json.get(ctx["move"], {}).get("basePower") == 0:
+            return _refuse_substitute_absorb("callback_damage", ctx["move"])
         return _refuse_substitute_absorb("zero_damage", ctx["move"])
     if _control("FP_CONTROL_SUB_POINT_ESTIMATE"):
         # NEGATIVE CONTROL: the pre-wave point estimate -- the 0.925 "median"
@@ -2655,6 +2776,23 @@ def activate(battle, split_msg, msg_lines=None, msg_index=None):
         ability = normalize_name(split_msg[3].split(":")[-1].strip())
         logger.info("Setting {}'s ability to {}".format(pkmn.name, ability))
         pkmn.ability = ability
+
+        # DANCER: PS announces the copy with `|-activate|<mon>|ability: Dancer`
+        # and then RE-ENTERS runMove for that mon with `externalMove: true`
+        # (sim/battle-actions.ts:338-341).  The copy's own `|move|` line
+        # normally carries `[from] ability: Dancer` (:448-457, built from
+        # `sourceEffect`), but when a Choice lock or Gorilla Tactics aborts it
+        # in onBeforeMove the line is printed by the CONDITION instead, as a
+        # bare `addMove('move', pokemon, move.name)` + `attrLastMove('[still]')`
+        # + `|-fail|` (data/conditions.ts:342-345, data/abilities.ts:1652-1655)
+        # -- no `[from]` tag, and textually IDENTICAL to a self-chosen move that
+        # was `[still]`ed (attrLastMove blanks the target field for any move
+        # that plays no animation, sim/battle.ts:3128-3132, which is where the
+        # corpus's thousands of legitimate `|move|X|Roost||[still]` lines come
+        # from).  So the copy has to be recognised from THIS line, not from the
+        # |move| line's text.  One-shot marker, consumed by `move()`/`cant()`.
+        if ability == "dancer":
+            pkmn.dancer_copy_pending = True
 
         # Battle Bond announces its once-per-battle trigger as
         # `|-activate|<pkmn>|ability: Battle Bond`
@@ -3800,6 +3938,18 @@ def _switch_active_with_zoroark_from_reserves(
     pkmn.volatile_statuses.clear()
     pkmn.volatile_status_durations.clear()
 
+    # ...and the HP the disguise ACCUMULATED belongs to the zoroark too (the
+    # fraction transfer above already gave it away), so the impersonated mon
+    # rolls back to what IT last held.  `switch_or_drag` captures
+    # `hp_at_switch_in` BEFORE the |switch| line's health -- which PS takes from
+    # the REAL entrant, not the illusion (sim/pokemon.ts:544-552) -- overwrites
+    # it, so it is the impersonated mon's own last true HP.  `illusion_end` does
+    # exactly this on a |replace|; without it here the disguise keeps the
+    # zoroark's HP and enters its own next stay already half dead.
+    if pkmn.hp != pkmn.hp_at_switch_in:
+        pkmn.hp = pkmn.hp_at_switch_in
+        hp_certificate.clear(pkmn, "illusion rollback")
+
     if pkmn.terastallized:
         pkmn.terastallized = False
         pkmn.tera_type = None
@@ -3853,9 +4003,20 @@ def update_ability(battle, split_msg):
             )
             other_side.active.ability = ability
     elif ability == "asone":
-        if side.active.name == "calyrexice":
+        # PS announces BOTH formes' ability as the bare `As One`
+        # (data/abilities.ts asoneglastrier / asonespectrier onStart:
+        # `this.add('-ability', pokemon, 'As One')`), so the forme has to come
+        # from the SPECIES.  An Imposter Ditto that copied the ability keeps the
+        # name `ditto`; the identity it copied is on `transformed_into`, which
+        # the `-transform` handler stamps BEFORE this line arrives (PS emits
+        # `|-transform|...|[from] ability: Imposter` first, then the copied
+        # ability's onStart).  Without it synth147595's Ditto -- a copy of
+        # Calyrex-SHADOW -- was given asoneglastrier, i.e. Chilling Neigh in
+        # place of Grim Neigh, on top of the warning.
+        species = getattr(side.active, "transformed_into", None) or side.active.name
+        if species == "calyrexice":
             ability = "asoneglastrier"
-        elif side.active.name == "calyrexshadow":
+        elif species == "calyrexshadow":
             ability = "asonespectrier"
         else:
             logger.warning(
@@ -3904,6 +4065,19 @@ def illusion_end(battle, split_msg):
         previous_boosts = side.active.boosts
         previous_status = side.active.status
         previous_item = side.active.item
+        # The disguise OBJECT is also the real party member of the impersonated
+        # species, so its item is the zoroark's only if it CHANGED while the disguise
+        # stood on the field.  synth89936: the real Dialga's Leftovers were Knocked Off
+        # on T7, and a zoroark wearing Dialga's face on T30 inherited that `None` --
+        # which, unlike UNKNOWN_ITEM, `apply_exact_team`
+        # (fp/replay/damage_membership.py:2261) correctly refuses to overwrite -- so the
+        # zoroark reached the engine holding nothing and the T31 `-enditem|p2a: Zoroark|
+        # Choice Specs|[from] move: Knock Off` had no branch that could remove it.
+        # Unchanged item => leave both mons alone: the disguise keeps its own knowledge
+        # and the zoroark stays UNKNOWN for the sidecar / inference to fill.
+        item_moved_under_disguise = previous_item != getattr(
+            side.active, "item_at_switch_in", constants.UNKNOWN_ITEM
+        )
         # Everything the disguise ACCUMULATED while it stood on the field
         # happened to the physical zoroark, so it moves across with the swap --
         # not just hp/boosts/status/item.  The sleep counters go with the sleep
@@ -3917,6 +4091,20 @@ def illusion_end(battle, split_msg):
         previous_volatile_durations = dict(side.active.volatile_status_durations)
         previous_sleep_turns = side.active.sleep_turns
         previous_rest_turns = side.active.rest_turns
+        # The tera goes with the physical mon too.  A side terastallizes at most
+        # once (PS sim/battle-actions.ts:1946 `for (const ally of
+        # pokemon.side.pokemon) ally.canTerastallize = null`), so a
+        # `|-terastallize|` printed against the disguise belongs to the ZOROARK
+        # and must not be left stamped on the impersonated party member -- which
+        # is a real mon that comes back later.  `_switch_active_with_zoroark_
+        # from_reserves` already does exactly this (fp/battle_modifier.py:3923
+        # and :3953); the |replace| path did not.  synth167736: Zoroark-Hisui
+        # teras Normal on T2 wearing Serperior's face, and the genuine Serperior
+        # entered on T17 still typed NORMAL, so Stomping Tantrum was computed
+        # unresisted (rolls 62-74 instead of the Grass-resisted 31-37) and its
+        # 62-hp Substitute absorption came out [survival_contradiction].
+        previous_terastallized = side.active.terastallized
+        previous_tera_type = side.active.tera_type
 
         zoroark_from_switch_string = Pokemon.from_switch_string(split_msg[3])
         zoroark_reserve_index = None
@@ -3926,7 +4114,8 @@ def illusion_end(battle, split_msg):
                 break
 
         pkmn_disguised_as = side.active
-        pkmn_disguised_as.item = constants.UNKNOWN_ITEM
+        if item_moved_under_disguise:
+            pkmn_disguised_as.item = constants.UNKNOWN_ITEM
         side.reserve.append(pkmn_disguised_as)
         if zoroark_reserve_index is not None:
             reserve_zoroark = side.reserve.pop(zoroark_reserve_index)
@@ -4021,11 +4210,17 @@ def illusion_end(battle, split_msg):
         hp_certificate.clear(side.active, "illusion HP transfer")
         side.active.boosts = previous_boosts
         side.active.status = previous_status
-        side.active.item = previous_item
+        if item_moved_under_disguise:
+            side.active.item = previous_item
         side.active.volatile_statuses = previous_volatiles
         side.active.volatile_status_durations.update(previous_volatile_durations)
         side.active.sleep_turns = previous_sleep_turns
         side.active.rest_turns = previous_rest_turns
+        side.active.terastallized = previous_terastallized
+        side.active.tera_type = previous_tera_type
+        if pkmn_disguised_as.terastallized:
+            pkmn_disguised_as.terastallized = False
+            pkmn_disguised_as.tera_type = None
 
         # a |replace| is not a switch-in: the zoroark was the acting pokemon
         # all along, so the move actions counted under the disguise carry over
@@ -4383,6 +4578,17 @@ def cant(battle, split_msg):
         side = battle.user
         other_side = battle.opponent
         opponent = False
+
+    # Consume any pending Dancer-copy marker (see activate()/move()).  A copy
+    # aborted by par/slp/frz/flinch/Truant prints `|cant|` instead of a `|move|`
+    # line (corpus: `|-activate|p1a: Oricorio|ability: Dancer` / `|cant|p1a:
+    # Oricorio|par`, after which Oricorio still takes its OWN untagged action),
+    # and an ability-flavored `|cant|` names the BLOCKER rather than the dancer
+    # -- clear BOTH actives so the one-shot marker can never leak onto a real
+    # move.  Deliberately only clears: this line's own accounting is unchanged.
+    for _dancer_side in (battle.user, battle.opponent):
+        if _dancer_side.active is not None:
+            _dancer_side.active.dancer_copy_pending = False
 
     # Ability-flavored |cant| lines name the ABILITY HOLDER in the pokemon
     # slot, not the pokemon that failed to act. PS emits them as
