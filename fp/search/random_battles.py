@@ -319,42 +319,110 @@ def get_all_remaining_sets_for_revealed_pkmn(battle: Battle) -> dict:
     return ret
 
 
+def largest_remainder_allocation(weights, n: int) -> list[int]:
+    """Allocate `n` indivisible worlds across `weights` proportionally.
+
+    Hamilton / largest-remainder: everyone gets their floor share, and the
+    leftover seats go to the largest fractional remainders (ties by index, so
+    the result is DETERMINISTIC given the posterior). A candidate whose
+    posterior is at least 1/(2n) gets a seat unless it loses an exact remainder
+    TIE to a lower-index candidate (e.g. [1,1,1] over 2 worlds -> [1,1,0]) --
+    an independent `random.choices` draw per world gives such a set only a
+    ~1-e^-0.5 = 39% chance of appearing at all, and a decision that never sees
+    a set cannot hedge against it.
+    """
+    n = int(n)
+    weights = [max(0.0, float(w)) for w in weights]
+    total = sum(weights)
+    if n <= 0 or not weights:
+        return [0] * len(weights)
+    if total <= 0:
+        # no information: spread the worlds as evenly as the count allows
+        shares = [n / len(weights)] * len(weights)
+    else:
+        shares = [n * w / total for w in weights]
+    allocation = [int(s) for s in shares]
+    remaining = n - sum(allocation)
+    order = sorted(
+        range(len(weights)), key=lambda i: (-(shares[i] - allocation[i]), i)
+    )
+    for i in order[:remaining]:
+        allocation[i] += 1
+    return allocation
+
+
+def _stratified_active_plan(sets, weights, num_battles):
+    """`[(set, sample_chance)] * num_battles` -- one entry per world.
+
+    Each world carries the posterior probability of the set it was given,
+    divided by the number of worlds that set received, so the chances sum to
+    exactly 1 over the whole batch (that is the invariant `_aggregate_results`
+    in fp/search/selection.py relies on when it weights each world's policy by
+    `sample_chance`, and `pooled_share` is compared against ABSOLUTE thresholds
+    there, so a deflated sum would silently tighten those gates).
+
+    The posterior is renormalized over the REPRESENTED sets: when there are
+    more candidate sets than worlds, the sets that got no seat would otherwise
+    take their mass out of the batch entirely. Within the represented sets the
+    relative weights are still exactly the posterior's.
+    """
+    allocation = largest_remainder_allocation(weights, num_battles)
+    represented_total = sum(w for w, c in zip(weights, allocation) if c > 0)
+    represented_count = sum(1 for c in allocation if c > 0)
+    plan = []
+    for pkmn_set, weight, count in zip(sets, weights, allocation):
+        if count <= 0:
+            continue
+        if represented_total > 0:
+            probability = weight / represented_total
+        else:
+            probability = 1 / represented_count
+        plan.extend([(pkmn_set, probability / count)] * count)
+    return plan
+
+
 def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, float)]:
     revealed_pkmn_sets = get_all_remaining_sets_for_revealed_pkmn(deepcopy(battle))
     datasets = _datasets_for(battle)
+
+    # STRATIFIED allocation of the worlds across the ACTIVE's candidate sets
+    # (wave 2 item 5). The candidate list and its weights do not depend on the
+    # world, so the split is decided once, up front, instead of being redrawn
+    # independently `num_battles` times.
+    active_plan = None
+    root_active = battle.opponent.active
+    if root_active is not None and revealed_pkmn_sets.get(root_active.name):
+        certain_sets, certain_moves = (None, None)
+        if battle.user.active is not None and not getattr(
+            root_active, "transformed_into", None
+        ):
+            certain_sets, certain_moves = revenge_certain_sets(
+                root_active, battle.user.active, revealed_pkmn_sets[root_active.name]
+            )
+        if certain_sets:
+            logger.info(
+                "Certain-revenge entry: {} sampled with {} only".format(
+                    root_active.name, sorted(certain_moves)
+                )
+            )
+            plan_sets = certain_sets
+            plan_weights = [s.pkmn_set.count for s in certain_sets]
+        else:
+            plan_sets = revealed_pkmn_sets[root_active.name]
+            plan_weights = entry_weighted_counts(root_active, plan_sets)
+        active_plan = _stratified_active_plan(plan_sets, plan_weights, num_battles)
+    else:
+        certain_sets, certain_moves = (None, None)
 
     sampled_battles = []
     for index in range(num_battles):
         logger.info("Sampling battle {}".format(index))
         battle_copy = deepcopy(battle)
 
+        sample_chance = 1 / num_battles
         active = battle_copy.opponent.active
         if revealed_pkmn_sets[active.name]:
-            certain_sets, certain_moves = (None, None)
-            if battle_copy.user.active is not None and not getattr(
-                active, "transformed_into", None
-            ):
-                certain_sets, certain_moves = revenge_certain_sets(
-                    active, battle_copy.user.active, revealed_pkmn_sets[active.name]
-                )
-            if certain_sets:
-                if index == 0:
-                    logger.info(
-                        "Certain-revenge entry: {} sampled with {} only".format(
-                            active.name, sorted(certain_moves)
-                        )
-                    )
-                pkmn_full_set = random.choices(
-                    certain_sets,
-                    weights=[s.pkmn_set.count for s in certain_sets],
-                )[0]
-            else:
-                pkmn_full_set = random.choices(
-                    revealed_pkmn_sets[active.name],
-                    weights=entry_weighted_counts(
-                        active, revealed_pkmn_sets[active.name]
-                    ),
-                )[0]
+            pkmn_full_set, sample_chance = active_plan[index]
             if getattr(active, "transformed_into", None):
                 # a transformed mon's moves/stats/ability are COPIES that must
                 # stay untouched; only its true item is worth sampling (the
@@ -386,7 +454,7 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
 
         populate_randombattle_unrevealed_pkmn(battle_copy)
         battle_copy.opponent.lock_moves()
-        sampled_battles.append((battle_copy, 1 / num_battles))
+        sampled_battles.append((battle_copy, sample_chance))
 
     return sampled_battles
 

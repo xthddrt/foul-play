@@ -41,6 +41,11 @@ from fp.battle import boost_multiplier_lookup
 from fp import hp_certificate
 from fp.inference import (
     MOVE_END_STRINGS,
+    clear_hit_flags,
+    stamp_hit_flags,
+    crit,
+    hitcount,
+    side_from_pokemon_identifier,
     can_have_priority_modified,
     can_have_speed_modified,
     is_opponent,
@@ -51,6 +56,7 @@ from fp.inference import (
     get_damage_dealt,
     update_dataset_possibilities,
     check_heavydutyboots,
+    sieve_sets_by_max_hp,
 )
 
 
@@ -244,14 +250,7 @@ def unlikely_to_have_choice_item(move_name):
 def _side_from_pokemon_identifier(battle, identifier):
     """Resolve a 'p1a: Nickname' protocol identifier to the Battler it belongs
     to. Returns None when the identifier is missing/unrecognised."""
-    identifier = identifier.strip()
-    if not identifier:
-        return None
-    if identifier.startswith(battle.user.name):
-        return battle.user
-    if identifier.startswith(battle.opponent.name):
-        return battle.opponent
-    return None
+    return side_from_pokemon_identifier(battle, identifier)
 
 
 def _side_of_of_tag(battle, split_msg):
@@ -1418,9 +1417,18 @@ def sethp(battle, split_msg):
         # instead of demoting it back to an estimate.
         if pain_split and getattr(pkmn, "hp_pain_split_certified", False):
             pkmn.hp_pain_split_certified = False
+            prior_certificate = (
+                getattr(pkmn, "hp_certificate_hp", None),
+                getattr(pkmn, "hp_certificate_pct", None),
+            )
             if hp_certificate.certify(
                 pkmn, pkmn.hp, "pain split (confirmed by -sethp)", shown
             ):
+                # ITEM 4: Pain Split's average is an ABSOLUTE hp, and this line
+                # shows the percent it rendered as
+                _sieve_max_hp_from_absolute_certificate(
+                    battle, pkmn, prior_certificate
+                )
                 return
         hp_certificate.apply_display(pkmn, shown)
     else:
@@ -1449,6 +1457,130 @@ def sethp(battle, split_msg):
                     "pain split (both sides := floor((a+b)/2))",
                 ):
                     opp.hp_pain_split_certified = True
+
+
+# ---------------------------------------------------------------------------
+# CHIP-DAMAGE MAX-HP SIEVE (sampling wave 2, item 3)
+#
+# Every residual below is an exact integer function of max HP in PS, so the two
+# percent displays it sits between constrain max HP directly (see
+# `hp_certificate.max_hp_consistent_with_residual`).  Only residuals whose size
+# depends on NOTHING we have to guess are listed: Leech Seed's amount is the
+# DRAINER's business, Rocky Helmet's the attacker's, and an ability like
+# Heatproof or Magic Guard would change the formula without changing the tag.
+# ---------------------------------------------------------------------------
+def _residual_max_hp_formula(battle, side, pkmn, split_msg):
+    """`(amount_of_max, healing)` for this residual line, or None.
+
+    `amount_of_max(max_hp)` is PS's exact integer amount; `healing` is the
+    direction.  Returning None means "no formula we are sure of" -- the honest
+    answer, since a wrong formula produces a FALSE elimination.
+    """
+    if len(split_msg) < 5:
+        return None
+    healing = split_msg[1] == "-heal"
+    tag = None
+    for msg in split_msg[4:]:
+        if msg.startswith("[from]"):
+            tag = normalize_name(msg[len("[from]") :])
+            break
+    if tag is None:
+        return None
+
+    if tag == "brn" and not healing:
+        return (lambda m: m // 16), False
+    if tag == "psn" and not healing:
+        if constants.TOXIC in split_msg[3]:
+            # data/statuses.ts tox onResidual: the stage is incremented BEFORE
+            # the damage, and foul-play's TOXIC_COUNT is incremented after this
+            # line is parsed, so the stage in force here is count + 1.
+            stage = side.side_conditions[constants.TOXIC_COUNT] + 1
+            return (lambda m: max(1, m // 16) * stage), False
+        return (lambda m: m // 8), False
+    if tag in ("itemleftovers", "itemblacksludge"):
+        if healing:
+            return (lambda m: m // 16), True
+        return (lambda m: m // 8), False
+    if tag == "itemlifeorb" and not healing:
+        return (lambda m: m // 10), False
+    if tag == "sandstorm" and not healing:
+        return (lambda m: m // 16), False
+    if tag == "grassyterrain" and healing:
+        return (lambda m: m // 16), True
+    if tag == "stealthrock" and not healing:
+        # data/moves.ts stealthrock onEntryHazard:
+        # damage(maxhp * 2**clamp(typeMod, -6, 6) / 8)
+        type_mod = type_effectiveness_modifier("rock", pkmn.types)
+        return (lambda m: int(m * type_mod) // 8), False
+    if tag == "spikes" and not healing:
+        # data/moves.ts spikes onEntryHazard: damage(maxhp * (2 + layers) / 24)
+        layers = side.side_conditions[constants.SPIKES]
+        if not 1 <= layers <= 3:
+            return None
+        return (lambda m: (m * (2 + layers)) // 24), False
+    return None
+
+
+def _sieve_max_hp_from_residual_line(battle, side, pkmn, split_msg):
+    """Sieve the opponent's candidate sets with a residual `-damage`/`-heal`.
+
+    Runs BEFORE the display is applied, so `hp_display_pct` is still the
+    percent this mon was showing when the residual was computed.  A mon that
+    has never shown a percent is at full HP by construction
+    (`hp_certificate.init_pokemon`), i.e. 100.
+    """
+    if pkmn is None or getattr(pkmn, "max_hp_exact", False):
+        return
+    if constants.FNT in split_msg[3]:
+        # a residual clamped to 0 only bounds its own amount from below
+        return
+    if hp_certificate.exact_display_hp(split_msg[3]) is not None:
+        return
+    formula = _residual_max_hp_formula(battle, side, pkmn, split_msg)
+    if formula is None:
+        return
+    try:
+        pct_after = int(split_msg[3].split("/")[0])
+    except ValueError:
+        return
+    pct_before = getattr(pkmn, "hp_display_pct", None)
+    if pct_before is None:
+        pct_before = 100
+    amount_of_max, healing = formula
+    sieve_sets_by_max_hp(
+        battle,
+        pkmn,
+        lambda max_hp: hp_certificate.max_hp_consistent_with_residual(
+            max_hp, pct_before, pct_after, amount_of_max, healing
+        ),
+        "residual {}/100 -> {}/100".format(pct_before, pct_after),
+    )
+
+
+def _sieve_max_hp_from_absolute_certificate(battle, pkmn, prior_certificate):
+    """Item 4: an ABSOLUTE certified HP shown as a percent states which max HPs
+    could have produced that percent (Endeavor, Pain Split, Super Fang, a
+    full-heal marker).
+
+    `prior_certificate` is the (hp, pct) pair held before this line, so a
+    certificate that merely SURVIVED the line is not re-sieved. A max-RELATIVE
+    certificate (`hp_certificate_fraction`) says nothing -- `display_pct(max,
+    max) == 100` for every max -- and is skipped.
+    """
+    if pkmn is None or getattr(pkmn, "max_hp_exact", False):
+        return
+    if getattr(pkmn, "hp_certificate_fraction", None) is not None:
+        return
+    hp = getattr(pkmn, "hp_certificate_hp", None)
+    pct = getattr(pkmn, "hp_certificate_pct", None)
+    if not hp or pct is None or (hp, pct) == prior_certificate:
+        return
+    sieve_sets_by_max_hp(
+        battle,
+        pkmn,
+        lambda max_hp: hp_certificate.max_hp_consistent_with_absolute(max_hp, hp, pct),
+        "absolute hp {} shown as {}/100".format(hp, pct),
+    )
 
 
 def heal_or_damage(battle, split_msg):
@@ -1480,6 +1612,13 @@ def heal_or_damage(battle, split_msg):
         # carried as a function of max HP, not frozen -- gate-5 B5)
         prior_fraction = getattr(pkmn, "hp_certificate_fraction", None)
         prior_halvings = getattr(pkmn, "hp_certificate_halvings", 0)
+        prior_certificate = (
+            getattr(pkmn, "hp_certificate_hp", None),
+            getattr(pkmn, "hp_certificate_pct", None),
+        )
+        # ITEM 3: before the display is folded in, while `hp_display_pct` still
+        # names the percent this mon was showing when the residual was computed
+        _sieve_max_hp_from_residual_line(battle, side, pkmn, split_msg)
         if constants.FNT in split_msg[3]:
             hp_certificate.set_exact(pkmn, 0)
             hp_certificate.disarm(pkmn)
@@ -1522,6 +1661,10 @@ def heal_or_damage(battle, split_msg):
                 )
             else:
                 hp_certificate.disarm(pkmn)
+
+        # ITEM 4: a certificate filed by THIS line pins an absolute HP against
+        # the percent the same line showed
+        _sieve_max_hp_from_absolute_certificate(battle, pkmn, prior_certificate)
 
     else:
         side = battle.user
@@ -2700,7 +2843,7 @@ def _slot_of_tag(token):
     return token.split(":")[0].strip()
 
 
-def _substitute_hit_context(msg_lines, msg_index, defender_tag):
+def _substitute_hit_context(msg_lines, msg_index, defender_tag, crit=False):
     """Identify the hit whose damage the `-activate ... move: Substitute
     |[damage]` at `msg_lines[msg_index]` is reporting.
 
@@ -2715,11 +2858,17 @@ def _substitute_hit_context(msg_lines, msg_index, defender_tag):
     this same context produced for this defender: a multi-hit move emits one per
     landed hit, and the engine's damage preview has no hit index, so a caller
     must refuse rather than subtract a whole-move roll per hit.
+
+    `crit` is the defender's UNIFORM crit stamp (item 1), not a private
+    backwards scan for `|-crit|`: the two used to be derived independently and
+    could disagree, and picking the wrong arm of the roll set here silently
+    corrupts the tracked substitute HP.  It is passed in because this function
+    sees only protocol lines, never the battle.
     """
     if not msg_lines or msg_index is None:
         return None
     defender_slot = _slot_of_tag(defender_tag)
-    crit = False
+    crit = bool(crit)
     hits = 0
     lo = None
     for i in range(msg_index - 1, -1, -1):
@@ -2727,9 +2876,7 @@ def _substitute_hit_context(msg_lines, msg_index, defender_tag):
         if len(parts) < 2:
             continue
         act = parts[1].strip()
-        if act == "-crit" and len(parts) > 2 and _slot_of_tag(parts[2]) == defender_slot:
-            crit = True
-        elif act == "move" and len(parts) > 3:
+        if act == "move" and len(parts) > 3:
             lo = i
             ctx = {
                 "kind": "move",
@@ -2737,6 +2884,7 @@ def _substitute_hit_context(msg_lines, msg_index, defender_tag):
                 "move": normalize_name(parts[3]),
                 "crit": crit,
                 "defender_slot": defender_slot,
+                "opener_index": i,
             }
             break
         elif (
@@ -2750,6 +2898,7 @@ def _substitute_hit_context(msg_lines, msg_index, defender_tag):
                 "move": normalize_name(parts[3].split(":")[-1]),
                 "crit": crit,
                 "defender_slot": defender_slot,
+                "opener_index": i,
             }
             break
         elif act in _HIT_CONTEXT_BOUNDARIES:
@@ -3023,6 +3172,14 @@ def activate(battle, split_msg, msg_lines=None, msg_index=None):
                 prior_lo = prior_hi
             try:
                 ctx = _substitute_hit_context(msg_lines, msg_index, split_msg[2])
+                if ctx is not None:
+                    # item 1: the crit arm is the defender's UNIFORM stamp.
+                    # Stamping this context's own lines here is idempotent with
+                    # the dispatch-table handlers and makes the flag correct for
+                    # a caller holding the block but not replaying it line by
+                    # line (a delayed move opens no |move| line of its own).
+                    stamp_hit_flags(battle, msg_lines[ctx["opener_index"] + 1 :])
+                    ctx["crit"] = bool(getattr(pkmn, "crit_this_turn", False))
                 interval = _substitute_absorbed_damage_interval(battle, pkmn, ctx)
             except Exception as e:
                 # LOUD, and counted: a derivation that blew up is a refusal, not
@@ -6000,6 +6157,9 @@ def turn(battle, split_msg):
     logger.info("")
     logger.info("Turn: {}".format(battle.turn))
 
+    # no hit context is open at a turn boundary (item 1)
+    clear_hit_flags(battle)
+
     # PS `nextTurn` clears `statsRaisedThisTurn` on every active mon -- but the whole block
     # is guarded by `if (this.turn !== 1)` (sim/battle.ts:1673-1675), and `|turn|N` is
     # emitted by `nextTurn` AFTER it incremented `this.turn`, so the comparison here is
@@ -6114,6 +6274,8 @@ def process_battle_updates(battle: Battle):
             "-enditem": remove_item,
             "-immune": immune,
             "-miss": miss,
+            "-crit": crit,
+            "-hitcount": hitcount,
             "-ability": update_ability,
             "detailschange": form_change,
             "replace": illusion_end,
@@ -6135,6 +6297,12 @@ def process_battle_updates(battle: Battle):
             "turn": turn,
             "noinit": noinit,
         }
+
+        # A `|move|` opens a fresh hit context: the crit/hitcount stamps of the
+        # previous one must not leak into it (item 1). `|turn|` clears them too,
+        # for the residual/entry-hazard lines that belong to no move at all.
+        if action == "move":
+            clear_hit_flags(battle)
 
         function_to_call = battle_modifiers_lookup.get(action)
         if function_to_call is not None:

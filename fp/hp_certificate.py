@@ -235,6 +235,72 @@ def estimate_from_display(pct, max_hp) -> int:
 
 
 # ---------------------------------------------------------------------------
+# MAX-HP BAND (sampling wave 2, items 3 and 4)
+#
+# `display_pct` is the only thing standing between us and the opponent's max
+# HP.  It is a function of BOTH hp and max_hp, so a single percent says little
+# -- but two percents joined by an amount that is a KNOWN function of max HP
+# (a residual: `max//16` burn, `max//8` poison, ...) or one percent joined to
+# an ABSOLUTE hp (an Endeavor / Pain Split / Super Fang identity) constrains
+# max_hp directly, and the constraints intersect across the whole game.
+#
+# The test is exact, not approximate: a candidate max M is admissible iff there
+# EXISTS an integer hp inside the first display's band such that applying the
+# residual lands inside the second display's band.  Both bands come from PS's
+# own `getHealth` (sim/pokemon.ts:2079-2086) via `display_bounds`, so there is
+# no rounding model of our own to be wrong about.
+#
+# The admissible set is NOT an interval -- it is a lattice scattered over the
+# whole range -- so no running [lo, hi] band is kept.  Measured over 429 real
+# residual transitions from the holdout corpora: the [min, max] hull of a
+# single observation covers 997 of 1000 candidate max HPs (it retains
+# essentially nothing), while exact membership admits only 91% of them per
+# event and, intersected across a game, 17%-57% of the range is ruled out.
+# So each observation is applied EXACTLY, as a predicate, at the moment it
+# happens; the intersection across events accumulates in the candidate-set
+# ledger (`rejected_set_signatures`) rather than in a band, which is both
+# lossless and free of per-world deepcopy cost.
+# ---------------------------------------------------------------------------
+def max_hp_consistent_with_residual(
+    max_hp, pct_before, pct_after, amount_of_max, healing
+) -> bool:
+    """Item 3: could a mon with this max HP show `pct_before` -> `pct_after`
+    across a residual of size `amount_of_max(max_hp)`?
+
+    True iff SOME integer hp inside the first display's band lands inside the
+    second's after the residual is applied. Both bands are PS's own
+    (`display_bounds`), so there is no rounding model of our own to be wrong
+    about.
+    """
+    max_hp = int(max_hp)
+    if max_hp <= 0:
+        return True
+    amount = int(amount_of_max(max_hp))
+    if amount < 1:
+        # PS's damage()/heal() clamp to at least 1 (clampIntRange), so a
+        # formula that floors to 0 still moves 1 HP
+        amount = 1
+    before_lo, before_hi = display_bounds(int(pct_before), max_hp)
+    after_lo, after_hi = display_bounds(int(pct_after), max_hp)
+    if healing:
+        moved_lo = min(before_lo + amount, max_hp)
+        moved_hi = min(before_hi + amount, max_hp)
+    else:
+        moved_lo, moved_hi = before_lo - amount, before_hi - amount
+    return moved_lo <= after_hi and after_lo <= moved_hi
+
+
+def max_hp_consistent_with_absolute(max_hp, hp, pct) -> bool:
+    """Item 4: could a mon with this max HP be at the ABSOLUTE `hp` and show
+    `pct/100`?  (Endeavor, Pain Split, Super Fang, a full-heal marker.)"""
+    max_hp = int(max_hp)
+    hp = int(hp)
+    if max_hp <= 0 or hp <= 0 or hp > max_hp:
+        return False
+    return display_pct(hp, max_hp) == int(pct)
+
+
+# ---------------------------------------------------------------------------
 # per-pokemon state
 # ---------------------------------------------------------------------------
 # `hp_exact`         - hp is the true integer HP (given max_hp is the true max HP)

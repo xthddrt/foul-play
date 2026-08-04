@@ -21,6 +21,7 @@ from fp.helpers import (
     normalize_name,
     random_battles_evs,
     maximum_ev,
+    calculate_stats,
 )
 from fp.helpers import get_pokemon_info_from_condition
 from fp.helpers import (
@@ -47,6 +48,105 @@ DAMAGE_CHECK_REFUSALS = Counter()
 
 def reset_damage_check_refusals():
     DAMAGE_CHECK_REFUSALS.clear()
+
+
+# ---------------------------------------------------------------------------
+# CRIT / HITCOUNT DISPATCH HYGIENE (sampling wave 2, item 1)
+#
+# `|-crit|` and `|-hitcount|` used to have NO handler at all: every consumer
+# that needed them re-scanned the protocol block on its own terms
+# (`get_damage_dealt` forward from the |move| line and ignoring which mon the
+# crit named, `_substitute_hit_context` backwards from the `-activate` and
+# matching the defender slot).  Two independent derivations of the same fact
+# can disagree, and a mis-selected crit arm poisons an elimination in the worst
+# possible direction: the true set is the STRONGEST candidate, so reading a
+# crit that did not happen prunes exactly it.  A FALSE elimination is the one
+# failure mode this whole wave must never have.
+#
+# So the two lines are stamped ONCE, onto the pokemon the protocol names, and
+# every consumer reads the stamp.  The flags describe the CURRENT hit context:
+# `clear_hit_flags` runs at every `|move|` line and at `|turn|`, and
+# `stamp_hit_flags` replays the context's own `-crit`/`-hitcount` lines onto
+# the named targets.  Stamping is idempotent, so the dispatch-table handlers
+# re-applying it as the block is walked line-by-line changes nothing.
+#
+# These live here rather than in battle_modifier because `get_damage_dealt` is
+# called at the |move| line -- BEFORE the block's later lines have been
+# dispatched -- so it has to stamp its own slice; battle_modifier imports this
+# module, not the other way around.
+# ---------------------------------------------------------------------------
+def side_from_pokemon_identifier(battle, identifier):
+    """Resolve a 'p1a: Nickname' protocol identifier to the Battler it belongs
+    to. Returns None when the identifier is missing/unrecognised."""
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return None
+    if identifier.startswith(battle.user.name):
+        return battle.user
+    if identifier.startswith(battle.opponent.name):
+        return battle.opponent
+    return None
+
+
+def _active_from_identifier(battle, identifier):
+    side = side_from_pokemon_identifier(battle, identifier)
+    if side is None:
+        return None
+    return side.active
+
+
+def clear_hit_flags(battle):
+    """Open a fresh hit context: no crit, no hitcount, on either side.
+
+    Every pokemon on both sides is cleared (not just the actives) so a mon that
+    switches in mid-turn can never inherit a stamp from an earlier turn.
+    """
+    for side in (battle.user, battle.opponent):
+        pkmn_list = list(side.reserve)
+        if side.active is not None:
+            pkmn_list.append(side.active)
+        for pkmn in pkmn_list:
+            pkmn.crit_this_turn = False
+            pkmn.hitcount_this_turn = None
+
+
+def crit(battle, split_msg):
+    """`|-crit|<defender>` -- stamp the crit onto the mon it names."""
+    if len(split_msg) < 3:
+        return
+    pkmn = _active_from_identifier(battle, split_msg[2])
+    if pkmn is not None:
+        pkmn.crit_this_turn = True
+
+
+def hitcount(battle, split_msg):
+    """`|-hitcount|<defender>|<n>` -- stamp how many strikes landed."""
+    if len(split_msg) < 4:
+        return
+    pkmn = _active_from_identifier(battle, split_msg[2])
+    if pkmn is None:
+        return
+    try:
+        pkmn.hitcount_this_turn = int(split_msg[3].strip())
+    except ValueError:
+        pass
+
+
+def stamp_hit_flags(battle, lines):
+    """Stamp the `-crit`/`-hitcount` of ONE hit context onto their targets.
+
+    `lines` are the protocol lines following the context's opener; the scan
+    stops at the same `MOVE_END_STRINGS` boundary every other consumer uses.
+    """
+    for line in lines or ():
+        split_line = line.split("|")
+        if len(split_line) < 2 or split_line[1] in MOVE_END_STRINGS:
+            break
+        action = split_line[1].strip()
+        if action == "-crit":
+            crit(battle, split_line)
+        elif action == "-hitcount":
+            hitcount(battle, split_line)
 
 
 def can_have_priority_modified(battle, pokemon, move_name):
@@ -589,7 +689,6 @@ def _damage_was_capped(lines, defender_name):
 
 def get_damage_dealt(battle, split_msg, next_messages):
     move_name = normalize_name(split_msg[3])
-    critical_hit = False
 
     if is_opponent(battle, split_msg):
         attacking_side = battle.opponent
@@ -598,15 +697,19 @@ def get_damage_dealt(battle, split_msg, next_messages):
         attacking_side = battle.user
         defending_side = battle.opponent
 
+    # item 1: the crit arm comes from the UNIFORM stamp, never from a private
+    # re-scan.  This call is what makes the flags available at the |move| line
+    # (the block's own `-crit` lines have not been dispatched yet at this
+    # point), and it is idempotent with the dispatch-table handlers.
+    stamp_hit_flags(battle, next_messages)
+    critical_hit = bool(getattr(defending_side.active, "crit_this_turn", False))
+
     for line in next_messages:
         next_line_split = line.split("|")
         # if one of these strings appears in index 1 then
         # exit out since we are done with this pokemon's move
         if len(next_line_split) < 2 or next_line_split[1] in MOVE_END_STRINGS:
             break
-
-        elif next_line_split[1] == "-crit":
-            critical_hit = True
 
         # if '-damage' appears, we want to parse the percentage damage dealt
         elif (
@@ -833,6 +936,73 @@ def _do_check(
 
     for i in reversed(indicies_to_remove):
         possibilites.pop(i)
+
+
+def _candidate_set_max_hp(pkmn, predicted_set):
+    pkmn_set = predicted_set.pkmn_set
+    stats = calculate_stats(
+        pkmn.base_stats,
+        pkmn_set.level if pkmn_set.level is not None else pkmn.level,
+        ivs=pkmn_set.ivs,
+        evs=pkmn_set.evs,
+        nature=pkmn_set.nature,
+    )
+    return int(stats[constants.HITPOINTS])
+
+
+def sieve_sets_by_max_hp(battle, pkmn, max_hp_is_admissible, reason):
+    """Items 3/4 consumer: drop candidate sets whose max HP this observation
+    rules out.
+
+    Every candidate set fixes max HP deterministically (level + HP EVs/IVs), so
+    a statement about max HP is a direct filter on the candidate list. Applying
+    each observation EXACTLY at the moment it happens - rather than folding it
+    into a running band first - is both lossless (the admissible max HPs are a
+    lattice, not an interval) and free: the intersection across events
+    accumulates in `rejected_set_signatures`, the ledger the wave-1 damage
+    channel already uses, which carries the would-empty guard, the relaxation
+    ladder and the "clear the ledger rather than be worse off than no evidence"
+    backstop.
+
+    Live-only, behind the same gates as every other live inference: the replay
+    checker knows the true roster and must not have its candidate list touched.
+    """
+    if (
+        battle.battle_type != BattleType.RANDOM_BATTLE
+        or getattr(battle, "exact_roster_known", False)
+        or not hasattr(pkmn, "rejected_set_signatures")
+        or getattr(pkmn, "max_hp_exact", False)
+    ):
+        return
+
+    candidates = RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(pkmn)
+    if not candidates:
+        return
+    doomed = []
+    for candidate in candidates:
+        try:
+            candidate_max_hp = _candidate_set_max_hp(pkmn, candidate)
+        except Exception:
+            continue
+        if not max_hp_is_admissible(candidate_max_hp):
+            doomed.append(candidate)
+    if not doomed:
+        return
+    if len(doomed) == len(candidates):
+        # the observation contradicts every set the dataset knows: its PREMISE
+        # is wrong (a residual we mis-attributed, a modifier we do not model),
+        # not the dataset. Drop the observation (wave-1 discipline).
+        _refuse("max_hp", reason, "would_empty", pkmn.name)
+        return
+    for candidate in doomed:
+        pkmn.rejected_set_signatures.add(candidate.mechanics_signature())
+    logger.info(
+        "max-hp sieve (%s) eliminated %d/%d candidate sets for %s",
+        reason,
+        len(doomed),
+        len(candidates),
+        pkmn.name,
+    )
 
 
 def _block_is_confounded(battle, preceding_lines):

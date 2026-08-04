@@ -1220,6 +1220,14 @@ class Pokemon:
         # taunt/encore condition durationCallback/onStart)
         self.moved_this_turn = False
 
+        # UNIFORM crit / hitcount stamps for the hit context currently being
+        # parsed (fp/inference.py `crit`/`hitcount`/`clear_hit_flags`). Every
+        # damage consumer reads these instead of re-scanning the protocol block
+        # for `|-crit|`, so two consumers can never disagree about which arm of
+        # a roll set an observation belongs to.
+        self.crit_this_turn = False
+        self.hitcount_this_turn = None
+
         # True while this pkmn's current forme came from a NON-permanent
         # |-formechange| (PS formeChange with isPermanent falsy). PS reverts
         # such formes on switch-out: clearVolatile ends with
