@@ -14,3 +14,6 @@ data/smogon_stats_cache
 data/pkmn_sets_cache
 data/local_data
 run_forever.sh
+
+# never commit real credentials (created from .env.example)
+.env
