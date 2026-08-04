@@ -292,6 +292,16 @@ class _FoulPlayConfig:
             default=None,
             help="If bot_mode is `accept_challenge`, the room to join while waiting",
         )
+        parser.add_argument(
+            "--nn-weights",
+            default=None,
+            help="Path to valuenet weights (.bin). Sets PE_NN_WEIGHTS for the engine, "
+            "switching leaf evaluation from the hand eval to the neural net. Every other "
+            "net-mode constant (reward form, tau, both UCB exploration factors, FPU) is "
+            "already the engine DEFAULT, so this is the only flag needed to run the net bot. "
+            "Refuses to start if the file is missing — a silent fallback to the hand eval "
+            "is the failure this flag exists to prevent.",
+        )
         parser.add_argument("--log-level", default="DEBUG", help="Python logging level")
         parser.add_argument(
             "--log-to-file",
@@ -300,6 +310,20 @@ class _FoulPlayConfig:
         )
 
         args = parser.parse_args()
+        # Set PE_NN_WEIGHTS before ANY engine call and before the search pool is
+        # created: poke-engine reads every PE_* var through a Rust LazyLock, i.e.
+        # once per process, then caches forever. A worker that has already
+        # resolved that LazyLock would keep the hand eval no matter what we set
+        # later — silently, with no error.
+        if args.nn_weights:
+            weights = os.path.abspath(os.path.expanduser(args.nn_weights))
+            if not os.path.isfile(weights):
+                raise SystemExit(
+                    "--nn-weights: no such file: %s\nRefusing to start: without it the "
+                    "engine silently falls back to the hand eval." % weights
+                )
+            os.environ["PE_NN_WEIGHTS"] = weights
+        self.nn_weights = os.environ.get("PE_NN_WEIGHTS")
         self.websocket_uri = args.websocket_uri
         self.username = args.ps_username
         self.password = args.ps_password

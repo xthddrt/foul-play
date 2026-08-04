@@ -44,6 +44,20 @@ def check_dictionaries_are_unmodified(original_pokedex, original_move_json):
 async def run_foul_play():
     FoulPlayConfig.configure()
     init_logging(FoulPlayConfig.log_level, FoulPlayConfig.log_to_file)
+
+    # Record which evaluator and tuning this session actually ran with. The
+    # engine caches PE_* vars in read-once LazyLocks, so a misconfigured run
+    # fails SILENTLY (hand eval, default constants) and looks identical in the
+    # logs otherwise. Reading the values back out of the engine — not out of
+    # os.environ — is what makes this evidence rather than an echo.
+    if FoulPlayConfig.nn_weights:
+        from poke_engine import engine_config
+
+        logger.info("EVALUATOR: neural net — %s", FoulPlayConfig.nn_weights)
+        logger.info("ENGINE CONFIG (effective): %s", engine_config())
+    else:
+        logger.info("EVALUATOR: hand eval (no --nn-weights given)")
+
     apply_mods(FoulPlayConfig.pokemon_format)
 
     original_pokedex = deepcopy(pokedex)
