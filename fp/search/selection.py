@@ -482,6 +482,43 @@ def select_move_from_mcts_results(
         if best is not None:
             last_opponent_prediction["our_mcts_score"] = round(agg_score[best], 4)
 
+    # ARGMAX-ONLY: return the pooled visit-share argmax and skip EVERY gate
+    # below (switch damping, variance penalty, negative-regime guard, the
+    # opponent switch veto, pooled-share eligibility floors, the score-band and
+    # displacement-margin tiebreaks, the losing-position upside fallback).
+    #
+    # Two reasons this exists. (1) Every Elo number backing the current config
+    # was measured by the duel harness, which takes the raw MCTS arm and never
+    # calls this module at all — so argmax is the policy we actually validated,
+    # and anything else ladders an unmeasured bot. (2) The gates' thresholds
+    # (pooled-share 0.005/0.01/0.05, the 0.05-0.15 score band, the 2x
+    # displacement margin) were sized for the hand eval's ~0.28 arm-value
+    # spread; under the net they are unverified, and a threshold that silently
+    # never fires is indistinguishable from one that always does.
+    #
+    # This is the pooled analogue of the harness's per-world argmax: sum each
+    # option's visit share over the sampled worlds and take the max, so a move
+    # wins by being endorsed across worlds rather than by one world's search.
+    if getattr(FoulPlayConfig, "selection_argmax_only", False):
+        if not pooled_share:
+            raise ValueError("argmax-only selection: no options in pooled_share")
+        choice = max(pooled_share, key=pooled_share.get)
+        total = sum(pooled_share.values()) or 1.0
+        logger.info(
+            "ARGMAX-ONLY selection (all gates bypassed): {} with {}% pooled visit share; "
+            "top 3: {}".format(
+                choice,
+                round(100 * pooled_share[choice] / total, 1),
+                [
+                    (c, round(100 * s / total, 1))
+                    for c, s in sorted(pooled_share.items(), key=lambda kv: -kv[1])[:3]
+                ],
+            )
+        )
+        if candidates_margin is not None:
+            return choice, [choice]
+        return choice
+
     damped_share, damped_blend = _apply_switch_damping(pooled_share, blend_sum)
 
     # Risk-averse per-world blending:

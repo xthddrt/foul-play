@@ -102,6 +102,7 @@ class _FoulPlayConfig:
     tera_margin_gate: float = 0.015
     losing_upside_threshold: float = 0.15
     losing_upside_displacement_multiplier: float = 2.0
+    selection_argmax_only: bool = False
     reuse_search_pool: bool = True
     never_start_timer: bool = False
     user_to_challenge: str
@@ -302,6 +303,17 @@ class _FoulPlayConfig:
             "Refuses to start if the file is missing — a silent fallback to the hand eval "
             "is the failure this flag exists to prevent.",
         )
+        parser.add_argument(
+            "--selection-argmax-only",
+            action="store_true",
+            help="Pick the pooled visit-share argmax and bypass EVERY selection gate "
+            "(switch damping, variance penalty, opponent switch veto, pooled-share "
+            "floors, score-band and displacement tiebreaks, losing-position fallback). "
+            "This is the policy every Elo measurement was actually taken under — the "
+            "duel harness reads the raw MCTS arm and never calls selection.py — and the "
+            "gates' thresholds were sized for the hand eval's value scale, so they are "
+            "unverified under the net.",
+        )
         parser.add_argument("--log-level", default="DEBUG", help="Python logging level")
         parser.add_argument(
             "--log-to-file",
@@ -324,6 +336,7 @@ class _FoulPlayConfig:
                 )
             os.environ["PE_NN_WEIGHTS"] = weights
         self.nn_weights = os.environ.get("PE_NN_WEIGHTS")
+        self.selection_argmax_only = args.selection_argmax_only
         self.websocket_uri = args.websocket_uri
         self.username = args.ps_username
         self.password = args.ps_password
