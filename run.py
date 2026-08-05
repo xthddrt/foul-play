@@ -53,8 +53,9 @@ async def run_foul_play():
     if FoulPlayConfig.nn_weights:
         from poke_engine import engine_config
 
-        logger.info("EVALUATOR: neural net — %s", FoulPlayConfig.nn_weights)
-        logger.info("ENGINE CONFIG (effective): %s", engine_config())
+        logger.info("EVALUATOR: neural net — {}".format(FoulPlayConfig.nn_weights))
+        logger.info("NN CONSTANTS: {}".format(FoulPlayConfig.nn_constants_note))
+        logger.info("ENGINE CONFIG (effective): {}".format(engine_config()))
     else:
         logger.info("EVALUATOR: hand eval (no --nn-weights given)")
 

@@ -17,3 +17,4 @@ run_forever.sh
 
 # never commit real credentials (created from .env.example)
 .env
+.env.bak

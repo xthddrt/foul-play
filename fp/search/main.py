@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from copy import deepcopy
@@ -63,7 +64,18 @@ def base_search_time_ms(battle) -> int:
     # never search past the actual clock: leave margin for world sampling,
     # serialization, aggregation, and the network round-trip
     if battle.time_remaining is not None:
-        ms = min(ms, max(300, battle.time_remaining * 1000 - 3000))
+        clamped = min(ms, max(300, battle.time_remaining * 1000 - 3000))
+        # Log when the CLOCK, not the config, is deciding our search depth. Without
+        # this a too-generous per-turn budget is invisible: the opening searches
+        # deep, drains the bank, and the late-game turns that actually decide the
+        # match silently collapse toward the 300ms floor.
+        if clamped < ms:
+            logger.info(
+                "SEARCH CLAMPED by clock: {}ms -> {}ms (time_remaining={}s)".format(
+                    ms, clamped, battle.time_remaining
+                )
+            )
+        ms = clamped
     return ms
 
 
@@ -131,7 +143,13 @@ def search_time_num_battles_randombattles(battle):
         and battle.opponent.active.hp > 0
         and opponent_active_num_moves == 0
     ):
-        num_battles_multiplier = 2 if in_time_pressure else 4
+        # The x4 fan-out was sized for parallelism=8 (32 worlds). It scales with
+        # parallelism, so a wider pool multiplies into far more worlds than intended;
+        # first_turn_world_multiplier pins it when the world count matters more than
+        # the historical default.
+        num_battles_multiplier = getattr(
+            FoulPlayConfig, "first_turn_world_multiplier", None
+        ) or (2 if in_time_pressure else 4)
         num_battles = FoulPlayConfig.parallelism * num_battles_multiplier
         # base_ms is the WALL budget for the whole first decision
         return num_battles, _per_world_search_ms(base_ms, num_battles)
@@ -296,19 +314,41 @@ def find_best_move(battle: Battle) -> str:
     revealed_pkmn = len(battle.opponent.reserve) + (
         1 if battle.opponent.active is not None else 0
     )
+    # time_remaining comes from Showdown's `|inactive|Time left: N sec` messages,
+    # which are only logged at DEBUG -- so the single number that decides BOTH how
+    # much search we may spend AND whether we run 8 worlds or 16 (in_time_pressure
+    # flips the multiplier at <=60s) was invisible at INFO. Surface it here.
+    # Remote search needs the clock: a remote attempt that times out costs its
+    # FULL timeout and is then followed by a local search. With 15s left that is
+    # unaffordable (measured 16.39s on w64_r6 and it nearly timed the game out).
+    # Stash it so fp.search.remote can decline to even try when the clock is short.
+    FoulPlayConfig.last_time_remaining = battle.time_remaining
     logger.info(
-        "Decision context: opponent_revealed={} search_ms={} parallelism={} threads={}".format(
+        "Decision context: opponent_revealed={} search_ms={} parallelism={} threads={} "
+        "time_remaining={} worlds={} in_time_pressure={}".format(
             revealed_pkmn,
             search_time_per_battle,
             FoulPlayConfig.parallelism,
             FoulPlayConfig.search_threads,
+            battle.time_remaining,
+            num_battles,
+            battle.time_remaining is not None and battle.time_remaining <= 60,
         )
     )
+    _t_search_start = time.time()
 
     states = [
         (battle_to_poke_engine_state(b).to_string(), chance) for b, chance in battles
     ]
     deduped_states = dedupe_states(states)
+    # Dump the exact engine state of every sampled world. These strings are the
+    # ONLY way to re-run a decision later -- at a different search budget, with a
+    # different net, or with different constants. Without them a post-mortem can
+    # only read the choice the bot made, never re-ask the question: the protocol
+    # log is not enough (it lacks our private request data) and a Showdown replay
+    # is not enough (same gap). One line here makes every turn reproducible.
+    for _i, (_s, _c) in enumerate(deduped_states):
+        logger.info("StateString {} chance={:.4f} {}".format(_i, _c, _s))
     if len(deduped_states) < len(states):
         # give the freed wall time back as DEPTH on the states that exist
         wall_ms = search_time_per_battle * _wave_count(len(states))
@@ -347,6 +387,16 @@ def find_best_move(battle: Battle) -> str:
             choice = _probe_and_choose(states, candidates, choice, mcts_results)
     else:
         choice = select_move_from_mcts_results(mcts_results, revealed_opponent_names)
+    _elapsed = time.time() - _t_search_start
+    logger.info(
+        "TurnTiming: elapsed={:.2f}s budget_per_world={}ms worlds={} waves={} "
+        "expected_wall={:.2f}s time_remaining_at_start={}".format(
+            _elapsed, search_time_per_battle, len(deduped_states),
+            _wave_count(len(deduped_states)),
+            _wave_count(len(deduped_states)) * search_time_per_battle / 1000.0,
+            battle.time_remaining,
+        )
+    )
     logger.info("Choice: {}".format(choice))
 
     # stamp the opponent-prediction stash for the ledger join (see selection.py)

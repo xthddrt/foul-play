@@ -153,6 +153,40 @@ class _FoulPlayConfig:
             "falling back to --search-time-ms when unset — blitz grants ~40s on turn 1",
         )
         parser.add_argument(
+            "--first-turn-world-multiplier",
+            type=int,
+            default=None,
+            help="Worlds on the first decision = parallelism x this (default 4, or 2 "
+            "under time pressure). Pin it when widening --search-parallelism, which "
+            "otherwise multiplies the first-turn fan-out.",
+        )
+        parser.add_argument(
+            "--search-remote-url",
+            default=None,
+            help="Base URL of a search_server.py worker (e.g. http://1.2.3.4:8000). "
+            "When set, sampled worlds are searched THERE instead of in the local "
+            "process pool; the websocket stays local because Showdown refuses "
+            "authenticated logins from datacenter IPs. Any remote failure falls "
+            "back to the local pool, so this can only cost strength, not games.",
+        )
+        parser.add_argument(
+            "--search-remote-timeout-margin-ms",
+            type=int,
+            default=4000,
+            help="Added to the per-world search time to form the remote HTTP "
+            "timeout. Covers transfer plus the worker's own fan-out.",
+        )
+        parser.add_argument(
+            "--probe-phase1-ms",
+            type=int,
+            default=None,
+            help="Phase-1 budget per world for the two-phase committed-root probe. "
+            "This OVERRIDES --search-time-ms on every non-first decision (see "
+            "fp/search/main.py), so leaving it at the 1500ms class default silently "
+            "caps normal turns regardless of --search-time-ms. Pass 0 to disable "
+            "probing entirely and run a single-phase search at the full budget.",
+        )
+        parser.add_argument(
             "--search-parallelism",
             type=int,
             default=1,
@@ -327,6 +361,7 @@ class _FoulPlayConfig:
         # once per process, then caches forever. A worker that has already
         # resolved that LazyLock would keep the hand eval no matter what we set
         # later — silently, with no error.
+        self.nn_constants_note = None
         if args.nn_weights:
             weights = os.path.abspath(os.path.expanduser(args.nn_weights))
             if not os.path.isfile(weights):
@@ -335,6 +370,39 @@ class _FoulPlayConfig:
                     "engine silently falls back to the hand eval." % weights
                 )
             os.environ["PE_NN_WEIGHTS"] = weights
+            # A net's MCTS constants are PROPERTIES OF THAT NET, not global
+            # defaults: tau = 1/(mean per-move log-odds swing) and c = r*tau^2
+            # are measured from the net's own trajectories, so every retrain
+            # moves them (champion tau 2.5 -> v4 baseline 2.851). Carrying them
+            # in a sidecar next to the .bin makes them travel with the weights,
+            # so a net cannot be run on another net's search settings. That
+            # mismatch is the worst failure mode we have: it does not crash, does
+            # not warn, and does not show up in validation loss -- it just looks
+            # like "the new net didn't help".
+            # Explicit PE_TUNE_* in the environment still wins, for experiments.
+            sidecar = os.path.splitext(weights)[0] + ".constants.json"
+            if os.path.isfile(sidecar):
+                import json
+
+                applied, skipped = [], []
+                for k, v in json.load(open(sidecar)).items():
+                    if not k.startswith("PE_"):
+                        continue  # provenance fields (tau, sigma, derived_from)
+                    if k in os.environ:
+                        skipped.append(k)
+                    else:
+                        os.environ[k] = str(v)
+                        applied.append("%s=%s" % (k, v))
+                self.nn_constants_note = "from %s: %s%s" % (
+                    os.path.basename(sidecar),
+                    " ".join(applied) or "(none)",
+                    " | env override kept: %s" % ",".join(skipped) if skipped else "",
+                )
+            else:
+                self.nn_constants_note = (
+                    "NO SIDECAR at %s -- engine defaults will be used, which are "
+                    "the CHAMPION's constants, not this net's" % os.path.basename(sidecar)
+                )
         self.nn_weights = os.environ.get("PE_NN_WEIGHTS")
         self.selection_argmax_only = args.selection_argmax_only
         self.websocket_uri = args.websocket_uri
@@ -346,6 +414,11 @@ class _FoulPlayConfig:
         self.smogon_stats = args.smogon_stats_format
         self.search_time_ms = args.search_time_ms
         self.first_turn_search_time_ms = args.first_turn_search_time_ms
+        if args.probe_phase1_ms is not None:
+            self.probe_phase1_ms = args.probe_phase1_ms
+        self.first_turn_world_multiplier = args.first_turn_world_multiplier
+        self.search_remote_url = args.search_remote_url
+        self.search_remote_timeout_margin_ms = args.search_remote_timeout_margin_ms
         self.parallelism = args.search_parallelism
         self.search_pool_workers = args.search_pool_workers
         self.search_threads = args.search_threads

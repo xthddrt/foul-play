@@ -466,6 +466,31 @@ def select_move_from_mcts_results(
         opp_dist,
     ) = _aggregate_results(mcts_results)
 
+    # PAIR TABLE: our arm x their reply -> (chance-weighted visits, total score).
+    # This is the ONLY input _apply_losing_upside_tiebreak scores candidates on,
+    # and it was previously computed and discarded, leaving post-mortems unable to
+    # answer "what would the losing-upside tiebreak have chosen?" -- exactly the
+    # question game 4's turn 8 raised (four candidates inside a 0.005 band, all
+    # unresolvable from WorldStats/OppWorldStats because those are MARGINALS and
+    # the tiebreak needs the JOINT). Logged as one line per decision, mean score
+    # per cell, visit-sorted, capped so a wide root cannot flood the log.
+    if pair_stats:
+        _cells = sorted(
+            ((a, b, v, t) for (a, b), (v, t) in pair_stats.items() if v > 0),
+            key=lambda c: -c[2],
+        )[:60]
+        # .format(), NOT lazy %-args: CustomFormatter renders record.msg directly,
+        # so logger.info("x %s", y) prints the literal "x %s". That silently
+        # emptied 424 StateString lines earlier in this project.
+        logger.info(
+            "PairTable: {}".format(
+                " | ".join(
+                    "{} vs {} {:.0f}/{:.4f}".format(a, b, v, t / v)
+                    for a, b, v, t in _cells
+                )
+            )
+        )
+
     # stash the aggregated opponent prediction for the ledger (caller stamps
     # turn/battle_tag; battle_modifier joins with the observed action)
     total_p = sum(opp_dist.values())

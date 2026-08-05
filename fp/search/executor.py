@@ -199,6 +199,37 @@ def run_mcts_searches(
     never leaves a possibly-broken pool behind on total failure.
     """
 
+    # Remote first when configured. Showdown refuses authenticated logins from
+    # datacenter IPs, so the websocket is pinned to the local box -- but the
+    # search is a pure function of the state strings and can live anywhere.
+    # A miss returns None (never raises) and we fall through to the local pool,
+    # so a dead worker box costs strength, never the game.
+    from fp.search.remote import remote_mcts_searches
+
+    remote = remote_mcts_searches(states, search_time_ms, threads)
+    if remote is not None:
+        return remote
+
+    # The remote world count can be far larger than the LOCAL box can run in one
+    # wave. Falling back verbatim is what turned a 4.5s budget into 52.98s on
+    # 2026-08-05: 64 worlds through an 8-process pool is 8 sequential waves.
+    # Trim to one local wave, keeping the highest-probability worlds, and
+    # renormalize -- a shallower-but-on-time decision beats a timeout loss.
+    # os.cpu_count(), NOT pool_workers(): pool_workers() is the CONFIGURED
+    # parallelism (64 when driving a remote worker), which is not what this
+    # machine can actually run. Falling back to 64 local processes also pays a
+    # cold-pool spawn of 64 interpreters, which is most of the 16.39s on w64_r6.
+    import os as _os
+    _cap = min(pool_workers(), _os.cpu_count() or 8)
+    if len(states) > _cap:
+        states = sorted(states, key=lambda sc: -sc[1])[:_cap]
+        _tot = sum(c for _, c in states)
+        if _tot > 0:
+            states = [(s, c / _tot) for s, c in states]
+        logger.warning(
+            "Local fallback capped to {} worlds (one wave) to stay inside the clock".format(_cap)
+        )
+
     def submit_searches(executor):
         futures = []
         for index, (state_string, chance) in enumerate(states):
