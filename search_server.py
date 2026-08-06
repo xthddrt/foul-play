@@ -45,7 +45,28 @@ if _weights:
     else:
         logger.warning("NO SIDECAR at %s - engine defaults will be used", _sidecar)
 
-from poke_engine import State, monte_carlo_tree_search  # noqa: E402
+from poke_engine import State, monte_carlo_tree_search, engine_config  # noqa: E402
+
+# FAIL LOUD on a netless worker. With PE_NN_WEIGHTS unset the engine silently
+# falls back to the classic hand eval AND -- because the matchup skip is gated on
+# nn_active() -- rebuilds the 6x6 1v1 MatchupMatrix on every decision, spending
+# ~10% of the move budget on 36 mini-searches whose result the net would never
+# have read. Both failures are invisible in the logs, and this worker exists
+# precisely to run the net, so a missing net is a misconfiguration, not a mode.
+_cfg = engine_config()
+logger.info("engine: %s", _cfg)
+if "nn_active=true" not in _cfg:
+    if os.environ.get("FP_ALLOW_NO_NN") == "1":
+        logger.error("NO NET LOADED - classic eval + matchup rebuild per decision "
+                     "(FP_ALLOW_NO_NN=1 set, continuing anyway)")
+    else:
+        raise SystemExit(
+            "search_server refusing to start with no net: PE_NN_WEIGHTS is unset or "
+            "failed to load, so every search would use the classic eval and burn ~10% "
+            "of the budget rebuilding the matchup matrix. Set PE_NN_WEIGHTS=<...>.bin "
+            "(and keep its .constants.json beside it), or set FP_ALLOW_NO_NN=1 to "
+            "override deliberately."
+        )
 
 _POOL = None
 
