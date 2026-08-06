@@ -1368,6 +1368,36 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
             pkmn.impossible_abilities.add(ability)
 
     for item in ITEMS_REVEALED_ON_SWITCH_IN:
+        if item == "boosterenergy" and (
+            # PS only consumes/announces boosterenergy when it would actually
+            # activate the holder's ability: protosynthesis outside of sun,
+            # quarkdrive outside of electricterrain. A transformed pkmn returns
+            # early and never consumes it at all (data/items.ts). Marking it
+            # impossible in those cases deletes the true set for paradox mons.
+            getattr(pkmn, "transformed_into", None)
+            or (
+                battle.weather in [constants.SUN, constants.DESOLATE_LAND]
+                and "protosynthesis"
+                in [
+                    normalize_name(a)
+                    for a in pokedex[pkmn.name][constants.ABILITIES].values()
+                ]
+            )
+            or (
+                battle.field == constants.ELECTRIC_TERRAIN
+                and "quarkdrive"
+                in [
+                    normalize_name(a)
+                    for a in pokedex[pkmn.name][constants.ABILITIES].values()
+                ]
+            )
+        ):
+            logger.info(
+                "Not adding boosterenergy to {}'s impossible items because it "
+                "would not have been consumed".format(pkmn.name)
+            )
+            continue
+
         if item not in pkmn.impossible_items:
             logger.info(
                 "{} switched in, adding {} to impossible items".format(pkmn.name, item)
@@ -2676,6 +2706,16 @@ def unboost(battle, split_msg):
         )
     )
 
+    # whiteherb is an onUpdate that restores any NEGATIVE boost and announces itself
+    # with `-enditem` (which reveals the item, making this entry moot). A drop that
+    # leaves the stat below 0 without the herb firing rules it out. A drop that lands
+    # at >= 0 (e.g. +2 -> +1) does not trigger it and is not evidence.
+    if pkmn.item == constants.UNKNOWN_ITEM and pkmn.boosts[stat] < 0:
+        logger.info(
+            "{} kept a negative boost - ruling out whiteherb".format(pkmn.name)
+        )
+        pkmn.impossible_items.add("whiteherb")
+
 
 def status(battle, split_msg):
     if is_opponent(battle, split_msg):
@@ -2715,6 +2755,15 @@ def status(battle, split_msg):
             )
         )
         pkmn.impossible_items.add("lumberry")
+
+        # chestoberry cures only sleep - same reasoning as lumberry above
+        if status_name == constants.SLEEP:
+            logger.info(
+                "No longer guessing chestoberry because {} fell asleep".format(
+                    pkmn.name
+                )
+            )
+            pkmn.impossible_items.add("chestoberry")
 
     # ["", "-status", "p1a: Caterpie", "brn", "[from] ability: Flame Body", "[of] p2a: Caterpie"]
     if (

@@ -222,10 +222,17 @@ def run_mcts_searches(
     import os as _os
     _cap = min(pool_workers(), _os.cpu_count() or 8)
     if len(states) > _cap:
-        states = sorted(states, key=lambda sc: -sc[1])[:_cap]
-        _tot = sum(c for _, c in states)
+        _trimmed = sorted(states, key=lambda sc: -sc[1])[:_cap]
+        _tot = sum(c for _, c in _trimmed)
         if _tot > 0:
-            states = [(s, c / _tot) for s, c in states]
+            _trimmed = [(s, c / _tot) for s, c in _trimmed]
+        # Trim IN PLACE, do not rebind: the caller keeps this same list and
+        # indexes it with the world indices returned below to build the probe
+        # phase's their_replies map and world set. Rebinding would leave the
+        # caller indexing a DIFFERENT list, so index i would name another
+        # world and blind-switch probes would be forced against a reply
+        # computed for a state they never searched.
+        states[:] = _trimmed
         logger.warning(
             "Local fallback capped to {} worlds (one wave) to stay inside the clock".format(_cap)
         )

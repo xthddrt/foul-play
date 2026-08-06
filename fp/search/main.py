@@ -340,6 +340,7 @@ def find_best_move(battle: Battle) -> str:
     states = [
         (battle_to_poke_engine_state(b).to_string(), chance) for b, chance in battles
     ]
+    num_sampled = len(states)
     deduped_states = dedupe_states(states)
     # Dump the exact engine state of every sampled world. These strings are the
     # ONLY way to re-run a decision later -- at a different search budget, with a
@@ -370,7 +371,25 @@ def find_best_move(battle: Battle) -> str:
         and (battle.time_remaining is None or battle.time_remaining > 9)
     )
     if probe_eligible and not is_first_decision(battle):
-        search_time_per_battle = FoulPlayConfig.probe_phase1_ms
+        # probe_phase1_ms is a PER-WORLD budget sized for the UNDEDUPED wave
+        # structure. Late game, dedupe collapses 16-48 worlds into a handful of
+        # unique states and frees whole waves; overwriting with the flat value
+        # would throw that time away and make the decisive turns the shallowest
+        # of the game. Conserve the wall instead (waves x probe_phase1_ms), with
+        # the clock -- less the phase-2 probe budget that still has to run after
+        # phase 1 -- as the ceiling. Never below probe_phase1_ms, so the
+        # no-dedupe path is exactly the previous behavior.
+        phase1_wall_ms = FoulPlayConfig.probe_phase1_ms * _wave_count(num_sampled)
+        if battle.time_remaining is not None:
+            phase1_wall_ms = min(
+                phase1_wall_ms,
+                max(300, battle.time_remaining * 1000 - 3000)
+                - FoulPlayConfig.probe_phase2_budget_ms,
+            )
+        search_time_per_battle = max(
+            FoulPlayConfig.probe_phase1_ms,
+            phase1_wall_ms // _wave_count(len(states)),
+        )
 
     mcts_results = run_mcts_searches(
         states, search_time_per_battle, FoulPlayConfig.search_threads
@@ -391,9 +410,11 @@ def find_best_move(battle: Battle) -> str:
     logger.info(
         "TurnTiming: elapsed={:.2f}s budget_per_world={}ms worlds={} waves={} "
         "expected_wall={:.2f}s time_remaining_at_start={}".format(
-            _elapsed, search_time_per_battle, len(deduped_states),
-            _wave_count(len(deduped_states)),
-            _wave_count(len(deduped_states)) * search_time_per_battle / 1000.0,
+            # `states` (not deduped_states) is what was actually searched: the
+            # local-fallback trim in run_mcts_searches shortens it in place.
+            _elapsed, search_time_per_battle, len(states),
+            _wave_count(len(states)),
+            _wave_count(len(states)) * search_time_per_battle / 1000.0,
             battle.time_remaining,
         )
     )

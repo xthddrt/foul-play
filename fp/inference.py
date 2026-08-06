@@ -129,7 +129,47 @@ def hitcount(battle, split_msg):
     try:
         pkmn.hitcount_this_turn = int(split_msg[3].strip())
     except ValueError:
-        pass
+        return
+    _rule_out_loaded_dice(battle, split_msg[2], pkmn.hitcount_this_turn)
+
+
+# Loaded Dice forces a 2-5 hit move to roll 4 or 5 (PS items.ts onModifyMove).
+# So 2 or 3 landed hits PROVE the attacker is not holding it -- the same kind of
+# hard negative evidence as the whiteherb/chestoberry eliminations, feeding the
+# same `impossible_items` -> data/pkmn_sets.py:518 hard filter.
+#
+# Two conditions make it a proof rather than a guess, and both are required:
+#   * the defender SURVIVED. A multi-hit move stops early when the target
+#     faints, so a Loaded Dice user can legitimately show hitcount 2 on a KO.
+#   * the move is a genuine [2,5] roller. Fixed-count moves (Triple Axel 3,
+#     Population Bomb 10) are modified differently or not at all by the item.
+# The positive direction (4-5 hits is ~3.3x likelier with the item) is a
+# LIKELIHOOD RATIO, not a certainty, and impossible_items has no weighting
+# concept -- so it is deliberately not implemented here.
+def _rule_out_loaded_dice(battle, defender_identifier, hits):
+    if hits is None or hits > 3:
+        return
+    defender_side = side_from_pokemon_identifier(battle, defender_identifier)
+    if defender_side is None:
+        return
+    defender = defender_side.active
+    if defender is None or defender.hp <= 0:
+        return  # fainted: the sequence was cut short, hits proves nothing
+    attacker_side = (
+        battle.opponent if defender_side is battle.user else battle.user
+    )
+    # only the OPPONENT's item is unknown and worth narrowing
+    if attacker_side is not battle.opponent:
+        return
+    attacker = attacker_side.active
+    if attacker is None or attacker.item != constants.UNKNOWN_ITEM:
+        return
+    move_name = normalize_name(attacker_side.last_used_move.move or "")
+    if not move_name:
+        return
+    if all_move_json.get(move_name, {}).get("multihit") != [2, 5]:
+        return
+    attacker.impossible_items.add("loadeddice")
 
 
 def stamp_hit_flags(battle, lines):
@@ -169,10 +209,28 @@ def can_have_priority_modified(battle, pokemon, move_name):
     )
 
 
+def _is_called_move_line(ln):
+    """True if a |move| line was produced inside useMove rather than by the
+    pokemon's own action (Sleep Talk's inner move, a Dancer copy, a Magic Bounce
+    reflection). Such a line does not occupy an action slot, so counting it
+    would push the action count past 2 and throw away the turn's ordering fact.
+    `[from]lockedmove` (an Outrage continuation) IS a real action and is kept.
+    """
+    # deferred import: fp.battle_modifier imports fp.inference at module load
+    from fp.battle_modifier import has_non_lockedmove_from_tag
+
+    return has_non_lockedmove_from_tag(ln.split("|"))
+
+
 def can_have_speed_modified(battle, pokemon):
     return (
         (
             pokemon.item is None
+            # None = unrevealed, or revealed AS unburden: both mean the 2x may
+            # be live. Bailing only on None would let a known-unburden mon with
+            # its item gone through, and check_speed_ranges never divides an
+            # opponent speed ABILITY back out -- the bound would be corrupt.
+            and pokemon.ability in (None, "unburden")
             and "unburden"
             in [
                 normalize_name(a)
@@ -312,7 +370,8 @@ def check_speed_ranges(battle, msg_lines):
     for ln in msg_lines:
         if ln.startswith("|move|"):
             seen_move = True
-            actions.append(get_move_information(ln))
+            if not _is_called_move_line(ln):
+                actions.append(get_move_information(ln))
 
         # A |switch|/|drag| BEFORE the first |move| line means the mons that
         # resolved the moves are not the ones this check would compare - bail.
@@ -429,38 +488,45 @@ def check_speed_ranges(battle, msg_lines):
     ):
         return
 
+    # Our own side's effective speed. `get_effective_speed` covers boosts, the
+    # weather/terrain speed abilities, Unburden/Quick Feet, Tailwind, Choice
+    # Scarf, paralysis and BOTH paradox speed volatiles - the hand-rolled chain
+    # this replaced knew only Tailwind/paralysis/Scarf/protosynthesis, so any
+    # speed ability on our side silently produced a too-tight opponent bound.
+    speed_threshold = battle.get_effective_speed(battle.user)
+
+    # `get_effective_speed` uses the gen7+ paralysis multiplier; older gens
+    # quarter speed instead of halving it
+    if (
+        battle.user.active.status == constants.PARALYZED
+        and battle.user.active.ability != "quickfeet"
+        and battle.generation in ["gen4", "gen5", "gen6"]
+    ):
+        speed_threshold = int(speed_threshold / 2)
+
+    # Divide out the opponent's known modifiers to get a threshold on their RAW
+    # speed stat, which is what `speed_range` stores. Opponent speed ABILITIES
+    # and Choice Scarf do not appear here: the guards above bail out entirely
+    # when either could be in play.
     speed_threshold = int(
-        boost_multiplier_lookup[battle.user.active.boosts[constants.SPEED]]
-        * battle.user.active.stats[constants.SPEED]
+        speed_threshold
         / boost_multiplier_lookup[battle.opponent.active.boosts[constants.SPEED]]
     )
 
-    if "protosynthesisspe" in battle.opponent.active.volatile_statuses:
+    if any(
+        vs in battle.opponent.active.volatile_statuses
+        for vs in ["quarkdrivespe", "protosynthesisspe"]
+    ):
         speed_threshold = int(speed_threshold / 1.5)
 
     if battle.opponent.side_conditions[constants.TAILWIND]:
         speed_threshold = int(speed_threshold / 2)
-
-    if battle.user.side_conditions[constants.TAILWIND]:
-        speed_threshold = int(speed_threshold * 2)
 
     if battle.opponent.active.status == constants.PARALYZED:
         if battle.generation in ["gen4", "gen5", "gen6"]:
             speed_threshold = int(speed_threshold * 4)
         else:
             speed_threshold = int(speed_threshold * 2)
-
-    if battle.user.active.status == constants.PARALYZED:
-        if battle.generation in ["gen4", "gen5", "gen6"]:
-            speed_threshold = int(speed_threshold / 4)
-        else:
-            speed_threshold = int(speed_threshold / 2)
-
-    if battle.user.active.item == "choicescarf":
-        speed_threshold = int(speed_threshold * 1.5)
-
-    if "protosynthesisspe" in battle.user.active.volatile_statuses:
-        speed_threshold = int(speed_threshold * 1.5)
 
     # we want to swap which attribute gets updated in trickroom because the slower pokemon goes first
     if battle.trick_room:
@@ -569,7 +635,11 @@ def check_choicescarf(battle, msg_lines):
         ):
             return
 
-    moves = [get_move_information(m) for m in msg_lines if m.startswith("|move|")]
+    moves = [
+        get_move_information(m)
+        for m in msg_lines
+        if m.startswith("|move|") and not _is_called_move_line(m)
+    ]
     number_of_moves = len(moves)
 
     if number_of_moves not in [1, 2]:

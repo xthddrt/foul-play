@@ -172,9 +172,32 @@ class _FoulPlayConfig:
         parser.add_argument(
             "--search-remote-timeout-margin-ms",
             type=int,
-            default=4000,
+            default=2000,
             help="Added to the per-world search time to form the remote HTTP "
             "timeout. Covers transfer plus the worker's own fan-out.",
+        )
+        parser.add_argument(
+            "--opponent-switch-keep",
+            type=float,
+            default=None,
+            help="Probability a VOLUNTARY opponent switch survives the in-tree veto "
+            "(1.0 = veto off, the engine default). The veto models HUMAN inertia -- "
+            "real ladder players switch on ~15-25%% of free turns while the in-tree "
+            "best-responder switches 58-70%%. It applies to side_two ONLY, so it must "
+            "be 1.0 for self-play generation or the two sides play different policies "
+            "(measured: side_one won 56.53%% of 2,065 r2 games, z=+5.9). Pass 0.8 to "
+            "restore the historical ladder behaviour.",
+        )
+        parser.add_argument(
+            "--opponent-phantom-switch-keep",
+            type=float,
+            default=None,
+            help="Multiplier on --opponent-switch-keep when the switch target is an "
+            "UNREVEALED sampled mon (1.0 = off). Models existence-uncertainty: a "
+            "determinized world treats its guess as a certainty and deploys it "
+            "(measured 44%% of side_two root policy switching into fill-ins that did "
+            "not exist). Only meaningful when worlds contain unknowns, so it is inert "
+            "during generation. Pass 0.6 to restore the historical ladder behaviour.",
         )
         parser.add_argument(
             "--probe-phase1-ms",
@@ -403,6 +426,16 @@ class _FoulPlayConfig:
                     "NO SIDECAR at %s -- engine defaults will be used, which are "
                     "the CHAMPION's constants, not this net's" % os.path.basename(sidecar)
                 )
+        # Set BEFORE any poke_engine search runs: the engine reads these once
+        # via LazyLock, so a later assignment is silently ignored.
+        for flag, env in (
+            (args.opponent_switch_keep, "PE_TUNE_OPPONENT_VOLUNTARY_SWITCH_KEEP"),
+            (args.opponent_phantom_switch_keep, "PE_TUNE_OPPONENT_PHANTOM_SWITCH_KEEP"),
+        ):
+            if flag is not None:
+                os.environ[env] = str(flag)
+        self.opponent_switch_keep = args.opponent_switch_keep
+        self.opponent_phantom_switch_keep = args.opponent_phantom_switch_keep
         self.nn_weights = os.environ.get("PE_NN_WEIGHTS")
         self.selection_argmax_only = args.selection_argmax_only
         self.websocket_uri = args.websocket_uri

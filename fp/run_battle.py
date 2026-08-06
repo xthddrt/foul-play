@@ -66,7 +66,9 @@ def format_decision(battle, decision):
         if tera:
             message = "{} {}".format(message, constants.TERASTALLIZE)
 
-        if battle.user.active.get_move(decision).can_z:
+        # get_move returns None when our move-tracking desynced from PS
+        move = battle.user.active.get_move(decision)
+        if move is not None and move.can_z:
             message = "{} {}".format(message, constants.ZMOVE)
 
     return [message, str(battle.rqid)]
@@ -108,27 +110,46 @@ async def async_pick_move(battle):
     # so the first-decision extended search applies exactly once per battle
     battle.decisions_made = getattr(battle, "decisions_made", 0) + 1
     battle_copy = deepcopy(battle)
-    if not battle_copy.team_preview:
-        battle_copy.user.update_from_request_json(battle_copy.request_json)
 
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor() as pool:
         try:
+            # the request-json update lives inside the try as well: a desync
+            # there must degrade to a legal move, not forfeit the game
+            if not battle_copy.team_preview:
+                battle_copy.user.update_from_request_json(battle_copy.request_json)
             best_move = await loop.run_in_executor(pool, find_best_move, battle_copy)
         except asyncio.CancelledError:
             raise
         # BaseException: pyo3 panics escape `except Exception`
         except BaseException as e:
             logger.error(
-                "find_best_move failed ({!r}); using fallback choice".format(e)
+                "find_best_move failed ({!r}); using fallback choice "
+                "(turn={} rqid={} active={})".format(
+                    e, battle.turn, battle.rqid, battle.user.active
+                ),
+                exc_info=True,
             )
             best_move = fallback_choice(battle_copy)
-    battle.user.last_selected_move = LastUsedMove(
-        battle.user.active.name,
-        best_move.removesuffix("-tera").removesuffix("-mega"),
-        battle.turn,
-    )
-    return format_decision(battle_copy, best_move)
+
+    try:
+        battle.user.last_selected_move = LastUsedMove(
+            battle.user.active.name,
+            best_move.removesuffix("-tera").removesuffix("-mega"),
+            battle.turn,
+        )
+        return format_decision(battle_copy, best_move)
+    except asyncio.CancelledError:
+        raise
+    except BaseException as e:
+        # formatting the choice failed (unknown switch target, missing move, ...)
+        # - let PS pick a legal action rather than letting this kill the battle
+        logger.error(
+            "format_decision failed for {!r} ({!r}); sending default choice "
+            "(turn={} rqid={})".format(best_move, e, battle.turn, battle.rqid),
+            exc_info=True,
+        )
+        return ["/choose default", str(battle.rqid)]
 
 
 async def handle_team_preview(battle, ps_websocket_client):
@@ -402,7 +423,32 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type, team_dict):
             await ps_websocket_client.leave_battle(battle.battle_tag)
             return winner
         else:
-            action_required = await async_update_battle(battle, msg)
+            try:
+                action_required = await async_update_battle(battle, msg)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:
+                # a parse failure must not forfeit the game: if the message that
+                # blew up contained a request, still answer it with a legal choice
+                logger.error(
+                    "async_update_battle failed ({!r}) on msg: {}".format(e, msg),
+                    exc_info=True,
+                )
+                action_required = "|request|" in msg
+
             if action_required and not battle.wait:
-                best_move = await async_pick_move(battle)
+                try:
+                    best_move = await async_pick_move(battle)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as e:
+                    logger.error(
+                        "async_pick_move failed ({!r}); sending default choice "
+                        "(turn={} rqid={})".format(e, battle.turn, battle.rqid),
+                        exc_info=True,
+                    )
+                    best_move = ["/choose default", str(battle.rqid)]
+
+                # deliberately outside the handlers above: a dead socket should
+                # still end the battle
                 await ps_websocket_client.send_message(battle.battle_tag, best_move)
