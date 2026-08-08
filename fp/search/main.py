@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -360,6 +361,42 @@ def find_best_move(battle: Battle) -> str:
             )
         )
         states = deduped_states
+
+    # ONE budget per decision, and it is the budget we actually spend.
+    #
+    # search_time_per_battle was sized by dividing the wall budget across the
+    # waves the SAMPLED world count would need. run_mcts_searches then trims the
+    # world list down to a single local wave -- and nothing re-sized the budget
+    # afterwards, so the freed waves were simply thrown away. Measured on the
+    # 2026-08-08 ladder game: turn 1 asked for 10000ms, sampled 32 worlds, was
+    # trimmed to 8, and searched them at 10000//4 = 2500ms for a 2.5s turn.
+    #
+    # Apply the same cap here, BEFORE sizing, and then divide the wall budget by
+    # the waves the surviving worlds actually need. What is passed on the command
+    # line is then what the turn really costs.
+    _cap = min(
+        (getattr(FoulPlayConfig, "search_pool_workers", None) or FoulPlayConfig.parallelism),
+        os.cpu_count() or 8,
+    )
+    if len(states) > _cap:
+        _trimmed = sorted(states, key=lambda sc: -sc[1])[:_cap]
+        _tot = sum(c for _, c in _trimmed) or 1.0
+        states[:] = [(s, c / _tot) for s, c in _trimmed]
+        logger.info(
+            "World cap: {} sampled -> {} searchable in one wave".format(
+                num_sampled, len(states)
+            )
+        )
+    wall_budget_ms = base_search_time_ms(battle)
+    search_time_per_battle = _per_world_search_ms(wall_budget_ms, len(states))
+    logger.info(
+        "Budget: wall={}ms worlds={} waves={} -> {}ms per world".format(
+            wall_budget_ms,
+            len(states),
+            _wave_count(len(states)),
+            search_time_per_battle,
+        )
+    )
     # forensic artifact: the EXACT engine state each world searches, replayable
     # later with State.from_string (DEBUG => file log only). Without this,
     # post-game review has to reconstruct worlds from the sampled-set lines.

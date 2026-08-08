@@ -91,7 +91,14 @@ class _FoulPlayConfig:
     # two-phase committed-root probes (main.py): phase 1 nominates finalists,
     # phase 2 measures each with a dedicated forced-root search per world.
     # probe_phase1_ms=0 disables (single-phase search, today's behavior)
-    probe_phase1_ms: int = 1500
+    # OFF by default. It overrode --search-time-ms on every non-first decision,
+    # so a 4500ms budget silently ran at 1500ms. It was never proven to help
+    # (HANDOFF.md: "ground-truth playouts on its motivating turn came back a
+    # statistical tie"), it existed to compensate for eval error that the v6 net
+    # now handles, it is dead code under --selection-argmax-only (which returns a
+    # single candidate, so phase 2 never fires), and its turn-1 clock overrun is
+    # listed as a ladder blocker. Pass --probe-phase1-ms N to re-enable.
+    probe_phase1_ms: int = 0
     probe_phase2_budget_ms: int = 3000
     probe_ms_min: int = 500
     probe_ms_max: int = 2250
