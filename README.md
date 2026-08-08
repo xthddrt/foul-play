@@ -1,4 +1,10 @@
 # Foul Play ![umbreon](https://play.pokemonshowdown.com/sprites/xyani/umbreon.gif)
+
+> **Running the strongest bot?** Start at `../valuenet/m4_artifacts/CHAMPIONS.md`
+> — it has the fresh-clone quickstart (build the engine from source, not PyPI),
+> the current champion's file and constants, and the startup lines that prove
+> the right net actually loaded.
+
 A Pokémon battle-bot that can play battles on [Pokemon Showdown](https://pokemonshowdown.com/).
 
 Foul Play can play single battles in all generations

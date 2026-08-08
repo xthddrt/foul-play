@@ -1,4 +1,18 @@
 requests==2.33.0
 websockets==14.1
 python-dateutil==2.8.0
-poke-engine==0.0.47 --config-settings="build-args=--features poke-engine/terastallization --no-default-features"
+# poke-engine MUST be built from the sibling source checkout, NOT from PyPI.
+#
+# The published package does not contain this project's PKNN v6 net format
+# (concat bench pooling, residual trunk, bench_sort, pp_true_max). Installing it
+# and then pointing --nn-weights at the v6 champion makes the engine panic on the
+# first search with:
+#     PanicException: valuenet weights '...': unsupported version 6
+#
+# Layout assumed (same as the Makefile's poke_engine_local target):
+#     <parent>/foul-play        <- this repo
+#     <parent>/poke-engine      <- the engine source
+#
+# If you cloned foul-play on its own, this line fails loudly. That is deliberate:
+# a missing engine is a better outcome than a silently wrong one.
+../poke-engine/poke-engine-py --config-settings="build-args=--features poke-engine/terastallization --no-default-features"
