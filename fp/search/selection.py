@@ -245,6 +245,11 @@ def _apply_score_gate(ranked, option_value, agg_score, pooled_share):
     return ranked
 
 
+def _is_resource_spend(choice: str) -> bool:
+    """A once-per-battle resource: terastallization or mega evolution."""
+    return choice.endswith("-tera") or choice.endswith("-mega")
+
+
 def _apply_tera_margin_gate(ranked, agg_score, pooled_share):
     # Tera margin gate: terastallizing (or mega evolving) spends a
     # once-per-battle resource, so beyond the leniency gate above a tera
@@ -260,8 +265,7 @@ def _apply_tera_margin_gate(ranked, agg_score, pooled_share):
     tera_margin = FoulPlayConfig.tera_margin_gate
     if tera_margin > 0 and len(ranked) > 1:
 
-        def is_resource_spend(choice: str) -> bool:
-            return choice.endswith("-tera") or choice.endswith("-mega")
+        is_resource_spend = _is_resource_spend
 
         non_tera = [c for c, _ in ranked if not is_resource_spend(c) and c in agg_score]
         if non_tera:
@@ -286,6 +290,84 @@ def _apply_tera_margin_gate(ranked, agg_score, pooled_share):
             if filtered:
                 ranked = filtered
     return ranked
+
+
+def _apply_argmax_tera_gate(choice, pooled_share, agg_score, opp_alive, opp_unrevealed):
+    """Tera gate for the argmax-only path. Returns the (possibly replaced) choice.
+
+    Terastallizing spends a once-per-battle resource, so the visit argmax winning
+    by a hair should not spend it. The rule, in order:
+
+      1. Only applies when the argmax IS a tera/mega spend.
+      2. Non-tera options are "considered" only if their pooled visit share is at
+         least tera_gate_visit_frac (0.5) of the tera's. A move the search barely
+         looked at does not get to veto a resource the search overwhelmingly
+         wants.
+      3. No considered non-tera => allow the tera. A tera at 79% share with the
+         next non-tera at 5% is not a close call.
+      4. Otherwise the tera must beat EVERY considered non-tera on ave_score by
+         tera_gate_score_per_mon x (opp_alive + opp_unrevealed). The margin
+         shrinks as the opponent's team is revealed and eliminated: holding tera
+         is worth most when the most is unknown, and nearly free in a 1v1 endgame.
+      5. Fail => take the pooled-visit argmax of the considered non-tera options.
+
+    NOTE on step 4: the comparison is against the CONSIDERED set, not literally
+    every non-tera option. Those are the same whenever it matters -- the visit
+    argmax of all non-tera options is always in the considered set -- but it does
+    mean a 0.2%-share move with a freak high score cannot veto a tera. Compare
+    against `non_tera` instead of `considered` to get the strict reading.
+
+    unrevealed mons are counted TWICE (once as alive, once as unknown) because an
+    unseen mon is the thing tera is most often held for.
+    """
+    per_mon = getattr(FoulPlayConfig, "tera_gate_score_per_mon", 0.0)
+    if per_mon <= 0 or not _is_resource_spend(choice):
+        return choice
+    tera_share = pooled_share.get(choice, 0.0)
+    if tera_share <= 0:
+        return choice
+    frac = getattr(FoulPlayConfig, "tera_gate_visit_frac", 0.5)
+    bar = tera_share * frac
+    considered = [
+        c
+        for c in pooled_share
+        if not _is_resource_spend(c) and pooled_share[c] >= bar
+    ]
+    if not considered:
+        logger.info(
+            "Tera gate: allowed {} (share {}%, no non-tera reaches the {}% bar)".format(
+                choice, round(100 * tera_share, 1), round(100 * bar, 1)
+            )
+        )
+        return choice
+    margin = per_mon * (opp_alive + opp_unrevealed)
+    best = max(considered, key=lambda c: agg_score.get(c, 0.0))
+    floor = agg_score.get(best, 0.0) + margin
+    if agg_score.get(choice, 0.0) >= floor:
+        logger.info(
+            "Tera gate: allowed {} (score {} >= floor {} = {} + {}x{} mons)".format(
+                choice,
+                round(agg_score.get(choice, 0.0), 4),
+                round(floor, 4),
+                round(agg_score.get(best, 0.0), 4),
+                per_mon,
+                opp_alive + opp_unrevealed,
+            )
+        )
+        return choice
+    fallback = max(considered, key=lambda c: pooled_share[c])
+    logger.info(
+        "Tera gate: BLOCKED {} (score {} < floor {} from {}); "
+        "falling back to non-tera visit argmax {} ({}%)".format(
+            choice,
+            round(agg_score.get(choice, 0.0), 4),
+            round(floor, 4),
+            best,
+            fallback,
+            round(100 * pooled_share[fallback], 1),
+        )
+    )
+    return fallback
 
 
 def _apply_losing_upside_tiebreak(ranked, agg_score, pair_stats, revealed_opponent_names):
@@ -445,6 +527,8 @@ def select_move_from_mcts_results(
     revealed_opponent_names: set[str] | None = None,
     candidates_margin: float | None = None,
     max_candidates: int = 3,
+    opp_alive: int = 0,
+    opp_unrevealed: int = 0,
 ) -> str:
     """With candidates_margin set, returns (choice, close_candidates) where
     close_candidates are the post-gate options whose agg score sits within
@@ -528,10 +612,16 @@ def select_move_from_mcts_results(
         if not pooled_share:
             raise ValueError("argmax-only selection: no options in pooled_share")
         choice = max(pooled_share, key=pooled_share.get)
+        choice = _apply_argmax_tera_gate(
+            choice, pooled_share, agg_score, opp_alive, opp_unrevealed
+        )
         total = sum(pooled_share.values()) or 1.0
         logger.info(
-            "ARGMAX-ONLY selection (all gates bypassed): {} with {}% pooled visit share; "
+            "ARGMAX-ONLY selection ({}): {} with {}% pooled visit share; "
             "top 3: {}".format(
+                "tera gate active"
+                if getattr(FoulPlayConfig, "tera_gate_score_per_mon", 0.0) > 0
+                else "all gates bypassed",
                 choice,
                 round(100 * pooled_share[choice] / total, 1),
                 [

@@ -290,6 +290,17 @@ def find_best_move(battle: Battle) -> str:
     for pkmn in battle.opponent.reserve:
         revealed_opponent_names.add(pkmn.name.lower())
 
+    # Opponent-team counts for the argmax tera gate. A randombattle team is 6.
+    # alive counts every mon not yet fainted (revealed or not); unrevealed counts
+    # the ones we have never seen. An unrevealed mon is therefore counted twice --
+    # deliberately, since an unseen mon is the thing tera is most often held for.
+    _OPP_TEAM_SIZE = 6
+    try:
+        opp_alive = _OPP_TEAM_SIZE - battle.opponent.num_fainted_pkmn()
+    except Exception:
+        opp_alive = _OPP_TEAM_SIZE
+    opp_unrevealed = max(0, _OPP_TEAM_SIZE - len(revealed_opponent_names))
+
     if battle.battle_type == BattleType.RANDOM_BATTLE:
         num_battles, search_time_per_battle = search_time_num_battles_randombattles(
             battle
@@ -438,11 +449,18 @@ def find_best_move(battle: Battle) -> str:
             revealed_opponent_names,
             candidates_margin=FoulPlayConfig.probe_margin,
             max_candidates=FoulPlayConfig.probe_max_candidates,
+            opp_alive=opp_alive,
+            opp_unrevealed=opp_unrevealed,
         )
         if len(candidates) > 1:
             choice = _probe_and_choose(states, candidates, choice, mcts_results)
     else:
-        choice = select_move_from_mcts_results(mcts_results, revealed_opponent_names)
+        choice = select_move_from_mcts_results(
+            mcts_results,
+            revealed_opponent_names,
+            opp_alive=opp_alive,
+            opp_unrevealed=opp_unrevealed,
+        )
     _elapsed = time.time() - _t_search_start
     logger.info(
         "TurnTiming: elapsed={:.2f}s budget_per_world={}ms worlds={} waves={} "

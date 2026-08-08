@@ -1224,3 +1224,86 @@ class TestPhase1WorldDedupe(unittest.TestCase):
         states = [(chr(ord("A") + i), 0.25) for i in range(4)]
 
         self.assertEqual(states, dedupe_states(states))
+
+
+class TestArgmaxTeraGate(unittest.TestCase):
+    """The argmax-path tera gate (selection.py _apply_argmax_tera_gate).
+
+    Terastallizing spends a once-per-battle resource, so the pooled-visit argmax
+    winning by a hair must not spend it. Both fixtures below are REAL turns from
+    ladder games on 2026-08-08, kept as regressions because they exercise the two
+    branches in opposite directions.
+    """
+
+    _ATTRS = (
+        "selection_argmax_only",
+        "tera_gate_score_per_mon",
+        "tera_gate_visit_frac",
+    )
+
+    def setUp(self):
+        self.originals = {a: getattr(FoulPlayConfig, a) for a in self._ATTRS}
+        FoulPlayConfig.selection_argmax_only = True
+        FoulPlayConfig.tera_gate_score_per_mon = 0.001
+        FoulPlayConfig.tera_gate_visit_frac = 0.5
+
+    def tearDown(self):
+        for a, v in self.originals.items():
+            setattr(FoulPlayConfig, a, v)
+
+    # game 2, turn 3: tera argmax 46.67%, switch glaceon at 34.87% clears the
+    # 23.33% bar and outscores it, so the resource must be held.
+    _G2T3 = [
+        ("shoreup-tera", 4667, 0.5199),
+        ("switch glaceon", 3487, 0.5645),
+        ("switch zangoose", 349, 0.5011),
+        ("shadowball", 233, 0.4860),
+        ("sludgebomb-tera", 141, 0.4630),
+    ]
+
+    # game 1, turn 24: tera argmax 78.97%, best non-tera only 4.99% -- nothing
+    # reaches the 39.48% bar, so the tera is NOT a close call and is allowed.
+    _G1T24 = [
+        ("bravebird-tera", 7897, 0.6305),
+        ("closecombat-tera", 873, 0.6636),
+        ("bravebird", 499, 0.6456),
+        ("swordsdance", 373, 0.6950),
+        ("closecombat", 349, 0.6710),
+    ]
+
+    def _choose(self, rows, opp_alive, opp_unrevealed):
+        return select_move_from_mcts_results(
+            [(mcts_result_scored(rows), 1.0, 0)],
+            opp_alive=opp_alive,
+            opp_unrevealed=opp_unrevealed,
+        )
+
+    def test_blocks_when_a_considered_non_tera_outscores_it(self):
+        # 6 alive + 5 unrevealed => margin 0.011; tera needs >= 0.5755, has 0.5199
+        self.assertEqual("switch glaceon", self._choose(self._G2T3, 6, 5))
+
+    def test_allows_when_no_non_tera_reaches_the_visit_bar(self):
+        # swordsdance outSCORES the tera (0.6950 > 0.6305) but holds only 4.99%
+        # share against the 39.48% bar, so it never gets to veto.
+        self.assertEqual("bravebird-tera", self._choose(self._G1T24, 4, 2))
+
+    def test_margin_shrinks_as_the_opponent_is_revealed_and_killed(self):
+        # same position, 1 alive + 0 unrevealed => margin 0.001. Still blocked,
+        # because the tera is 0.0446 behind on score regardless of the margin.
+        self.assertEqual("switch glaceon", self._choose(self._G2T3, 1, 0))
+
+    def test_tera_wins_when_it_clears_the_margin(self):
+        rows = [
+            ("flareblitz-tera", 5000, 0.600),
+            ("flareblitz", 4000, 0.560),  # clears the 25% bar, 0.04 behind
+        ]
+        # 2 alive + 1 unrevealed => margin 0.003; 0.600 >= 0.560 + 0.003
+        self.assertEqual("flareblitz-tera", self._choose(rows, 2, 1))
+
+    def test_disabled_by_default(self):
+        FoulPlayConfig.tera_gate_score_per_mon = 0.0
+        self.assertEqual("shoreup-tera", self._choose(self._G2T3, 6, 5))
+
+    def test_non_tera_argmax_is_untouched(self):
+        rows = [("earthquake", 5000, 0.60), ("flareblitz-tera", 1000, 0.99)]
+        self.assertEqual("earthquake", self._choose(rows, 6, 5))

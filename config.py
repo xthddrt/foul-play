@@ -107,6 +107,11 @@ class _FoulPlayConfig:
     probe_floor_margin: float = 0.01
     probe_max_candidates: int = 3
     tera_margin_gate: float = 0.015
+    # Argmax-path tera gate (selection.py _apply_argmax_tera_gate). 0 = OFF, so
+    # the champion's measured configuration is unchanged unless asked for.
+    # score margin = tera_gate_score_per_mon x (opp_alive + opp_unrevealed)
+    tera_gate_score_per_mon: float = 0.0
+    tera_gate_visit_frac: float = 0.5
     losing_upside_threshold: float = 0.15
     losing_upside_displacement_multiplier: float = 2.0
     selection_argmax_only: bool = False
@@ -215,6 +220,26 @@ class _FoulPlayConfig:
             "fp/search/main.py), so leaving it at the 1500ms class default silently "
             "caps normal turns regardless of --search-time-ms. Pass 0 to disable "
             "probing entirely and run a single-phase search at the full budget.",
+        )
+        parser.add_argument(
+            "--tera-gate-per-mon",
+            type=float,
+            default=None,
+            help="Enable the argmax-path tera gate. A tera/mega is only spent if "
+            "it beats every CONSIDERED non-tera option's ave_score by this value "
+            "x (opponent mons alive + opponent mons unrevealed). 'Considered' "
+            "means pooled visit share >= --tera-gate-visit-frac of the tera's, so "
+            "a barely-searched move cannot veto a tera the search overwhelmingly "
+            "wants. If nothing is considered, the tera is allowed. If the gate "
+            "blocks, the pooled-visit argmax of the considered non-tera options is "
+            "played instead. 0 (default) disables.",
+        )
+        parser.add_argument(
+            "--tera-gate-visit-frac",
+            type=float,
+            default=None,
+            help="Fraction of the tera's pooled visit share a non-tera option must "
+            "reach to be considered by --tera-gate-per-mon. Default 0.5.",
         )
         parser.add_argument(
             "--search-parallelism",
@@ -445,6 +470,10 @@ class _FoulPlayConfig:
         self.opponent_phantom_switch_keep = args.opponent_phantom_switch_keep
         self.nn_weights = os.environ.get("PE_NN_WEIGHTS")
         self.selection_argmax_only = args.selection_argmax_only
+        if args.tera_gate_per_mon is not None:
+            self.tera_gate_score_per_mon = args.tera_gate_per_mon
+        if args.tera_gate_visit_frac is not None:
+            self.tera_gate_visit_frac = args.tera_gate_visit_frac
         self.websocket_uri = args.websocket_uri
         self.username = args.ps_username
         self.password = args.ps_password
