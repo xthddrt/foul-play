@@ -292,9 +292,25 @@ def pokemon_to_poke_engine_pkmn(
         # a knocked-off item was removed, not consumed (PS only sets lastItem
         # on use/eat), so it must not enable Harvest/Cud Chew recycling.
         # getattr so older pickles safely default to nothing consumed
-        removed_item = getattr(pkmn, "removed_item", None)
-        if removed_item and not getattr(pkmn, "knocked_off", False):
-            extra_kwargs["last_consumed_item"] = str(removed_item)
+        # PS's `lastItem` is written ONLY by useItem/eatItem (sim/pokemon.ts:1805,
+        # :1846) and is overwritten by every later consumption; `takeItem`
+        # (:1856-1871) never sets it.  `battle_modifier.remove_item` records exactly
+        # those consumptions on `last_consumed_item`, and `set_item` clears it to ""
+        # when Harvest restores the berry (mirroring harvest.onResidual's
+        # `pokemon.lastItem = ''`), so when the attribute EXISTS it is both newer
+        # and more faithful than the `removed_item` latch (a one-shot that also
+        # records Trick-donor / steal removals).  `removed_item` stays as the
+        # fallback for a mon NEVER seen consuming anything (attribute absent ->
+        # None), so those states convert exactly as before -- including the
+        # Illusion-bearer carry in fp/replay/checker.py.  A cleared "" must NOT
+        # fall back: PS's lastItem is known-empty there.
+        last_consumed = getattr(pkmn, "last_consumed_item", None)
+        if last_consumed is None:
+            removed_item = getattr(pkmn, "removed_item", None)
+            if removed_item and not getattr(pkmn, "knocked_off", False):
+                last_consumed = removed_item
+        if last_consumed:
+            extra_kwargs["last_consumed_item"] = str(last_consumed)
     if POKE_ENGINE_SUPPORTS_ACTIVE_MOVE_ACTIONS:
         # PS increments in runMove before the move executes
         # (sim/battle-actions.ts:217) and resets on switch-in (:138); the

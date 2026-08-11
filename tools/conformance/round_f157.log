@@ -1,0 +1,14 @@
+packing current tree -> s3://pokebot-valuenet-389825051723/code.tar.gz ...
+packed at 02:08:58Z
+=== phase 1: generating 4 fresh corpora (40,000 games)
+  corpus 157 (seed 1610001): i-09c93b0f74df5d236
+  corpus 158 (seed 1620001): i-06fad737f143783e4
+  corpus 159 (seed 1630001): i-0de45f6560a4d18a9
+  corpus 160 (seed 1640001): i-04492a2f52c7449fb
+  corpus 161 (seed 1650001): i-0762e3847bb2649c5
+  corpus 162 (seed 1660001): i-06224b836862fa6a9
+  corpus 163 (seed 1670001): i-06faee4399ea201ec
+  corpus 164 (seed 1680001): i-0d13a53580e434429
+  corpus 165 (seed 1690001): i-04e7fb4f3492cc0fc
+  corpus 166 (seed 1700001): i-06556048b28c99abf
+=== waiting for corpora (up to 90 min)

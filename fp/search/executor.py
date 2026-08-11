@@ -220,7 +220,17 @@ def run_mcts_searches(
     # machine can actually run. Falling back to 64 local processes also pays a
     # cold-pool spawn of 64 interpreters, which is most of the 16.39s on w64_r6.
     import os as _os
-    _cap = min(pool_workers(), _os.cpu_count() or 8)
+    import math as _math
+    # The wall budget upstream assumed ceil(parallelism / pool_workers) waves
+    # on the CONFIGURED pool. Locally the pool really runs min(pool, cpu)
+    # processes, so keep worlds <= local_pool x budgeted_waves — actual waves
+    # never exceed budgeted waves and the turn stays inside the clock. With
+    # pool <= cpu this is a no-op (multi-wave configs pass through); a
+    # remote-sized pool (e.g. 64) falling back to an 8-core box still trims
+    # exactly as before.
+    _local_pool = min(pool_workers(), _os.cpu_count() or 8)
+    _budgeted_waves = max(1, _math.ceil(FoulPlayConfig.parallelism / pool_workers()))
+    _cap = _local_pool * _budgeted_waves
     if len(states) > _cap:
         _trimmed = sorted(states, key=lambda sc: -sc[1])[:_cap]
         _tot = sum(c for _, c in _trimmed)

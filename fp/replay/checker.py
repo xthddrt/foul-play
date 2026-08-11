@@ -137,6 +137,20 @@ def _extract_side_action(block_lines: list[str], slot: str):
     same turn number)."""
     from fp.helpers import normalize_name
 
+    # A Dancer copy that was BLOCKED in the BeforeMove event never reaches
+    # `useMove`, so it is announced WITHOUT the `[from] ability: Dancer` tag the
+    # check below keys on: PS's choicelock.onBeforeMove prints the `|move|` line
+    # itself (`this.addMove('move', pokemon, move.name)` + `attrLastMove('[still]')`
+    # + `-fail`, data/conditions.ts:332-347) and returns false, aborting runMove at
+    # sim/battle-actions.ts:255-264.  What DOES mark every copy, blocked or not, is
+    # the `|-activate|<slot>|ability: Dancer` PS prints immediately before entering
+    # runMove for that dancer (sim/battle-actions.ts:336-343), so arm a one-shot
+    # flag on it and let the slot's next `|move|` line be consumed as the copy.
+    # MEASURED: synth804024 T7 and synth765613 T37, Choice-Scarf Imposter Ditto
+    # locked into Roost -- the blocked copy was read as the chosen action, so the
+    # engine was asked for Quiver Dance / Revelation Dance and no branch could carry
+    # the Roost `-heal` that actually happened.
+    dancer_copy_pending = False
     for line in block_lines:
         sp = line.split("|")
         if len(sp) < 3:
@@ -165,14 +179,22 @@ def _extract_side_action(block_lines: list[str], slot: str):
             return ("revive", normalize_name(sp[2].split(":", 1)[1].strip()))
         if tag != slot:
             continue
+        if act == "-activate" and len(sp) >= 4 and "ability: Dancer" in sp[3]:
+            dancer_copy_pending = True
+            continue
         if act == "move" and len(sp) >= 4:
-            if "[from]" in line and "ability: Dancer" in line:
+            if dancer_copy_pending or (
+                "[from]" in line and "ability: Dancer" in line
+            ):
                 # a Dancer copy is an externalMove PS attributes to the copier
                 # (`|move|...|[from] ability: Dancer`), NOT the side's chosen
                 # action -- it can precede the real decision when the opponent
                 # danced first (synth02764 T2: Oricorio's copied Revelation
-                # Dance before its chosen Quiver Dance).  Keep scanning for the
-                # first non-Dancer move line.
+                # Dance before its chosen Quiver Dance).  A copy blocked in
+                # BeforeMove carries no tag at all, which is what the armed
+                # `dancer_copy_pending` catches.  Keep scanning for the first
+                # non-Dancer move line.
+                dancer_copy_pending = False
                 continue
             return ("move", normalize_name(sp[3]))
         if act == "switch" and len(sp) >= 4:
@@ -297,6 +319,7 @@ def _unnamable_action_reason(block_lines: list[str], slot: str) -> str:
     unreachable in practice -- they exist so a divergence between the two scans
     would show up as its own bucket instead of being absorbed into a residual."""
     seen_slot = False
+    dancer_copy_pending = False
     for line in block_lines:
         sp = line.split("|")
         if len(sp) < 3:
@@ -306,8 +329,14 @@ def _unnamable_action_reason(block_lines: list[str], slot: str) -> str:
         if tag != slot:
             continue
         seen_slot = True
+        if act == "-activate" and len(sp) >= 4 and "ability: Dancer" in sp[3]:
+            dancer_copy_pending = True
+            continue
         if act == "move" and len(sp) >= 4:
-            if "[from]" in line and "ability: Dancer" in line:
+            if dancer_copy_pending or (
+                "[from]" in line and "ability: Dancer" in line
+            ):
+                dancer_copy_pending = False
                 continue
             return "named_move"
         if act == "switch" and len(sp) >= 4:
@@ -1420,8 +1449,28 @@ def _reattribute_disguised_item_gains(reveals) -> None:
         # closes it at the last turn) keeps the bearer in the slot for all of
         # `end_turn` and stays inclusive.
         lo, hi = il["start_turn"], il["end_turn"]
+        # ...and the successor must SHARE THE DISGUISE'S SPECIES for that to bite.
+        # `item_gains` is keyed by `_occupant`, i.e. `slot_species[slot]`, and the
+        # switch/drag arm reassigns `slot_species[slot] = new_species` on the entry
+        # line itself -- so a `-item` that resolved AFTER the successor entered is
+        # already filed under the SUCCESSOR's name.  A record still filed under the
+        # DISGUISE on turn `hi` can therefore only have resolved while the bearer was
+        # still standing there, and the ambiguity the decrement guards against exists
+        # only when the successor IS the genuine mon of the disguise species (the
+        # synth556425 Metagross case: same key, two different physical mons).
+        # Without the species test the decrement also robbed a bearer whose span was
+        # closed mid-turn by a FORCED switch that resolves after the item line:
+        # synth922274 T18, the disguised Zoroark-Hisui Tricks Camerupt for Leftovers
+        # and is only then Roar-dragged out for Flareon (PS resolves Roar's `dragIn`
+        # in the moving pokemon's own action, sim/battle-actions.ts runMove -> the
+        # `|-item|` precedes the `|drag|` in the same block).  The Leftovers stayed on
+        # `pachirisu`, the engine's Zoroark kept the Heavy-Duty Boots of its FIRST
+        # Trick, and T22's `|-heal|p2a: Zoroark|17/100|[from] item: Leftovers` had no
+        # branch.
         if any(
-            o.get("pid") == pid and o.get("start_turn") == hi
+            o.get("pid") == pid
+            and o.get("start_turn") == hi
+            and o.get("species") == disguise
             for o in (reveals.get("occupancies") or ())
         ):
             hi -= 1
@@ -1874,7 +1923,30 @@ def _infer_illusion_spans(reveals: dict, exact_teams) -> None:
             announced["bearer_tera"] = occ["tera_during"] or occ["entry_tera"]
             announced["bearer_tera_from"] = _bearer_tera_from(occ)
             continue
-        shown = _sidecar_moves((exact_teams.get(occ["pid"]) or {}).get(occ["species"]))
+        # THE SHOWN SPECIES CAN BE A FORME THE SIDECAR DOES NOT KEY.  A permanent
+        # |detailschange| renames the slot to a forme (Terapagos-Terastal,
+        # Ogerpon-*-Tera, Palafin-Hero) while the sidecar is keyed by the ENTRY
+        # species (`load_teams_sidecar` indexes `mon['species']`), so a raw dict
+        # lookup returns None, `shown` comes back empty, and this `continue`
+        # abandoned the WHOLE occupancy -- move witness, mirror proof, max-HP arm,
+        # item arm and tera arm alike -- leaving a disguise reconstructed as the
+        # mon it was imitating.  synth1365121 T12-14: Zoroark-Hisui enters wearing
+        # Terapagos-Terastal's face, selects Poltergeist (absent from Terapagos's
+        # sidecar moveset, present in Zoroark-Hisui's), is Fighting-immune as
+        # Normal/Ghost so Illusion never breaks and no |replace| is ever emitted
+        # (data/abilities.ts illusion onDamagingHit), and pivots out still
+        # disguised.  T13's Poltergeist was then derived from Terapagos-Terastal
+        # (Atk 151, Chesto Berry, no STAB) as 48..57 instead of Zoroark-Hisui's
+        # 136..161 with Life Orb -- PS dealt 160.
+        # `_match_exact_mon` is the same forme-family resolver `apply_exact_team`
+        # already uses for this exact drift, and it returns None unless the family
+        # hit is UNIQUE, so an ambiguous forme still falls through to the
+        # `illusion_unresolved` refusal below rather than being guessed.
+        from fp.replay.damage_membership import _match_exact_mon
+
+        shown = _sidecar_moves(
+            _match_exact_mon(exact_teams.get(occ["pid"]) or {}, occ["species"])
+        )
         if not shown:
             continue
         selected = occ["moves"] - _NEVER_OWN_MOVE
@@ -2065,6 +2137,97 @@ def _infer_illusion_spans(reveals: dict, exact_teams) -> None:
         unresolved.setdefault(occ["pid"], []).append(
             (occ["start_turn"], occ["end_turn"])
         )
+
+    # ADJACENCY EXCLUSION: the roster is a SET, and neighbouring stays are
+    # different pokemon.
+    #
+    # `_open_occupancy` opens a stay only on |switch| / |drag| (:901-912;
+    # |replace| and |detailschange| deliberately re-label the SAME stay), and
+    # both of those bring in a party member that is NOT the active -- PS picks
+    # the replacement from the non-active party and `dragIn` from
+    # `side.pokemon.slice(1)`.  So two CONSECUTIVE stays in one slot are always
+    # two distinct physical mons.  The sidecar roster holds each species exactly
+    # once (`exact_teams[pid]` is keyed by species), so when a neighbouring stay
+    # shows the SAME species and the arms above already PROVED it the genuine
+    # article, this stay cannot be that mon too -- it is the bearer wearing its
+    # face.  Strictly additive: it reads only the verdicts the arms above
+    # reached, and only ever turns a REFUSAL into a proof.
+    #
+    # Both maps are snapshotted BEFORE any promotion so a stay proven a disguise
+    # here can never be re-used as a "genuine" neighbour for the next stay along
+    # (two adjacent bearers are impossible, and the chain would assert one).
+    #
+    # synth861671 T21: p2's Zoroark walks in wearing Exeggutor-Alola's face on
+    # T20, takes only Leech Seed residual (Illusion breaks on `onDamagingHit`,
+    # data/abilities.ts:2061-2071, never on a residual) and pivots out on T23 --
+    # so no |replace|, `flamethrower` is in BOTH sidecar movesets, the
+    # opponent-side switch line is percent-rendered so `entry_maxhp` is None, no
+    # item is observed and nobody teras.  But the stays on either side of it are
+    # the same Exeggutor-Alola, each proven genuine by the mirror-move arm
+    # (`woodhammer`, `dragontail`; Zoroark has neither), so the T20-T23 stay is
+    # the Zoroark.  Standing the real Exeggutor-Alola there made T21's Leech
+    # Seed GRASS-IMMUNE (data/moves.ts:10232-10233), and the engine was right to
+    # apply nothing.
+    proven_disguises = {
+        (il["pid"], il["start_turn"], il["disguise"]) for il in illusions
+    }
+    open_windows = {pid: set(ws) for pid, ws in unresolved.items()}
+    stays_by_slot: dict = {}
+    for occ in reveals.get("occupancies", ()):
+        stays_by_slot.setdefault(occ["slot"], []).append(occ)
+    genuine_stays = set()
+    for stays in stays_by_slot.values():
+        for occ in stays:
+            bearer = bearers.get(occ["pid"])
+            if bearer is None or occ["transformed"]:
+                continue
+            if occ["species"] == bearer[0]:
+                continue  # the bearer standing as itself, never a disguise
+            if occ["species"] not in (exact_teams.get(occ["pid"]) or {}):
+                continue  # no sidecar set, so nothing was proven against it
+            if (occ["pid"], occ["start_turn"], occ["species"]) in proven_disguises:
+                continue
+            if (occ["start_turn"], occ["end_turn"]) in open_windows.get(
+                occ["pid"], ()
+            ):
+                continue
+            genuine_stays.add(id(occ))
+    for stays in stays_by_slot.values():
+        for i, occ in enumerate(stays):
+            pid = occ["pid"]
+            window = (occ["start_turn"], occ["end_turn"])
+            if window not in open_windows.get(pid, ()):
+                continue
+            for nb in (
+                stays[i - 1] if i else None,
+                stays[i + 1] if i + 1 < len(stays) else None,
+            ):
+                if nb is None or nb["species"] != occ["species"]:
+                    continue
+                # contiguity guard: two stays merely adjacent in the LIST could
+                # be the same mon if a |switch| line went missing from the log
+                if (
+                    nb["end_turn"] != occ["start_turn"]
+                    and nb["start_turn"] != occ["end_turn"]
+                ):
+                    continue
+                if id(nb) not in genuine_stays:
+                    continue
+                illusions.append(
+                    {
+                        "pid": pid,
+                        "disguise": occ["species"],
+                        "true_species": occ.get("revealed_true_species")
+                        or bearers[pid][0],
+                        "start_turn": occ["start_turn"],
+                        "end_turn": occ["end_turn"],
+                        "bearer_tera": occ["tera_during"] or occ["entry_tera"],
+                        "bearer_tera_from": _bearer_tera_from(occ),
+                        "inferred_from": ["adjacent:" + nb["species"]],
+                    }
+                )
+                unresolved[pid] = [w for w in unresolved[pid] if w != window]
+                break
 
 
 def _mark_protocol_illusion_ambiguity(reveals) -> None:
@@ -2376,7 +2539,31 @@ def _bearer_hold_superseded(reveals, pid, il, turn) -> bool:
     if lo is None:
         return False
     rec = (reveals.get("items") or {}).get((pid, il.get("disguise")))
-    return rec is not None and rec[1] is not None and lo <= rec[1] < turn
+    if rec is not None and rec[1] is not None and lo <= rec[1] < turn:
+        return True
+    # ...and `reveals['items']` is keyed by SPECIES with room for exactly ONE
+    # removal, so the GENUINE mon of the disguise species can have claimed it long
+    # before the span ever opened -- after which the bearer's own in-span loss is
+    # dropped on the floor (_harvest_reveals only overwrites a prior record that
+    # names the SAME item with a None turn).  synth1597318: p2's real
+    # Alcremie-Ruby-Cream has its Leftovers Knocked Off on T19, so
+    # items[(p2, alcremierubycream)] == ('leftovers', 19), and the disguised
+    # Zoroark-Hisui's T34 `-enditem|p2a: Alcremie|Choice Specs|[silent]|[from]
+    # move: Trick` never landed in the record at all.  The OCCUPANCY's
+    # `held_items` is the right witness: it is SLOT-keyed (see `_open_occupancy`),
+    # so it survives Illusion by construction, and every one of its three writers
+    # records a LOSS -- the swap partner's give-away, the `[of]` steal victim's,
+    # and `-enditem` itself -- never a bare reveal.  Without this the bearer's
+    # battle-start Choice Specs were re-armed onto the T35 active, the engine's
+    # `attacker_item == defender_item` guard no-opped Chandelure's Trick, and the
+    # observed item loss existed in no branch.
+    for occ in reveals.get("occupancies") or ():
+        if occ.get("pid") != pid or occ.get("species") != il.get("disguise"):
+            continue
+        for obs in occ.get("held_items", ()):
+            if lo <= obs[0] < turn:
+                return True
+    return False
 
 
 def _seed_inferred_entrant_hp(battler, pid, reveals, turn, block_lines) -> None:
@@ -2570,6 +2757,31 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
             for _reserve in battler.reserve:
                 if _species_key(_reserve.name) == il["true_species"]:
                     battler.active.stats = dict(_reserve.stats)
+                    # ...and the MAX HP, same object-identity reason, with the
+                    # displayed FRACTION preserved.  `stats` cannot carry it:
+                    # fp/battle.py:1051 pops HITPOINTS out into `max_hp`, so the
+                    # copy above leaves the DISGUISE's max hp standing.  That is
+                    # not cosmetic -- the opponent side's `x/100` is the BEARER's
+                    # percentage (`getFullDetails` takes `details` from
+                    # `pokemon.illusion` but `health` from `this.getHealth()`,
+                    # sim/pokemon.ts:544-552), and the reconstruction scales it
+                    # onto whatever max hp the active happens to carry.
+                    # synth1080740 T6: an L83 Zoroark (235 hp) wearing an L74
+                    # Flutter Mane's face was stood up at 203/203, so Dazzling
+                    # Gleam -- whose real roll left it at 6/235 (`3/100`) -- had
+                    # EVERY roll lethal against the fake max, clamped to exactly
+                    # 203, gave the KO fan nothing to straddle, and the Encore it
+                    # lived to use was in no branch.  Fraction-preserving, so the
+                    # user side (whose `hp/maxhp` is already the bearer's real
+                    # pair) is a no-op.
+                    if (
+                        _reserve.max_hp
+                        and battler.active.max_hp
+                        and _reserve.max_hp != battler.active.max_hp
+                    ):
+                        _hp_fraction = battler.active.hp / battler.active.max_hp
+                        battler.active.max_hp = _reserve.max_hp
+                        battler.active.hp = round(_reserve.max_hp * _hp_fraction)
                     if getattr(_reserve, "moves", None):
                         battler.active.moves = list(_reserve.moves)
                     # ...and the LEVEL and ITEM, same object-identity reason:
@@ -2664,6 +2876,33 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
                         battler.active.removed_item = getattr(
                             _reserve, "removed_item", None
                         )
+                        # ...and the CONSUMPTION record too, for the same reason:
+                        # `battler_to_poke_engine_side` now prefers
+                        # `last_consumed_item` (PS's `lastItem`, sim/pokemon.ts:1805/
+                        # :1846) over `removed_item` when it is set, and the item that
+                        # was eaten belongs to the physical bearer, not to the face it
+                        # was wearing.  Carrying it keeps this swap exactly as
+                        # authoritative as it is for `removed_item`/`knocked_off`.
+                        battler.active.last_consumed_item = getattr(
+                            _reserve, "last_consumed_item", None
+                        )
+                        # ...but an acquisition DURING the span POST-DATES the
+                        # reserve object's knock-off latch, so carrying that one
+                        # back deletes the item just armed above.  gen9 Knock Off
+                        # is a plain `target.takeItem()` (data/moves.ts:9978-9979)
+                        # and takeItem's "cannot regain" refusal is `gen <= 4`
+                        # ONLY (sim/pokemon.ts:1858), so setItem (:1873) re-arms
+                        # the mon normally -- which is why
+                        # `battle_modifier.set_item` clears `knocked_off` on a
+                        # later gain (battle_modifier.py:4416-4422).  It cleared
+                        # it on the DISGUISE object; the reserve's stale True
+                        # makes `pokemon_to_poke_engine_pkmn` null the new hold
+                        # (poke_engine_helpers.py:210).  synth860212: the bearer
+                        # Zoroark-Hisui lost its Choice Specs to Knock Off on
+                        # T47, Tricked Regigigas's Leftovers onto itself on T50,
+                        # and its T51/T52 Leftovers heals had no branch.
+                        if _span_gains:
+                            battler.active.knocked_off = False
                     break
         return
 
@@ -2744,10 +2983,48 @@ def _arm_cudchew(battler, pid, reveals, turn) -> None:
 _FORME_ABILITY = {
     "terapagosterastal": "terashell",
     "terapagosstellar": "teraformzero",
+    # OGERPON's tera formes carry a DIFFERENT ability from the forme that walked
+    # in.  PS terastallizes them with `pokemon.formeChange(tera, null,
+    # /*isPermanent*/ true)` (sim/battle-actions.ts terastallize), and the
+    # permanent branch runs `this.setAbility(species.abilities['0'], null, true)`
+    # (sim/pokemon.ts formeChange), so Ogerpon-Hearthflame's Mold Breaker becomes
+    # Embody Aspect (Hearthflame) (data/pokedex.ts:19467-19483).  Nothing in the
+    # protocol says so: PS prints |-terastallize| + |detailschange| and Embody
+    # Aspect's own +1 boost is emitted SILENTLY when the mon is already at +6 (an
+    # Ability-sourced boost of 0 is not added, sim/battle.ts boost()).  fp's
+    # `forme_change` blanks the ability, and `apply_exact_team`'s fill-if-unknown
+    # then refills the ENTRY forme's ability through `_match_exact_mon`'s
+    # forme-family match -- so the -Tera forme stood there holding Mold Breaker,
+    # which SUPPRESSES the defender's Unaware (data/abilities.ts:5222 unaware
+    # `flags: {breakable: 1}`) and let a +6 Atk through.  synth1463749 T17: Power
+    # Whip into an Unaware Dondozo was derived at 900..1062 instead of 228..270;
+    # PS dealt 248.
+    "ogerpontealtera": "embodyaspectteal",
+    "ogerponwellspringtera": "embodyaspectwellspring",
+    "ogerponhearthflametera": "embodyaspecthearthflame",
+    "ogerponcornerstonetera": "embodyaspectcornerstone",
 }
 # only a stale ability from the SAME forme chain is rewritten -- a Skill Swap /
-# Gastro Acid product or any genuinely different ability is left alone
-_FORME_ABILITY_STALE = frozenset(("terashift", "terashell", "teraformzero", ""))
+# Gastro Acid product or any genuinely different ability is left alone.  For
+# Ogerpon the chain is the four base-forme abilities (data/random-battles/gen9/
+# sets.json: Defiant / Water Absorb / Mold Breaker / Sturdy); the embodyaspect*
+# names need no entry because a -Tera forme that already holds its own ability
+# short-circuits on `want == pkmn.ability` before this set is consulted.  Embody
+# Aspect carries failroleplay/noreceiver/noentrain/notrace/failskillswap/
+# notransform (data/abilities.ts:1209), so no legitimate route can put a
+# different ability on an Ogerpon -Tera forme.
+_FORME_ABILITY_STALE = frozenset(
+    (
+        "terashift",
+        "terashell",
+        "teraformzero",
+        "defiant",
+        "waterabsorb",
+        "moldbreaker",
+        "sturdy",
+        "",
+    )
+)
 
 
 def _apply_forme_abilities(battler) -> None:
@@ -3413,6 +3690,20 @@ def _move_failed_sides(block_lines) -> dict:
             attacker_slot = slot
             switched_after.pop(slot[:2], None)
             continue
+        if action == "cant":
+            # PS aborts runMove whenever the BeforeMove event returns false and stores
+            # that false in `moveThisTurnResult` (sim/battle-actions.ts:254-262).  Every
+            # `|cant|` line IS such an abort -- flinch / par / slp / frz
+            # (data/conditions.ts), Truant, recharge, Disable / Taunt / Attract, the
+            # Choice-item lock (data/conditions.ts:341-346) and `nopp` -- so the mon
+            # NAMED ON THE CANT LINE failed, whoever moved earlier in the block.
+            # Dropping these hid every interrupted-then-Temper-Flare/Stomping-Tantrum
+            # double: synth843494 T1 `|cant|p2a: Gyarados|flinch` -> T2 150 BP Temper
+            # Flare KOs Sceptile and Moxie boosts, which no engine branch could reach.
+            failed[slot[:2]] = True
+            switched_after.pop(slot[:2], None)
+            attacker_slot = None
+            continue
         if attacker_slot is None:
             continue
         if action in _MOVE_FAILED_ACTIONS:
@@ -3979,6 +4270,7 @@ def check_log(
             exact_teams=exact_teams,
             damage_collector=damage_collector,
             damage_tolerance=damage_tolerance,
+            prior_lines=mf_carry,
         )
         _apply_block_to_side_state(
             block_lines, faints, party_order, reveals, side_turn
@@ -4987,6 +5279,7 @@ def _fire_turn(
     exact_teams=None,
     damage_collector=None,
     damage_tolerance=0,
+    prior_lines=None,
 ):
     turn = armed["turn"]
     snap = armed["snapshot"]
@@ -5285,6 +5578,9 @@ def _fire_turn(
                 tolerance=damage_tolerance,
                 prior_faints=armed.get("faints"),
                 party_order=armed.get("party_order"),
+                # every earlier block of THIS turn (mf_carry is cleared by the
+                # block carrying |turn|N, so it holds exactly the blocks since)
+                prior_lines=prior_lines,
             )
         except BaseException:
             stats["damage_turn_errors"] = stats.get("damage_turn_errors", 0) + 1
@@ -5550,6 +5846,38 @@ def _fire_turn(
             stats["illusion_immunity_drops"] = stats.get(
                 "illusion_immunity_drops", 0
             ) + len(_imm)
+    if illusion_capped and turn_findings:
+        # ...and a VOLATILE finding is vacuous for the SAME reason one axis over.
+        # Whether a volatile is applied or removed on either side is decided by the
+        # un-evaluated candidate's ABILITY / ITEM / LEVEL / STATS -- every one of
+        # which `_apply_illusion` overwrites from the bearer -- so the verdict says
+        # which species the reconstruction guessed, which the turn already conceded.
+        # Note the finding does NOT have to be on the illusion side: here it is on
+        # p1, and it is p2's ABILITY that decides it, which is why this cannot be
+        # narrowed by side.
+        # synth1409286 T14: p2's slot shows "Seviper" for the T12-T15 stay
+        # (`illusion_unresolved` p2 -> [12, 15], so this turn is capped, not entry-
+        # skipped) and the reconstruction stands the GENUINE Seviper there -- with
+        # INFILTRATOR, whose `move.infiltrates` makes PS's substitute condition
+        # return before it ever touches the sub (data/moves.ts:18336), so the
+        # engine correctly damages Salazzle THROUGH its 62-hp Substitute in all four
+        # branches and none removes it.  The real occupant is Zoroark (party order
+        # ..., Zoroark(4), Seviper(5): PS Illusion scans from the END of the party
+        # down to the bearer, data/abilities.ts:2045-2051, so it wears the LAST
+        # unfainted mon's face; Salazzle spe 242 out-moved the slot, impossible for
+        # Choice-Scarf Seviper at 174*1.5 = 261, ordinary for Zoroark at 222), whose
+        # Choice Specs Flamethrower rolls 136-160 and breaks a 62-hp sub on every
+        # roll -- exactly PS's `-end ... Substitute` with no `-damage`.  Zoroark took
+        # no damaging hit in the stay and pivoted out on T15, so `onDamagingHit`
+        # never fired, no `|replace|` exists anywhere in the log, and
+        # `_infer_illusion_spans` is right to refuse.  Nothing about poke-engine is
+        # being measured.
+        _vol = [f for f in turn_findings if f.category == "volatile"]
+        if _vol:
+            turn_findings = [f for f in turn_findings if f.category != "volatile"]
+            stats["illusion_volatile_drops"] = stats.get(
+                "illusion_volatile_drops", 0
+            ) + len(_vol)
     if illusion_capped and turn_findings:
         # the un-evaluated species hypothesis (see the gate above) makes every
         # finding on this turn undecidable at HARD

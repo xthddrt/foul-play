@@ -62,6 +62,28 @@ def base_search_time_ms(battle) -> int:
         ms = FoulPlayConfig.first_turn_search_time_ms
     else:
         ms = FoulPlayConfig.search_time_ms
+    # The blitz clock is an INCREMENT clock, not a bank: Showdown's Blitz rule
+    # is `Timer Starting = 15, Add Per Turn = 5, Max Per Turn = 15`
+    # (pokemon-showdown/data/rulesets.ts:764-777). We earn +5s per turn, so any
+    # turn costing more than 5s TOTAL (search + world sampling + protocol +
+    # network) drains the bank ~permanently: the bank is capped at 15s, so it
+    # never builds a cushion, and a long game ends in an inactivity loss with
+    # every individual turn looking perfectly healthy (observed 2026-08-09:
+    # two fable-foul-play fleet losses, elapsed=4.0-4.2s every turn,
+    # time_remaining pinned at 15, then dead on time).
+    #
+    # So cap the SEARCH budget at the increment minus a margin for everything
+    # else in the turn. Bank-based clamping below still applies on top.
+    inc = getattr(FoulPlayConfig, "turn_increment_ms", 0) or 0
+    if inc > 0:
+        margin = getattr(FoulPlayConfig, "turn_overhead_margin_ms", 1500)
+        sustainable = max(300, inc - margin)
+        if ms > sustainable:
+            logger.info(
+                "SEARCH CAPPED by turn increment: {}ms -> {}ms "
+                "(increment={}ms margin={}ms)".format(ms, sustainable, inc, margin)
+            )
+            ms = sustainable
     # never search past the actual clock: leave margin for world sampling,
     # serialization, aggregation, and the network round-trip
     if battle.time_remaining is not None:
@@ -300,6 +322,17 @@ def find_best_move(battle: Battle) -> str:
     except Exception:
         opp_alive = _OPP_TEAM_SIZE
     opp_unrevealed = max(0, _OPP_TEAM_SIZE - len(revealed_opponent_names))
+    # Same derivation as poke_engine_helpers: tera is spent if the flag was set
+    # (tera'd mon later fainted) or any party mon is currently terastallized.
+    try:
+        opp_tera_used = bool(
+            getattr(battle.opponent, "tera_spent", False)
+        ) or any(
+            p is not None and p.terastallized
+            for p in [battle.opponent.active] + list(battle.opponent.reserve)
+        )
+    except Exception:
+        opp_tera_used = False
 
     if battle.battle_type == BattleType.RANDOM_BATTLE:
         num_battles, search_time_per_battle = search_time_num_battles_randombattles(
@@ -385,17 +418,20 @@ def find_best_move(battle: Battle) -> str:
     # Apply the same cap here, BEFORE sizing, and then divide the wall budget by
     # the waves the surviving worlds actually need. What is passed on the command
     # line is then what the turn really costs.
-    _cap = min(
-        (getattr(FoulPlayConfig, "search_pool_workers", None) or FoulPlayConfig.parallelism),
-        os.cpu_count() or 8,
-    )
+    # parallelism = worlds SEARCHED; search_pool_workers = concurrent
+    # processes. worlds > pool runs in ceil(worlds/pool) sequential waves and
+    # the budget below divides the wall across the waves (2026-08-08: restores
+    # the multi-wave semantics so e.g. 8 worlds on a 4-process pool = 2 waves
+    # x wall/2 each; pool unset keeps pool = parallelism = one wave, so every
+    # existing single-wave config is unchanged).
+    _cap = FoulPlayConfig.parallelism
     if len(states) > _cap:
         _trimmed = sorted(states, key=lambda sc: -sc[1])[:_cap]
         _tot = sum(c for _, c in _trimmed) or 1.0
         states[:] = [(s, c / _tot) for s, c in _trimmed]
         logger.info(
-            "World cap: {} sampled -> {} searchable in one wave".format(
-                num_sampled, len(states)
+            "World cap: {} sampled -> {} searchable in {} wave(s)".format(
+                num_sampled, len(states), _wave_count(len(states))
             )
         )
     wall_budget_ms = base_search_time_ms(battle)
@@ -451,6 +487,7 @@ def find_best_move(battle: Battle) -> str:
             max_candidates=FoulPlayConfig.probe_max_candidates,
             opp_alive=opp_alive,
             opp_unrevealed=opp_unrevealed,
+            opp_tera_used=opp_tera_used,
         )
         if len(candidates) > 1:
             choice = _probe_and_choose(states, candidates, choice, mcts_results)
@@ -460,6 +497,7 @@ def find_best_move(battle: Battle) -> str:
             revealed_opponent_names,
             opp_alive=opp_alive,
             opp_unrevealed=opp_unrevealed,
+            opp_tera_used=opp_tera_used,
         )
     _elapsed = time.time() - _t_search_start
     logger.info(

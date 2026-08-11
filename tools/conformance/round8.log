@@ -1,0 +1,206 @@
+=== phase 1: generating 4 fresh corpora (40,000 games)
+  corpus 137 (seed 1410001): i-0b02422fcbfe80b5c
+  corpus 138 (seed 1420001): i-0be24eac944016d91
+  corpus 139 (seed 1430001): i-0012c6cbf1278181d
+  corpus 140 (seed 1440001): i-069be0666c29052f5
+  corpus 141 (seed 1450001): i-037018b357dc7d9bb
+  corpus 142 (seed 1460001): i-0f04a69b0ac14773e
+  corpus 143 (seed 1470001): i-03efdb903136e2262
+  corpus 144 (seed 1480001): i-0134b53510faffecc
+  corpus 145 (seed 1490001): i-0f40925f41f4d85a5
+  corpus 146 (seed 1500001): i-05228ee2572d11655
+  corpus 147 (seed 1510001): i-0c343b954c18bdd1f
+  corpus 148 (seed 1520001): i-0ecb3f9456215abd1
+  corpus 149 (seed 1530001): i-0043bc0074caa8b2c
+  corpus 150 (seed 1540001): i-0d72b7f808fc6dfcb
+  corpus 151 (seed 1550001): i-0a4b4f10efea76c4f
+  corpus 152 (seed 1560001): i-09c90e6be969948a7
+  corpus 153 (seed 1570001): i-02a9d0f5acbea75e9
+  corpus 154 (seed 1580001): i-0fe0004d0803ebc9e
+  corpus 155 (seed 1590001): i-0ec0122c6352e953b
+  corpus 156 (seed 1600001): i-0fb64b42a00483c19
+=== waiting for corpora (up to 90 min)
+all 4 corpora ready (13:22:44Z)
+=== phase 2: sweeping all four in parallel
+  sweep g137: i-00a76285a7c7c7138
+  sweep g138: i-01168f9884de33580
+  sweep g139: i-0de0c07ee52c73c52
+  sweep g140: i-06467b35a8ccb7342
+  sweep g141: i-08ccef15bd017c89d
+  sweep g142: i-03d2e044827783818
+  sweep g143: i-0e25d8bb4676d0cd6
+  sweep g144: i-0816552250e53f2d3
+  sweep g145: i-091e9a335b4d6f614
+  sweep g146: i-0dfd86fb5fb12bdaa
+  sweep g147: i-0a3d489b77545627d
+  sweep g148: i-0bc6a7260fd827efc
+  sweep g149: i-0cb0eff75f896dec4
+  sweep g150: i-09aaf16f414aca435
+  sweep g151: i-0749cf912fab8ba82
+  sweep g152: i-07dd4941c337d10de
+  sweep g153: i-0c7af2c1b2ef2e0cf
+  sweep g154: i-087bd21e77aa6ab4f
+  sweep g155: i-00d3bc309c6d7dd99
+  sweep g156: i-071dc9d48b466abe1
+=== waiting for sweeps (up to 90 min)
+all 4 sweeps done (13:49:12Z)
+
+================ GATE 5 VERDICTS ================
+--- g137
+ENGINE FINDINGS: 0 hard, 3 soft  (total 3)
+  heal: 3
+rows:
+  [heal] battle-gen9randombattle-synth1412380_synthopp.log t6: observed heal on user but no branch heals it
+  [heal] battle-gen9randombattle-synth1412380_synthopp.log t7: observed heal on user but no branch heals it
+  [heal] battle-gen9randombattle-synth1412380_synthopp.log t9: observed heal on user but no branch heals it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g138
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1428622_synthopp.log t18: observed - def on user but no branch produces it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g139
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+  heal: 1
+rows:
+  [heal] battle-gen9randombattle-synth1436400_synthopp.log t31: observed heal on opp but no branch heals it
+  diverged: 0
+TRACKER WARNINGS (stderr): 1 lines, 1 classes
+--- g140
+ENGINE FINDINGS: 4 hard, 0 soft  (total 4)
+  boost: 3
+  item: 1
+rows:
+  [boost] battle-gen9randombattle-synth1445137_synthopp.log t26: observed + spa on opp but no branch produces it
+  [boost] battle-gen9randombattle-synth1445137_synthopp.log t26: observed + spd on opp but no branch produces it
+  [boost] battle-gen9randombattle-synth1445137_synthopp.log t26: observed + spe on opp but no branch produces it
+  [item] battle-gen9randombattle-synth1445270_synthopp.log t32: observed item loss (Booster Energy) on user but no branch removes it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g141
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g142
+ENGINE FINDINGS: 2 hard, 0 soft  (total 2)
+  boost: 1
+  damage: 1
+rows:
+  [boost] battle-gen9randombattle-synth1463727_synthopp.log t8: observed + atk on opp but no branch produces it
+  [damage] battle-gen9randombattle-synth1463749_synthopp.log t17: observed damage 248 on dondozo from ogerponhearthflametera powerwhip (crit=False) not in the PS-exact roll set (nearest delta -652; max_roll
+  diverged: 1
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g143
+ENGINE FINDINGS: 3 hard, 9 soft  (total 12)
+  boost: 12
+rows:
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t21: observed + spa on user but no branch produces it
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t21: observed + spd on user but no branch produces it
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t21: observed + spe on user but no branch produces it
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t19: observed + spa on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t19: observed + spd on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t19: observed + spe on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t20: observed + spa on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t20: observed + spd on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t20: observed + spe on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t25: observed + spa on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t25: observed + spd on user but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1479394_synthopp.log t25: observed + spe on user but no branch produces it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g144
+ENGINE FINDINGS: 0 hard, 2 soft  (total 2)
+  boost: 2
+rows:
+  [boost] battle-gen9randombattle-synth1486002_synthopp.log t46: observed - spd on opp but no branch produces it [ko-margin]
+  [boost] battle-gen9randombattle-synth1486921_synthopp.log t8: observed + atk on opp but no branch produces it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g145
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+  status: 1
+rows:
+  [status] battle-gen9randombattle-synth1495189_synthopp.log t9: observed par on user but no branch applies it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g146
+ENGINE FINDINGS: 1 hard, 3 soft  (total 4)
+  item: 1
+  status: 1
+  heal: 1
+rows:
+  [status] battle-gen9randombattle-synth1504371_synthopp.log t14: observed slp on opp but no branch applies it [membership 0/4 legal actions reproduce]
+  [item] battle-gen9randombattle-synth1501404_synthopp.log t19: observed item loss (Lum Berry) on opp but no branch removes it [membership 8/8 vacuous]
+  [volatile] battle-gen9randombattle-synth1501404_synthopp.log t19: observed volatile confusion end on opp but no branch removes it [membership 8/8 vacuous]
+  [heal] battle-gen9randombattle-synth1507717_synthopp.log t41: observed heal on user but no branch heals it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g147
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1514558_synthopp.log t5: observed - spd on opp but no branch produces it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g148
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g149
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1538693_synthopp.log t24: observed + atk on opp but no branch produces it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g150
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g151
+ENGINE FINDINGS: 3 hard, 3 soft  (total 6)
+  boost: 4
+  item: 1
+  heal: 1
+rows:
+  [boost] battle-gen9randombattle-synth1551151_synthopp.log t45: observed + spa on user but no branch produces it
+  [boost] battle-gen9randombattle-synth1551151_synthopp.log t45: observed + spd on user but no branch produces it
+  [boost] battle-gen9randombattle-synth1551151_synthopp.log t45: observed + spe on user but no branch produces it
+  [item] battle-gen9randombattle-synth1553454_synthopp.log t14: observed item loss (Sitrus Berry) on opp but no branch removes it
+  [heal] battle-gen9randombattle-synth1553454_synthopp.log t14: observed heal on opp but no branch heals it
+  [boost] battle-gen9randombattle-synth1555658_synthopp.log t9: observed + atk on user but no branch produces it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g152
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+  heal: 1
+rows:
+  [heal] battle-gen9randombattle-synth1568570_synthopp.log t15: observed heal on user but no branch heals it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g153
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g154
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1584639_synthopp.log t3: observed + atk on opp but no branch produces it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g155
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  item: 1
+rows:
+  [item] battle-gen9randombattle-synth1597318_synthopp.log t35: observed item loss (Choice Specs) on user but no branch removes it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g156
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+=================================================

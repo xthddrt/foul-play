@@ -292,7 +292,9 @@ def _apply_tera_margin_gate(ranked, agg_score, pooled_share):
     return ranked
 
 
-def _apply_argmax_tera_gate(choice, pooled_share, agg_score, opp_alive, opp_unrevealed):
+def _apply_argmax_tera_gate(
+    choice, pooled_share, agg_score, opp_alive, opp_unrevealed, opp_tera_used=False
+):
     """Tera gate for the argmax-only path. Returns the (possibly replaced) choice.
 
     Terastallizing spends a once-per-battle resource, so the visit argmax winning
@@ -306,9 +308,11 @@ def _apply_argmax_tera_gate(choice, pooled_share, agg_score, opp_alive, opp_unre
       3. No considered non-tera => allow the tera. A tera at 79% share with the
          next non-tera at 5% is not a close call.
       4. Otherwise the tera must beat EVERY considered non-tera on ave_score by
-         tera_gate_score_per_mon x (opp_alive + opp_unrevealed). The margin
-         shrinks as the opponent's team is revealed and eliminated: holding tera
-         is worth most when the most is unknown, and nearly free in a 1v1 endgame.
+         tera_gate_score_per_mon x (opp_alive + opp_unrevealed), plus
+         tera_gate_opp_tera_bonus while the opponent still holds THEIR tera.
+         The margin shrinks as the opponent's team is revealed and eliminated:
+         holding tera is worth most when the most is unknown, and nearly free
+         in a 1v1 endgame against a spent opponent.
       5. Fail => take the pooled-visit argmax of the considered non-tera options.
 
     NOTE on step 4: the comparison is against the CONSIDERED set, not literally
@@ -341,17 +345,22 @@ def _apply_argmax_tera_gate(choice, pooled_share, agg_score, opp_alive, opp_unre
         )
         return choice
     margin = per_mon * (opp_alive + opp_unrevealed)
+    opp_tera_bonus = getattr(FoulPlayConfig, "tera_gate_opp_tera_bonus", 0.0)
+    if not opp_tera_used:
+        margin += opp_tera_bonus
+    margin_desc = "{}x{} mons".format(per_mon, opp_alive + opp_unrevealed) + (
+        " + {} opp-tera-held".format(opp_tera_bonus) if not opp_tera_used else ""
+    )
     best = max(considered, key=lambda c: agg_score.get(c, 0.0))
     floor = agg_score.get(best, 0.0) + margin
     if agg_score.get(choice, 0.0) >= floor:
         logger.info(
-            "Tera gate: allowed {} (score {} >= floor {} = {} + {}x{} mons)".format(
+            "Tera gate: allowed {} (score {} >= floor {} = {} + {})".format(
                 choice,
                 round(agg_score.get(choice, 0.0), 4),
                 round(floor, 4),
                 round(agg_score.get(best, 0.0), 4),
-                per_mon,
-                opp_alive + opp_unrevealed,
+                margin_desc,
             )
         )
         return choice
@@ -529,6 +538,7 @@ def select_move_from_mcts_results(
     max_candidates: int = 3,
     opp_alive: int = 0,
     opp_unrevealed: int = 0,
+    opp_tera_used: bool = False,
 ) -> str:
     """With candidates_margin set, returns (choice, close_candidates) where
     close_candidates are the post-gate options whose agg score sits within
@@ -613,7 +623,7 @@ def select_move_from_mcts_results(
             raise ValueError("argmax-only selection: no options in pooled_share")
         choice = max(pooled_share, key=pooled_share.get)
         choice = _apply_argmax_tera_gate(
-            choice, pooled_share, agg_score, opp_alive, opp_unrevealed
+            choice, pooled_share, agg_score, opp_alive, opp_unrevealed, opp_tera_used
         )
         total = sum(pooled_share.values()) or 1.0
         logger.info(

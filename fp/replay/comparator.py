@@ -766,6 +766,7 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                 "THROATCHOP",
                 "SYRUPBOMB",
                 "SLOWSTART",
+                "HEALBLOCK",
             ):
                 # BRANCH-FOLD FAINT, not a mechanic miss.  These volatiles end at
                 # END-OF-TURN residual (PS encore onResidualOrder 16 etc.,
@@ -1380,12 +1381,52 @@ def compare_turn(ctx: TurnContext, user_is_side_one: bool = True) -> list[Findin
                         for i in branch:
                             amt = i.amount() or 0
                             if i.kind == "Damage" and i.side == s:
-                                hp -= max(0, amt)
+                                # A NEGATIVE `Damage` amount is a GAIN, not a no-op.
+                                # PS's Pain Split pushes BOTH mons to floor((a+b)/2)
+                                # through `Pokemon#sethp` (sim/pokemon.ts:1661-1673),
+                                # and poke-engine models the side that RISES with the
+                                # same Damage instruction carrying a negative amount
+                                # (`Damage SideOne: -72 [painsplit]`, genx/
+                                # choice_effects.rs PAINSPLIT: `hp - min(target_hp,
+                                # maxhp)`).  Clamping that to 0 under-counts the
+                                # branch's running hp and defeats the at-max fold this
+                                # arithmetic exists to compute: synth961343 T29, every
+                                # branch really ends Dusknoir at 225/225 -- so the
+                                # engine is right to model no Leftovers deficit -- but
+                                # the clamp read 153 and reported the tick as unbranched.
+                                hp -= amt
                             elif i.kind == "Heal" and i.side == s:
                                 hp += amt
                             lowest = min(lowest, hp)
                         if hp <= 0 or (mhp is not None and hp >= mhp):
                             return True
+                        # ...and the AT-MAX fold must be read at the hp the RESIDUAL
+                        # HEAL itself would see, not at the branch's FINAL hp.  PS
+                        # orders the residual pass by `onResidualOrder`: Leftovers /
+                        # Black Sludge tick at 5 (data/items.ts:3340-3341) while the
+                        # brn / psn / tox chip ticks at 10 (data/conditions.ts brn
+                        # `onResidualOrder: 10`), so a `[status]`-tagged Damage the
+                        # engine emits AFTER the heal slot cannot un-do an at-max
+                        # no-op the engine was right to omit.  synth1568570 T15: Pain
+                        # Split pushes Spiritomb from 85 back to exactly 234/234 in
+                        # the burn branch (`Damage SideOne: 149 [move]` then `Damage
+                        # SideOne: -149 [painsplit]`), so its Leftovers tick is a
+                        # genuine 0 -- and only the trailing `Damage SideOne: 14
+                        # [status]` dragged the FINAL hp to 220 and made this fold
+                        # miss, while the miss / no-burn / crit-KO branches were all
+                        # conceded.  Weather chip (order 1) is deliberately NOT
+                        # discounted: it precedes the heal slot.
+                        if mhp is not None:
+                            hp_at_heal = hp0
+                            for i in branch:
+                                amt = i.amount() or 0
+                                if i.kind == "Damage" and i.side == s:
+                                    if i.source != "status":
+                                        hp_at_heal -= amt
+                                elif i.kind == "Heal" and i.side == s:
+                                    hp_at_heal += amt
+                            if hp_at_heal >= mhp:
+                                return True
                         return berry_gated and lowest * 2 > mhp
 
                     ok = all(_heal_impossible(b) for b in br)

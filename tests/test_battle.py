@@ -361,3 +361,34 @@ class TestReInitializeActivePokemonFromRequestJson(unittest.TestCase):
 
         with self.assertRaises(AssertionError):
             self.battler.re_initialize_active_pokemon_from_request_json(req)
+
+
+class TestFormatDecisionNoMove(unittest.TestCase):
+    """The engine's `MoveChoice::None` placeholder ("No Move") must never reach
+    PS as a literal move name. Regression for 2661937105: `/choose move No Move`
+    was rejected on Slaking's recharge turn and the game was lost to the timer.
+    """
+
+    def setUp(self):
+        from fp.run_battle import format_decision
+
+        self.format_decision = format_decision
+        self.battle = Battle("battle-gen9randombattleblitz-test")
+        self.battle.rqid = 53
+
+    def test_no_move_on_recharge_request_chooses_the_forced_move(self):
+        self.battle.request_json = {
+            "active": [{"moves": [{"move": "Recharge", "id": "recharge"}]}],
+        }
+        self.assertEqual(
+            ["/choose move recharge", "53"],
+            self.format_decision(self.battle, "No Move"),
+        )
+
+    def test_nomove_spellings_and_missing_request_degrade_to_default(self):
+        self.battle.request_json = None
+        for decision in ("No Move", "nomove", "none"):
+            self.assertEqual(
+                ["/choose default", "53"],
+                self.format_decision(self.battle, decision),
+            )

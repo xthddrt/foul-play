@@ -1,0 +1,80 @@
+=== phase 1: generating 4 fresh corpora (40,000 games)
+  corpus 117 (seed 1210001): i-0e79d660909c46b62
+  corpus 118 (seed 1220001): i-037c1e9bcfa8497b9
+  corpus 119 (seed 1230001): i-0e2d79e57592c0206
+  corpus 120 (seed 1240001): i-01bd6f99a0c568769
+  corpus 121 (seed 1250001): i-041379700bec0a676
+  corpus 122 (seed 1260001): i-00f215ec6cf49edc8
+  corpus 123 (seed 1270001): i-0868b4c5b452d866a
+  corpus 124 (seed 1280001): i-0b1c4702d717b11d3
+  corpus 125 (seed 1290001): i-004e3620114b9162e
+  corpus 126 (seed 1300001): i-0e33b4562d47fac9c
+=== waiting for corpora (up to 90 min)
+all 4 corpora ready (03:17:17Z)
+=== phase 2: sweeping all four in parallel
+  sweep g117: i-0e77230191e2da92c
+  sweep g118: i-0dc7a4be1c6349d4b
+  sweep g119: i-0c926b0d38e665d7c
+  sweep g120: i-070b7ebd00dff5978
+  sweep g121: i-013d57731105d8805
+  sweep g122: i-0c12dc9023f61f2cf
+  sweep g123: i-03c33cdbea3cac0f2
+  sweep g124: i-0945cf6c58bf74bb9
+  sweep g125: i-033a573e80e456702
+  sweep g126: i-03766dbe828e1038d
+=== waiting for sweeps (up to 90 min)
+all 4 sweeps done (03:27:43Z)
+
+================ GATE 5 VERDICTS ================
+--- g117
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g118
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g119
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1236604_synthopp.log t22: observed - atk on opp but no branch produces it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g120
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g121
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g122
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1261709_synthopp.log t40: observed + def on user but no branch produces it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g123
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1273320_synthopp.log t20: observed + atk on user but no branch produces it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g124
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+rows:
+  [volatile] battle-gen9randombattle-synth1285787_synthopp.log t53: observed volatile Substitute start on user but no branch applies it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g125
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g126
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+=================================================

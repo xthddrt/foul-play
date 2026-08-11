@@ -1087,12 +1087,49 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
     # which a replay/reconstruction never has and which a Shed-Tail/U-turn pivot
     # does not set -- synth313658 T8 handed the engine a non-tera Ice Cryogonal
     # in place of the Tera-Poison Zoroark that was really there.
-    _bearer = _illusion_bearer_from_impossible_entry_hp(side, pkmn, split_msg[4])
+    # ...and the impossible-hp proof must also be offered the mon standing on the
+    # FIELD.  When the disguise happens to be the OUTGOING mon's own species the
+    # reserve lookup above necessarily misses (the genuine mon is `side.active`),
+    # so `pkmn` is None and the proof was skipped entirely -- leaving the branch
+    # below to reuse the genuine active as the entrant.  That reuse is only sound
+    # while a later `|replace|` rolls it back, and PS never emits one for a bearer
+    # that dies disguised (`onFaint` nulls the illusion silently,
+    # data/abilities.ts:2078-2080, while `|replace|` comes only from `onEnd` via
+    # `onDamagingHit`, :2061-2065).  synth962100 T38: the real Ogerpon U-turns out,
+    # the Zoroark walks in wearing its face at `7/100` and dies to Stealth Rock; the
+    # reconstruction fainted the REAL Ogerpon and then rebuilt it alive from its
+    # genuine `65/100` re-entry that same turn, leaving the dead Zoroark alive.  With
+    # two p2 mons apparently alive the engine armed U-turn's force-switch
+    # (`visible_alive_pkmn() > 1`, the analogue of PS's `canSwitch` gate,
+    # sim/battle-actions.ts:1290-1293), so T39/T41 ended before Jirachi's move and
+    # the residual phase and neither the Drain Punch nor the Leftovers heals had a
+    # branch.  The health field is the REAL entrant's (`getFullDetails` takes
+    # `details` from `pokemon.illusion` but `health` from `this.getHealth()`,
+    # sim/pokemon.ts:544-552), so the same arithmetic decides it; a fail still falls
+    # through to the branch below unchanged.
+    _entry_hp_subject = pkmn
+    if (
+        _entry_hp_subject is None
+        and side.active is not None
+        and (
+            side.active.name == temp_pkmn.name
+            or base_species_name(side.active.name)
+            == base_species_name(temp_pkmn.name)
+        )
+    ):
+        _entry_hp_subject = side.active
+    _bearer = _illusion_bearer_from_impossible_entry_hp(
+        side, _entry_hp_subject, split_msg[4]
+    )
     if _bearer is not None:
         logger.info(
-            "{} cannot enter at {} (it is benched at {}/{}) - the entrant is the "
+            "{} cannot enter at {} (it is at {}/{}) - the entrant is the "
             "disguised {}".format(
-                pkmn.name, split_msg[4], pkmn.hp, pkmn.max_hp, _bearer.name
+                _entry_hp_subject.name,
+                split_msg[4],
+                _entry_hp_subject.hp,
+                _entry_hp_subject.max_hp,
+                _bearer.name,
             )
         )
         if _bearer is side.active:
@@ -1220,6 +1257,21 @@ def switch_or_drag(battle, split_msg, switch_or_drag="switch"):
                 )
             )
             pkmn.ability = "regenerator"
+            # ...and MARK IT A GUESS.  This is an inference off an unexplained
+            # off-field HP gain, and the gain may not even be this pokemon's: PS
+            # renders an Illusion bearer's |switch| line under the DISGUISE's name
+            # (sim/pokemon.ts:531, :544-553), so a bearer wearing species X's face
+            # that pivots out chipped and lets the real X walk back in at full is
+            # indistinguishable here from Regeneration.  synth1352906: p2's
+            # Zoroark-Hisui stood as "Klawf" on T15-16 and left at 76%, the genuine
+            # ANGER SHELL Klawf entered at 100% on T18, and this arm stamped
+            # REGENERATOR on it -- which then SUPPRESSED both stronger sources,
+            # because the sidecar fill (fp/replay/damage_membership.py
+            # apply_exact_team) and the full-log ability reveal
+            # (fp/replay/checker.py _backfill_revealed_knowledge) are each
+            # fill-if-unknown.  Same contract as `item_inferred` (fp/battle.py:1152):
+            # a guess must lose to ground truth.
+            pkmn.ability_inferred = True
         if exact_display is not None:
             hp_certificate.set_exact_from_display(pkmn, exact_display)
         else:
@@ -1854,10 +1906,23 @@ def heal_or_damage(battle, split_msg):
     # give that pokemon an item if this string specifies one
     if len(split_msg) == 5 and constants.ITEM in split_msg[4] and pkmn.item is not None:
         item = normalize_name(split_msg[4].split(constants.ITEM)[-1].strip(": "))
-        owner = _record_revealed_item(battle, side, pkmn, item)
-        if owner is not None:
-            logger.info("Setting {}'s item to: {}".format(owner.name, item))
-            owner.item = item
+        if getattr(pkmn, "stole_and_ate_berry", None) == item:
+            # The Bug Bite / Pluck steal-eat heal latched by `remove_item`: this
+            # berry was the VICTIM's and PS ate it on the spot without ever
+            # giving it to the thief, so the line reveals NOTHING about what the
+            # thief holds.  synth911323 T1: Scyther Bug Bites Dedenne's Sitrus;
+            # taking this branch as a reveal set Scyther's item to Sitrus Berry
+            # and destroyed its tracked EVIOLITE, inflating every later hit on it
+            # by ~1.4x (T2 Dazzling Gleam folded 90 instead of 60; T4 Thunderbolt
+            # folded to a capped lethal 158 instead of 137).  The engine then
+            # fainted it in every branch and its Swords Dance +2 Attack had no
+            # branch -- demoted to a phantom [ko-margin] soft finding.
+            pkmn.stole_and_ate_berry = None
+        else:
+            owner = _record_revealed_item(battle, side, pkmn, item)
+            if owner is not None:
+                logger.info("Setting {}'s item to: {}".format(owner.name, item))
+                owner.item = item
 
     # gen 1 if you are trapping the opponent and hit yourself in confusion, the opponent is released
     if (
@@ -1990,6 +2055,25 @@ def miss(battle, split_msg):
     # the fixed-damage certificate this move armed on its target never lands
     _disarm_hp_certificates(battle)
 
+    # A rampage that MISSES (accuracy roll or a semi-invulnerable target) never
+    # applies or restarts `lockedmove`: PS's hitStepInvulnerabilityEvent /
+    # hitStepAccuracy (sim/battle-actions.ts:556/:568) filter the target BEFORE
+    # hitStepMoveHitLoop (:577), whose selfDrops are the only place the volatile is
+    # added, and an unrestarted continuation's duration expires at `onAfterMove` that
+    # same turn (data/conditions.ts lockedmove; the final-turn `[fatigue]` confusion
+    # is printed and handled by the confusion-start handler).  The `|move|` handler
+    # added the volatile unconditionally -- the same phantom-lock defect as the
+    # `|-immune|` arm in immune(), which fires PS's `[fatigue]` confusion turns
+    # early and desyncs items/abilities keyed on it.
+    if constants.LOCKED_MOVE in missing_side.active.volatile_statuses:
+        logger.info(
+            "{}'s locked move missed - removing lockedmove".format(
+                missing_side.active.name
+            )
+        )
+        remove_volatile(missing_side.active, constants.LOCKED_MOVE)
+        missing_side.active.volatile_status_durations[constants.LOCKED_MOVE] = 0
+
 
 def fail(battle, split_msg):
     # a failed self-costing move (e.g. Substitute below 25% HP, second Belly
@@ -2018,7 +2102,15 @@ def fail(battle, split_msg):
         ability_side.active.ability = ability
 
 
-def move(battle, split_msg):
+def move(battle, split_msg, msg_lines=None, msg_index=None):
+    """`msg_lines`/`msg_index` are this line's position in the resolution block.
+
+    Only the Choice-lock abort below needs them, and only to read the very next
+    line: a move BeforeMove-aborted by `choicelock` is textually identical to an
+    ordinary `[still]`ed move and is distinguishable ONLY by the `|-fail|` the
+    condition prints right after it (data/conditions.ts:342-345).  Both are
+    optional so the handler still works when called without a block.
+    """
     if is_opponent(battle, split_msg):
         side = battle.opponent
         pkmn = battle.opponent.active
@@ -2063,6 +2155,63 @@ def move(battle, split_msg):
                 pkmn.name, move_name
             )
         )
+        pkmn.active_move_actions += 1
+        return
+
+    # THE HOLDER'S OWN MOVE, BEFOREMOVE-ABORTED BY A CHOICE LOCK THAT AN
+    # EXECUTED DANCER COPY SET EARLIER THIS TURN.  `choicelock.onBeforeMove`
+    # prints exactly `|move|<mon>|<Move>||[still]` + `|-fail|<mon>` and returns
+    # false (data/conditions.ts:337-346); `runMove` then bails at
+    # sim/battle-actions.ts:256-264 -- BEFORE `deductPP` (:282) and `moveUsed`
+    # (:291).  So no PP is spent and PS's `lastMove` is never touched; the only
+    # thing that really happened is `activeMoveActions++` (:212, on entry),
+    # exactly like the aborted-Dancer-copy branch above.
+    # The `|move|` line carries no `[from]` tag and no target, so it cannot be
+    # told apart from a legitimately `[still]`ed move by its own text -- hence
+    # the two-part test PS itself uses: the mon is choice-locked (a Dancer copy
+    # recorded the lock this turn, see the `[from] ability: Dancer` branch
+    # below) AND the condition's `|-fail|` follows on the next line.  The item
+    # cannot be used as the gate here: during protocol parsing the opponent's
+    # item is still `unknownitem` (the exact-teams sidecar is applied later, at
+    # state-build time), so an `item in CHOICE_ITEMS` test never fires.
+    # synth1166344 T3/T4/T5: Choice-Specs Gardevoir Traced Oricorio's Dancer and
+    # copied Quiver Dance / Revelation Dance / Quiver Dance; each of its OWN
+    # moves (Mystical Fire, Focus Blast, Psyshock) was aborted this way, yet all
+    # three were banked as `last_used_move` plus a PP charge.  The engine then
+    # read a Choice lock into Focus Blast that PS did not have -- `endTurn` runs
+    # the DisableMove event (sim/battle.ts:1688) and `choicelock.onDisableMove`
+    # removes the volatile whenever `!pokemon.hasMove(effectState.move)`
+    # (data/conditions.ts:349-353), and Gardevoir owns neither dance -- so the
+    # engine refused the T5 Dancer copy at its own Choice-lock gate
+    # (poke-engine genx/generate_instructions.rs:19516) and the observed
+    # `|-boost|p2a: Gardevoir|spa/spd/spe|1` appeared in no branch.
+    _dancer_lock, _dancer_lock_turn = getattr(pkmn, "dancer_choice_lock", (None, None))
+    _next_line = (
+        msg_lines[msg_index + 1].rstrip()
+        if msg_lines is not None
+        and msg_index is not None
+        and msg_index + 1 < len(msg_lines)
+        else ""
+    )
+    if (
+        _dancer_lock is not None
+        and _dancer_lock_turn == battle.turn
+        and _dancer_lock != move_name
+        and move_name != "struggle"
+        and not has_non_lockedmove_from_tag(split_msg)
+        and any(m == "[still]" for m in split_msg)
+        and _next_line.split("|")[1:] == ["-fail", split_msg[2]]
+    ):
+        logger.info(
+            "{}'s {} was aborted by the Choice lock its Dancer copy of {} set "
+            "this turn - charging only the move action".format(
+                pkmn.name, move_name, _dancer_lock
+            )
+        )
+        # the move name IS revealed by the protocol even though nothing was
+        # spent (PS prints it from `move.name`), so keep the moveset reveal
+        if pkmn.get_move(move_name) is None:
+            _record_used_move(battle, side, pkmn, move_name)
         pkmn.active_move_actions += 1
         return
 
@@ -2390,6 +2539,36 @@ def move(battle, split_msg):
             ability = normalize_name(split_msg[-1].split("ability: ")[-1])
             logger.info("Setting {}'s ability to: {}".format(pkmn.name, ability))
             pkmn.ability = ability
+
+        # PS'S CHOICE LOCK IS SET BY THE DANCER COPY, NOT BY `lastMove`.  Dancer
+        # re-enters the full `runMove` with `externalMove: true`
+        # (sim/battle-actions.ts:342), so useMoveInner still fires the ModifyMove
+        # event and a Choice item's `onModifyMove` runs
+        # `pokemon.addVolatile('choicelock')` (data/items.ts:966-972 / :990-996 /
+        # :1013-1019); `choicelock.onStart` then records `this.activeMove.id` --
+        # the DANCED move (data/conditions.ts:327-331).  `moveUsed()` is skipped
+        # for an external move (it sits inside `if (!externalMove)`,
+        # sim/battle-actions.ts:277-292), so PS's `lastMove` is NOT the dance and
+        # this deliberately leaves `last_used_move` alone.
+        # The lock is live for the REST OF THE TURN and fails the holder's own
+        # chosen move (consumed at the top of this function).  When the copied
+        # move is FOREIGN it cannot outlive the turn: `endTurn` runs the
+        # DisableMove event (sim/battle.ts:1688) and `choicelock.onDisableMove`
+        # removes the volatile on `!pokemon.hasMove(effectState.move)`
+        # (data/conditions.ts:349-353).  Hence the turn stamp, and hence nothing
+        # here ever has to be cleared.  Recorded unconditionally because the
+        # opponent's item is still `unknownitem` at parse time; the abort test
+        # that consumes it also requires the condition's own `|-fail|`, so a
+        # non-Choice dancer (whose own move simply executes) never trips it.
+        if any(
+            msg in ("[from] ability: Dancer", "[from]ability: Dancer")
+            for msg in split_msg
+        ):
+            logger.info(
+                "{}'s Dancer copy of {} sets PS's choicelock for the rest of "
+                "turn {}".format(pkmn.name, move_name, battle.turn)
+            )
+            pkmn.dancer_choice_lock = (move_name, battle.turn)
         return
 
     if "destinybond" in pkmn.volatile_statuses:
@@ -2496,18 +2675,35 @@ def move(battle, split_msg):
         # genx/generate_instructions.rs:6386, mirroring data/moves.ts encore onStart
         # `moveSlot.pp <= 0`), so it FAILED the Encore PS landed on T54
         # (`|-start|p2a: Houndstone|Encore`) and no branch could apply it.
+        #
+        # ...EXCEPT for `mustpressure` moves.  sim/pokemon.ts:852-857 empties
+        # pressureTargets for `foeSide` and THEN re-fills it unconditionally:
+        #     if (move.target === 'foeSide') pressureTargets = [];
+        #     if (move.flags['mustpressure']) pressureTargets = this.foes();
+        # so the six mustpressure moves (spikes / stealthrock / toxicspikes,
+        # target foeSide; imprison / snatch, target self; terablast, target
+        # normal) ALWAYS cost the extra PP in front of Pressure regardless of
+        # target.  synth847944: Toxapex's Toxic Spikes (max_pp 32) was used 20
+        # times, 13 in front of a Pressure Deoxys/Giratina -> PS hits exactly 0
+        # PP on T85 and encore's onResidual (data/moves.ts:4759-4765
+        # `moveSlot.pp <= 0`) ends the Encore; charging only 1 left 12 PP
+        # tracked and no branch could remove it.
+        _move_entry = all_move_json.get(move_name, {})
         pp_to_decrement = (
             2
             if opposing_pkmn.ability == "pressure"
-            and all_move_json.get(move_name, {}).get("target")
-            not in (
-                "self",
-                "adjacentAlly",
-                "adjacentAllyOrSelf",
-                "allies",
-                "allySide",
-                "allyTeam",
-                "foeSide",
+            and (
+                _move_entry.get("flags", {}).get("mustpressure")
+                or _move_entry.get("target")
+                not in (
+                    "self",
+                    "adjacentAlly",
+                    "adjacentAllyOrSelf",
+                    "allies",
+                    "allySide",
+                    "allyTeam",
+                    "foeSide",
+                )
             )
             else 1
         )
@@ -3188,6 +3384,32 @@ def activate(battle, split_msg, msg_lines=None, msg_index=None):
         pkmn = battle.user.active
         other_pkmn = battle.opponent.active
 
+    # A rampage blocked by a protection move never applies or restarts `lockedmove`:
+    # the protect family's `onTryHit` runs in hitStepTryHitEvent
+    # (sim/battle-actions.ts:559), before hitStepMoveHitLoop's selfDrops, and PS's
+    # protect handler even deletes a same-turn lock itself (data/moves.ts protect
+    # condition onTryHit: `if (source.volatiles['lockedmove'].duration === 2) delete
+    # source.volatiles['lockedmove']`); an unrestarted continuation expires at
+    # `onAfterMove` that same turn (data/conditions.ts lockedmove).  Same phantom-lock
+    # defect as the `|-immune|` arm in immune() -- the `|move|` handler adds the
+    # volatile unconditionally.
+    if normalize_name(split_msg[3]) in (
+        "moveprotect",
+        "movespikyshield",
+        "movebanefulbunker",
+        "movesilktrap",
+        "moveobstruct",
+        "movekingsshield",
+        "moveburningbulwark",
+    ) and constants.LOCKED_MOVE in other_pkmn.volatile_statuses:
+        logger.info(
+            "{}'s locked move was blocked by a protect move - removing lockedmove".format(
+                other_pkmn.name
+            )
+        )
+        remove_volatile(other_pkmn, constants.LOCKED_MOVE)
+        other_pkmn.volatile_status_durations[constants.LOCKED_MOVE] = 0
+
     if (
         constants.SUBSTITUTE in normalize_name(split_msg[3])
         and len(split_msg) > 4
@@ -3334,6 +3556,44 @@ def activate(battle, split_msg, msg_lines=None, msg_index=None):
         if owner is not None:
             logger.info("Setting {}'s item to {}".format(owner.name, item))
             owner.item = item
+
+    elif (
+        split_msg[3].lower().startswith("item: ")
+        and normalize_name(split_msg[3].split(":")[-1].strip()) == "leppaberry"
+        and len(split_msg) > 4
+    ):
+        # LEPPA BERRY RESTORES PP, and PS names the slot it restored on this very
+        # line: `onEat` picks the moveSlot, sets
+        # `pp = Math.min(pp + addedPP, maxpp)` and announces
+        # `|-activate|<mon>|item: Leppa Berry|<move>|[consumed]`
+        # (data/items.ts:3362-3369; addedPP is 20 under Ripen, else 10).
+        #
+        # The `-enditem` one line earlier already cleared the item, but nothing
+        # gave the PP back, so the reconstruction handed the engine a slot PS had
+        # refilled.  Encore's gate is `moveSlot.pp <= 0` (data/moves.ts:4745,
+        # mirrored by the engine's `last_move.pp <= 0`), so a Leppa'd Revival
+        # Blessing read as still-empty and no branch could apply the Encore PS
+        # landed (synth800042 T8 `|-start|p1a: Pawmot|Encore`).  Reading the slot
+        # off the protocol line avoids re-deriving onEat's "first 0-PP slot, else
+        # first non-full slot" search (data/items.ts:3363-3364).
+        move_name = normalize_name(split_msg[4].strip())
+        move_object = pkmn.get_move(move_name)
+        if move_object is None:
+            logger.info(
+                "{} ate a Leppa Berry for untracked move {}: cannot restore PP".format(
+                    pkmn.name, move_name
+                )
+            )
+        else:
+            move_object.current_pp = min(
+                move_object.current_pp + (20 if pkmn.ability == "ripen" else 10),
+                move_object.max_pp,
+            )
+            logger.info(
+                "{} ate a Leppa Berry: {} PP restored to {}".format(
+                    pkmn.name, move_name, move_object.current_pp
+                )
+            )
 
     if split_msg[3].lower().startswith("move: "):
         move_name = normalize_name(split_msg[3].split(":")[-1].strip())
@@ -4359,6 +4619,23 @@ def set_item(battle, split_msg):
         logger.info("Setting {}'s item to {}".format(pkmn.name, item))
         pkmn.item = item
 
+        # PS's harvest.onResidual CLEARS lastItem right after restoring it
+        # (data/abilities.ts:1796-1797: `pokemon.setItem(pokemon.lastItem);
+        # pokemon.lastItem = '';`), so a berry that is restored and then removed
+        # by Knock Off / Trick / a steal cannot be regenerated again -- only a
+        # genuine re-eat re-arms it.  The engine's HARVEST arm already mirrors
+        # this clear in-search (genx/abilities.rs pushes ChangeLastConsumedItem
+        # -> NONE after the restore); mirror it here too, or every root state
+        # after a restore still ships the berry as `last_consumed_item` and,
+        # under sun (100% proc, so no 50/50 no-restore branch exists), the
+        # engine regenerates a berry PS will not.  "" is PS's own cleared value
+        # and is distinct from None (never tracked), so the `removed_item`
+        # fallback in poke_engine_helpers cannot resurrect the stale berry.
+        # A same-turn restore-then-eat is unaffected: the `-enditem [eat]` that
+        # follows this line re-records it.
+        if _from_tag(split_msg) == "ability: harvest":
+            pkmn.last_consumed_item = ""
+
         # A `-item` line is direct PROTOCOL evidence of what this pokemon holds, so it
         # supersedes any earlier item GUESS. Leaving `item_inferred` set let downstream
         # heuristics overwrite a protocol-established item: synth33779's Cyclizar was
@@ -4395,6 +4672,23 @@ def remove_item(battle, split_msg):
 
     item = normalize_name(split_msg[3].strip())
 
+    # Bug Bite / Pluck EAT the berry they take -- the thief never HOLDS it.
+    # `target.takeItem(source)` clears the item on the TARGET only
+    # (sim/pokemon.ts:1856-1871, `this.item = ''` at :1862; `source` is merely
+    # the TakeItem/Sticky Hold event actor and is never assigned the item), and
+    # the berry is then fired on the thief with
+    # `singleEvent('Eat', item, target.itemState, source, source, move)`
+    # (data/moves.ts:1920-1929 Bug Bite, :13451-13460 Pluck).  Sitrus' onEat
+    # (data/items.ts:5740-5752) therefore prints
+    # `-heal|<thief>|...|[from] item: Sitrus Berry` for a berry the thief does
+    # not own, and `heal_or_damage`'s generic "[from] item:" reveal would read
+    # that as the thief revealing its held item.  Latch the eaten berry on the
+    # thief so that reveal can refuse exactly this line.
+    if any(msg.strip() == "[from] stealeat" for msg in split_msg):
+        thief_side = _side_of_of_tag(battle, split_msg)
+        if thief_side is not None and thief_side.active is not None:
+            thief_side.active.stole_and_ate_berry = item
+
     # `-enditem` names the DISGUISE when an Illusion bearer consumes its own
     # berry / Focus Sash / Power Herb or has its item Knocked Off, and the
     # damage here is worse than a wrong `item`: it also latches `removed_item`,
@@ -4420,10 +4714,26 @@ def remove_item(battle, split_msg):
     # Minior's White Herb and consumes it on receipt; re-arming it left
     # Hoopa item-full, so T28's Magician steal of Minior's Leftovers -- and
     # the observed Leftovers heal -- had no branch.
+    # An UNKNOWN item is "not tracked as holding it" too, and requiring a KNOWN
+    # one made this branch unreachable for exactly the case it was written for:
+    # the mon that RECEIVES the swapped item is virtually always the OPPONENT,
+    # whose hold stays `unknownitem` until revealed, and Trick's donor half is
+    # deliberately not resolved here (`_apply_item_transfer_donor_loss` falls
+    # through for Trick/Switcheroo).  synth773372 T18: Gardevoir (Sticky-Webbed,
+    # -1 Spe) Tricks its Choice Scarf onto Hawlucha, receives Hawlucha's White
+    # Herb and consumes it on receipt; re-arming it left Gardevoir item-full, so
+    # its traced Unburden never doubled its Speed, scarfed Hawlucha moved first
+    # at T19 and KOed it, and the observed Mystical Fire -1 SpA had no branch.
+    # The `[from]`-tag guard scopes the latch to true CONSUMPTION signatures --
+    # PS's useItem/eatItem lines are bare or `[eat]` (sim/pokemon.ts:1788/1836).
+    # With unknown items admitted, every removal would otherwise latch: a Knock
+    # Off (`[from] move: Knock Off`) of a choice item would arm the flag and
+    # wrongly refuse a later Trick handing this mon the SAME choice item
+    # (duplicate choice items are common in randbats).
     if (
         pkmn.item is not None
-        and pkmn.item != constants.UNKNOWN_ITEM
         and item != pkmn.item
+        and not _from_tag(split_msg)
     ):
         pkmn.consumed_before_announced = item
 
@@ -4433,6 +4743,30 @@ def remove_item(battle, split_msg):
     if pkmn.removed_item is None:
         logger.info("Setting {}'s removed item to {}".format(pkmn.name, item))
         pkmn.removed_item = item
+
+    # ...but `removed_item` is NOT PS's `lastItem`, and the engine's
+    # `last_consumed_item` is.  PS writes `lastItem` UNCONDITIONALLY inside
+    # useItem/eatItem (`this.lastItem = this.item`, sim/pokemon.ts:1846 and :1805)
+    # -- every consumption overwrites the previous one -- while `takeItem`
+    # (:1856-1871) never touches it, so Knock Off / Thief / Trick's donor half
+    # leave it alone.  `removed_item` is the exact opposite: a ONE-SHOT latch that
+    # records takeItem removals too, and it cannot be made overwritable because it
+    # doubles as the set-prediction filter (data/pkmn_sets.py:842-855, "only sets
+    # with set_item == removed_item").  So record the TRUE consumptions separately;
+    # poke_engine_helpers prefers this and keeps `removed_item` as the fallback.
+    # synth1166504: Gardevoir Tricked its Choice Scarf onto Exeggutor on T21, which
+    # latched removed_item=choicescarf; it ate the Sitrus Berry it received on T53,
+    # but the latch held, so the engine saw last_consumed_item=CHOICESCARF, its
+    # TRACED Harvest could not re-arm the berry, and the observed T55/T57
+    # `-item ... [from] ability: Harvest` + `-enditem [eat]` + `-heal` (and the
+    # matching item loss) existed in no branch.
+    # A `[from]`-tagged `-enditem` is precisely the takeItem family (Knock Off,
+    # Thief/stealeat, `[from] move: Trick`); bare and `[eat]` lines are the
+    # useItem/eatItem ones.  Air Balloon's bare `-enditem` (data/items.ts:197-202,
+    # which does NOT set lastItem) is the one over-capture, and it is already what
+    # `removed_item` fed the engine today, so nothing changes there.
+    if not _from_tag(split_msg):
+        pkmn.last_consumed_item = item
 
     # PS hangs onTakeItem/onAfterUseItem on the Unburden ABILITY OBJECT itself
     # (data/abilities.ts:5228-5234), so the volatile arms off the mon's ACTUAL
@@ -4469,6 +4803,28 @@ def immune(battle, split_msg):
     attacking_side = battle.user if side is battle.opponent else battle.opponent
     _rollback_stellar_boost(attacking_side.active)
     _disarm_hp_certificates(battle)
+
+    # A rampage's `self: {volatileStatus: 'lockedmove'}` is applied from `moveHit`'s
+    # selfDrops, which `trySpreadMoveHit` only reaches once a target was actually HIT.
+    # `hitStepTypeImmunity` removed this target and printed `|-immune|`
+    # (sim/battle-actions.ts:562, body :654), so PS adds no lock -- and a CONTINUATION
+    # is not restarted either, so its duration expires at `onAfterMove` that same turn
+    # (data/conditions.ts lockedmove onRestart/onAfterMove/onEnd).  The `|move|`
+    # handler above adds the volatile unconditionally, which left Outrage locked after
+    # an immune hit: synth1337294 T18 (Outrage into a Fairy Fezandipiti ->
+    # `|-immune|`, yet Archaludon freely selected Iron Head on T19, proving PS held no
+    # lock).  The phantom lock ran out at T20, fired PS's `[fatigue]` confusion two
+    # turns early, ate Archaludon's Lum Berry, and the Poltergeist PS landed off that
+    # berry -- with the Stamina +1 Def it triggered -- appeared in no branch.  Same
+    # removal the `|cant|` interrupt path already performs.
+    if constants.LOCKED_MOVE in attacking_side.active.volatile_statuses:
+        logger.info(
+            "{}'s locked move hit an immune target - removing lockedmove".format(
+                attacking_side.active.name
+            )
+        )
+        remove_volatile(attacking_side.active, constants.LOCKED_MOVE)
+        attacking_side.active.volatile_status_durations[constants.LOCKED_MOVE] = 0
 
     for msg in split_msg:
         if constants.ABILITY in normalize_name(msg):
@@ -4665,6 +5021,19 @@ def _switch_active_with_zoroark_from_reserves(
     zoroark_from_reserves.boosts = copy(pkmn.boosts)
     zoroark_from_reserves.status = pkmn.status
     zoroark_from_reserves.volatile_statuses = copy(pkmn.volatile_statuses)
+    # ...and the DURATION counters of those volatiles.  PS's Illusion is purely
+    # cosmetic (data/abilities.ts:2045-2075 only sets/clears `pokemon.illusion`);
+    # the bearer is the Pokemon that was on the field all along, so every
+    # `volatiles[...].duration` accrued under the disguise is ITS effectState.
+    # Moving the volatile set without its counters restarts every timer at 0 and
+    # the engine then never reaches the release tick -- synth848498 T16 (Taunt on
+    # a disguised Oricorio, illusion resolved T17, PS `-end` T18) and synth890187
+    # T19/T21 both lost their `RemoveVolatileStatus`.  `illusion_end` already
+    # does this on the `|replace|` path (`volatile_status_durations.update(
+    # previous_volatile_durations)`); its comment claims this function does too.
+    zoroark_from_reserves.volatile_status_durations.update(
+        pkmn.volatile_status_durations
+    )
     # only a tera the disguise object did NOT already carry when this stay began
     # belongs to the zoroark -- see the same reasoning (and its reproduced case)
     # in `illusion_end`
@@ -6209,6 +6578,28 @@ def turn(battle, split_msg):
     # no hit context is open at a turn boundary (item 1)
     clear_hit_flags(battle)
 
+    # ...and no swap-received-then-consumed item can still be waiting for its
+    # announcement.  `remove_item` latches `consumed_before_announced` when an
+    # `-enditem` names an item the mon was not tracked as holding, so `set_item`
+    # can refuse the Trick `-item` PS prints AFTER the consumption: Trick's
+    # onHit calls `target.setItem(myItem)` (data/moves.ts:19889) and setItem
+    # fires the incoming item's Start handler synchronously (sim/pokemon.ts:1873),
+    # so the `-enditem` can precede the `-item ...|[from] move: Trick` line at
+    # :19890.  That race resolves inside ONE resolution block, so a latch that
+    # survives a `|turn|` is stale by construction -- and on the OPPONENT side,
+    # whose hold sits at UNKNOWN_ITEM until revealed, EVERY ordinary berry eat
+    # arms it.  synth873476 T24: Greedent eats its own Sitrus Berry
+    # (`-enditem|p2a: Greedent|Sitrus Berry|[eat]`), T25 Hoopa Tricks it a second
+    # Sitrus Berry, the stale latch refused the `-item`, and T27's observed
+    # Sitrus heal (data/items.ts:5748-5751) plus Cheek Pouch heal
+    # (data/abilities.ts:483-485) had no branch.
+    for side in (battle.user, battle.opponent):
+        mons = list(side.reserve)
+        if side.active is not None:
+            mons.append(side.active)
+        for pkmn in mons:
+            pkmn.consumed_before_announced = None
+
     # PS `nextTurn` clears `statsRaisedThisTurn` on every active mon -- but the whole block
     # is guarded by `if (this.turn !== 1)` (sim/battle.ts:1673-1675), and `|turn|N` is
     # emitted by `nextTurn` AFTER it incremented `this.turn`, so the comparison here is
@@ -6355,7 +6746,10 @@ def process_battle_updates(battle: Battle):
 
         function_to_call = battle_modifiers_lookup.get(action)
         if function_to_call is not None:
-            if function_to_call is activate:
+            # `move` joins `-activate` in needing its position in the block:
+            # a Choice-lock BeforeMove abort is only distinguishable from an
+            # ordinary `[still]`ed move by the `|-fail|` on the NEXT line.
+            if function_to_call is activate or function_to_call is move:
                 # `-activate` is the only handler that has to know WHICH hit it
                 # is reporting, and the protocol only says so in the lines
                 # AROUND it (a Substitute absorption carries no attacker, no

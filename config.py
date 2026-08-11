@@ -15,9 +15,15 @@ class CustomFormatter(logging.Formatter):
 
 class CustomRotatingFileHandler(RotatingFileHandler):
     def __init__(self, file_name, **kwargs):
+        # FP_LOG_SUBDIR isolates concurrent processes' logs (multi-battle same
+        # account): two handlers sharing logs/init.log would cross-contaminate
+        # on rollover (rename + still-open fd = one bot's lines in the other's
+        # battle log).
         self.base_dir = "logs"
-        if not os.path.exists(self.base_dir):
-            os.mkdir(self.base_dir)
+        sub = os.environ.get("FP_LOG_SUBDIR")
+        if sub:
+            self.base_dir = os.path.join("logs", sub)
+        os.makedirs(self.base_dir, exist_ok=True)
 
         super().__init__("{}/{}".format(self.base_dir, file_name), **kwargs)
 
@@ -81,6 +87,8 @@ class _FoulPlayConfig:
     team_name: str
     team_list: str = None
     dump_team_dir: str = None
+    emit_infostate_rows: str = None
+    truestate_net: str = None
     switch_weight_multiplier: float = 1.0
     losing_attack_fallback_threshold: float = 0.05
     variance_penalty_lambda: float = 0.0
@@ -110,8 +118,18 @@ class _FoulPlayConfig:
     # Argmax-path tera gate (selection.py _apply_argmax_tera_gate). 0 = OFF, so
     # the champion's measured configuration is unchanged unless asked for.
     # score margin = tera_gate_score_per_mon x (opp_alive + opp_unrevealed)
+    # Per-turn clock increment of the format (Showdown Blitz: +5s/turn, bank
+    # capped at 15s — data/rulesets.ts:764-777). Spending more than this per
+    # turn IN TOTAL drains the bank until the game is lost on time, with every
+    # turn looking individually fine. Auto-set for blitz formats in
+    # configure(); 0 disables the cap.
+    turn_increment_ms: int = 0
+    turn_overhead_margin_ms: int = 1500
     tera_gate_score_per_mon: float = 0.0
     tera_gate_visit_frac: float = 0.5
+    # Extra score margin demanded while the OPPONENT still holds their own
+    # tera: their comeback potential is higher, so ours is worth more held.
+    tera_gate_opp_tera_bonus: float = 0.002
     losing_upside_threshold: float = 0.15
     losing_upside_displacement_multiplier: float = 2.0
     selection_argmax_only: bool = False
@@ -367,6 +385,24 @@ class _FoulPlayConfig:
             "./teams/teams/<gen>/sampled/ so it can be re-used via --team-name.",
         )
         parser.add_argument(
+            "--truestate-net",
+            default=None,
+            help="Path to a true-state net checkpoint (truestate/train.py). When "
+            "set, moves are chosen by ONE forward pass over the true information "
+            "state -- no MCTS, no world sampling. Falls back to the normal search "
+            "for any decision the net cannot decode, so this can never produce an "
+            "illegal command.",
+        )
+        parser.add_argument(
+            "--emit-infostate-rows",
+            default=None,
+            help="If set, one info-state JSON row per decision (normal move pick, "
+            "forced switch, revival) is appended to "
+            "<dir>/<battle-tag>_<side>.rows.jsonl. See truestate/SCHEMA.md for the "
+            "v1 row schema. Serialization failures are logged and skipped, never "
+            "propagated into the game.",
+        )
+        parser.add_argument(
             "--never-start-timer",
             action="store_true",
             help="When enabled, the bot will not send '/timer on' at battle start",
@@ -480,6 +516,14 @@ class _FoulPlayConfig:
         self.avatar = args.ps_avatar
         self.bot_mode = BotModes[args.bot_mode]
         self.pokemon_format = args.pokemon_format
+        # Blitz is an increment clock: +10s/turn effective, 15s bank cap
+        # (rulesets.ts:764-777 — "Add Per Turn IS 5, TRANSLATING TO AN
+        # INCREMENT OF 10"). Cap per-turn search so a config can never spend
+        # past the increment and bleed the bank. At the default margin this
+        # yields 8500ms sustainable — no effect on the standard 4000-4500ms
+        # configs, pure guard rail against overambitious ones.
+        if self.turn_increment_ms == 0 and "blitz" in (args.pokemon_format or ""):
+            self.turn_increment_ms = 10000
         self.smogon_stats = args.smogon_stats_format
         self.search_time_ms = args.search_time_ms
         self.first_turn_search_time_ms = args.first_turn_search_time_ms
@@ -495,6 +539,8 @@ class _FoulPlayConfig:
         self.team_name = args.team_name or self.pokemon_format
         self.team_list = args.team_list
         self.dump_team_dir = args.dump_team_dir
+        self.emit_infostate_rows = args.emit_infostate_rows
+        self.truestate_net = args.truestate_net
         self.switch_weight_multiplier = args.switch_weight_multiplier
         self.losing_attack_fallback_threshold = args.losing_attack_fallback_threshold
         self.variance_penalty_lambda = args.variance_penalty_lambda

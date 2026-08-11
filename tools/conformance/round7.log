@@ -1,0 +1,88 @@
+=== phase 1: generating 4 fresh corpora (40,000 games)
+  corpus 127 (seed 1310001): i-0dc2ec872e6f656a8
+  corpus 128 (seed 1320001): i-0e4911a37025de07c
+  corpus 129 (seed 1330001): i-0df98bc2209b7a485
+  corpus 130 (seed 1340001): i-0e6c3e72b0c53fd0b
+  corpus 131 (seed 1350001): i-0444b0917554e1dce
+  corpus 132 (seed 1360001): i-0977efb74d6041268
+  corpus 133 (seed 1370001): i-0cd69f09deff45a05
+  corpus 134 (seed 1380001): i-062f3c9e8b0102895
+  corpus 135 (seed 1390001): i-06fe84a665d0cecd3
+  corpus 136 (seed 1400001): i-06f31b7c18bca01c2
+=== waiting for corpora (up to 90 min)
+all 4 corpora ready (04:54:48Z)
+=== phase 2: sweeping all four in parallel
+  sweep g127: i-0c877bb8178735d8b
+  sweep g128: i-0fea00e9480f7609f
+  sweep g129: i-082f7d86f80788c16
+  sweep g130: i-00c1cb38b9101dc6c
+  sweep g131: i-059ce3e0e40878c82
+  sweep g132: i-0c73bfd1140d1c70b
+  sweep g133: i-06d02e08b2f0fd866
+  sweep g134: i-04cf50570d8fb5083
+  sweep g135: i-0c93b10701e69a498
+  sweep g136: i-0d456174aa012512f
+=== waiting for sweeps (up to 90 min)
+all 4 sweeps done (05:04:05Z)
+
+================ GATE 5 VERDICTS ================
+--- g127
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g128
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g129
+ENGINE FINDINGS: 1 hard, 1 soft  (total 2)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1337294_synthopp.log t20: observed + def on user but no branch produces it
+  [volatile] battle-gen9randombattle-synth1333856_synthopp.log t30: observed volatile confusion end on user but no branch removes it [membership 5/5 vacuous]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g130
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g131
+ENGINE FINDINGS: 6 hard, 1 soft  (total 7)
+  boost: 6
+  immunity: 1
+rows:
+  [immunity] battle-gen9randombattle-synth1350071_synthopp.log t24: protocol shows opp immune but every branch damages it with the move (damage provenance)
+  [boost] battle-gen9randombattle-synth1352906_synthopp.log t19: observed + atk on opp but no branch produces it
+  [boost] battle-gen9randombattle-synth1352906_synthopp.log t19: observed + spa on opp but no branch produces it
+  [boost] battle-gen9randombattle-synth1352906_synthopp.log t19: observed + spe on opp but no branch produces it
+  [boost] battle-gen9randombattle-synth1352906_synthopp.log t19: observed - def on opp but no branch produces it
+  [boost] battle-gen9randombattle-synth1352906_synthopp.log t19: observed - spd on opp but no branch produces it
+  [boost] battle-gen9randombattle-synth1354274_synthopp.log t13: observed - def on user but no branch produces it [ko-margin]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g132
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  damage: 1
+rows:
+  [damage] battle-gen9randombattle-synth1365121_synthopp.log t13: observed damage 160 on crabominable from terapagosterastal poltergeist (crit=False) not in the PS-exact roll set (nearest delta +103; max_ro
+  diverged: 1
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g133
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g134
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 66 lines, 1 classes
+--- g135
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g136
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+rows:
+  [volatile] battle-gen9randombattle-synth1409286_synthopp.log t14: observed volatile Substitute end on user but no branch removes it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+=================================================

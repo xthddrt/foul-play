@@ -1271,11 +1271,12 @@ class TestArgmaxTeraGate(unittest.TestCase):
         ("closecombat", 349, 0.6710),
     ]
 
-    def _choose(self, rows, opp_alive, opp_unrevealed):
+    def _choose(self, rows, opp_alive, opp_unrevealed, opp_tera_used=False):
         return select_move_from_mcts_results(
             [(mcts_result_scored(rows), 1.0, 0)],
             opp_alive=opp_alive,
             opp_unrevealed=opp_unrevealed,
+            opp_tera_used=opp_tera_used,
         )
 
     def test_blocks_when_a_considered_non_tera_outscores_it(self):
@@ -1297,8 +1298,37 @@ class TestArgmaxTeraGate(unittest.TestCase):
             ("flareblitz-tera", 5000, 0.600),
             ("flareblitz", 4000, 0.560),  # clears the 25% bar, 0.04 behind
         ]
-        # 2 alive + 1 unrevealed => margin 0.003; 0.600 >= 0.560 + 0.003
+        # 2 alive + 1 unrevealed => margin 0.003 + 0.002 opp-tera-held;
+        # 0.600 >= 0.560 + 0.005
         self.assertEqual("flareblitz-tera", self._choose(rows, 2, 1))
+
+    # game 3 (2026-08-08, loss to "sobs again"), decision 6: bulkup-tera argmax
+    # at 32.1% won by only +0.042 over bulkup with ~10 effective opponent mons
+    # and the opponent's tera unspent. At visit_frac 1/3 the higher-SCORING
+    # closecombat (14.0% > 10.7% bar) joins the considered set and vetoes the
+    # spend; fallback is the considered visit argmax (bulkup), not closecombat.
+    _G3T6 = [
+        ("bulkup-tera", 3210, 0.445),
+        ("bulkup", 1760, 0.403),
+        ("switch sandaconda", 1430, 0.391),
+        ("closecombat", 1400, 0.452),
+        ("earthquake", 920, 0.386),
+    ]
+
+    def test_third_of_top_visit_bar_lets_high_score_move_veto(self):
+        FoulPlayConfig.tera_gate_visit_frac = 1 / 3
+        # floor = 0.452 + 0.001x10 + 0.002 = 0.464 > 0.445 => blocked
+        self.assertEqual("bulkup", self._choose(self._G3T6, 6, 4))
+
+    def test_opp_tera_held_bonus_is_decisive_at_the_margin(self):
+        rows = [
+            ("flareblitz-tera", 5000, 0.600),
+            ("flareblitz", 4000, 0.596),
+        ]
+        # margin 0.003; opp tera spent => floor 0.599, allowed
+        self.assertEqual("flareblitz-tera", self._choose(rows, 2, 1, opp_tera_used=True))
+        # opp tera held => floor 0.601, blocked
+        self.assertEqual("flareblitz", self._choose(rows, 2, 1, opp_tera_used=False))
 
     def test_disabled_by_default(self):
         FoulPlayConfig.tera_gate_score_per_mon = 0.0

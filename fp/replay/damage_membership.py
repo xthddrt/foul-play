@@ -876,7 +876,13 @@ def _base_types(pkmn) -> list[str]:
     return [normalize_name(t) for t in entry.get("types", ())]
 
 
-def _grounded(pkmn, ctx: PsCombatContext) -> bool:
+def _grounded(pkmn, ctx: PsCombatContext, ability_suppressed: bool = False) -> bool:
+    # `ability_suppressed` mirrors PS sim/pokemon.ts:2161
+    #     if (this.hasAbility(['levitate','eelevate']) && !this.battle.suppressingAbility(this))
+    #         return null;
+    # -- under a Mold-Breaker-class attacker `suppressingAbility` (sim/battle.ts:
+    # 365-368) is true for the DEFENDER, so the Levitate branch is skipped and the
+    # mon falls through to `item !== 'airballoon'`, i.e. it IS grounded.
     volatiles = set(getattr(pkmn, "volatile_statuses", ()) or ())
     if ctx.gravity or "smackdown" in volatiles or "ingrain" in volatiles:
         return True
@@ -884,7 +890,7 @@ def _grounded(pkmn, ctx: PsCombatContext) -> bool:
         return False
     if _item(pkmn) == "airballoon":
         return False
-    if pkmn.ability == "levitate":
+    if pkmn.ability == "levitate" and not ability_suppressed:
         return False
     return "flying" not in _ps_types(pkmn)
 
@@ -1171,8 +1177,17 @@ def _base_power_pre_event(mv, move_id, attacker, defender, ctx, mtype, category,
         raise PsRefusal("ps_unmodelled_move_" + move_id)
     if move_id == "acrobatics":
         return bp * 2 if _item(attacker) is None else bp
-    if move_id == "hex":
-        return bp * 2 if defender.status else bp
+    if move_id in ("hex", "infernalparade"):
+        # data/moves.ts hex:8610-8620 / infernalparade:9546-9553 —
+        # `if (target.status || target.hasAbility('comatose'))`. Comatose never
+        # writes `pokemon.status` (data/abilities.ts:588 "Permanent sleep status
+        # implemented in the relevant sleep-checking effects"), so a status-only
+        # test understates the BP by half against a Comatose holder and the
+        # reference roll set comes out at half the real damage (g74 synth789767
+        # T4: Hex into tera-Ghost Komala observed 140, reference max_roll 80).
+        # Comatose is `cantsuppress` and not `breakable`, so no Mold Breaker /
+        # Neutralizing Gas qualifier is needed.
+        return bp * 2 if (defender.status or defender.ability == "comatose") else bp
     if move_id in ("boltbeak", "fishiousrend"):
         if ctx.attacker_moves_first is None:
             raise PsRefusal("ps_unknown_move_order")
@@ -1321,8 +1336,18 @@ def _base_power_handlers(
             handlers.append((15, "chain", 4915))
 
     # field
+    # `def_ability` above is already Mold-Breaker-resolved (levitate is in
+    # _ABILITY_BREAKABLE), so Levitate surviving there means it was NOT suppressed;
+    # Levitate present on the mon but gone from `def_ability` is exactly PS's
+    # `battle.suppressingAbility(defender)` (sim/battle.ts:365-368) for isGrounded
+    # (sim/pokemon.ts:2161).  The attacker-side `_grounded(attacker, ctx)` calls
+    # below intentionally stay unsuppressed: gen>=8 suppressingAbility requires
+    # `activePokemon !== target`, so a move never breaks its own user's ability.
+    def_levitate_suppressed = defender.ability == "levitate" and def_ability != "levitate"
     if ctx.terrain == "grassyterrain":
-        if move_id in ("earthquake", "bulldoze", "magnitude") and _grounded(defender, ctx):
+        if move_id in ("earthquake", "bulldoze", "magnitude") and _grounded(
+            defender, ctx, ability_suppressed=def_levitate_suppressed
+        ):
             handlers.append((6, "chain", 2048))
         if mtype == "grass" and _grounded(attacker, ctx):
             handlers.append((6, "chain", 5325))
@@ -2245,8 +2270,21 @@ def apply_exact_team(battler, lookup: dict, is_user: bool) -> None:
             pkmn.tera_type = normalize_name(tera_type)
         if is_user:
             continue
-        if not pkmn.ability and rec.get("ability"):
+        # The sidecar ability is KNOWLEDGE; fp's ability is either unknown,
+        # protocol knowledge (an `|-ability|` / `[from] ability:` reveal), or a
+        # GUESS made by an inference heuristic (`ability_inferred` -- today only
+        # the "healed while off the field -> regenerator" arm at
+        # battle_modifier.py:1242-1259).  A guess must lose to the sidecar, for
+        # exactly the reason `item_inferred` does just below: synth1352906 T19
+        # stood Klawf up with REGENERATOR instead of ANGER SHELL (the off-field
+        # gain belonged to a Zoroark-Hisui that had been wearing its face), so no
+        # branch produced the observed Anger Shell +atk/+spa/+spe/-def/-spd.
+        # Fill-if-unknown otherwise, so a WITNESSED mid-battle ability (Skill
+        # Swap / Trace / Mummy) is still never overwritten.
+        ability_is_guess = getattr(pkmn, "ability_inferred", False)
+        if (not pkmn.ability or ability_is_guess) and rec.get("ability"):
             pkmn.ability = normalize_name(rec["ability"])
+            pkmn.ability_inferred = False
         # The sidecar item is KNOWLEDGE; fp's item is either unknown, protocol
         # knowledge (a reveal / Knock Off / consumption), or a GUESS made by the
         # inference heuristics (`item_inferred`, e.g. "took no Stealth Rock
@@ -3093,9 +3131,18 @@ def _beatup_base_powers(attacker, party, party_order) -> tuple:
             getattr(p, "fainted", False) or p.hp <= 0 or p.status for p in slots[key]
         ):
             continue
-        # `setSpecies` is the SET's species (data/moves.ts beatup), i.e. the
-        # team-list species, never a mid-battle forme
+        # `setSpecies` is the SET's species (data/moves.ts:1155), i.e. the
+        # team-list species, never a mid-battle forme.  A BATTLE-ONLY forme can
+        # never BE a set species: the gen9 randbats generator writes
+        # `species: (typeof species.battleOnly === 'string') ? species.battleOnly
+        # : species.name` (data/random-battles/gen9/teams.ts:2552) and the team
+        # validator applies the same rewrite (sim/team-validator.ts:1649-1669).
+        # `key` is the forme the protocol revealed, so Zacian-Crowned (base Atk
+        # 150 -> BP 20) has to be read back as Zacian (base Atk 120 -> BP 17).
         entry = pokedex.get(key) or {}
+        battle_only = entry.get("battleOnly")
+        if isinstance(battle_only, str):
+            entry = pokedex.get(normalize_name(battle_only)) or {}
         try:
             base_atk = int(entry["baseStats"]["attack"])
         except (KeyError, TypeError, ValueError):
@@ -3118,6 +3165,7 @@ def run_for_turn(
     tolerance: int = 0,
     prior_faints: dict | None = None,
     party_order: dict | None = None,
+    prior_lines: list[str] | None = None,
 ) -> tuple[list[DamageRecord], Counter, list]:
     """Run exact-damage membership for one reconstructed turn.
 
@@ -3155,6 +3203,22 @@ def run_for_turn(
         user_active.max_hp,
     )
     counters["damage_direct_events"] = len(events)
+
+    # PS splits ONE turn into TWO protocol decision blocks whenever a mid-turn
+    # switch request fires -- Revival Blessing carries `selfSwitch: true` purely
+    # to raise one (data/moves.ts:15120-15124), and pivot moves do the same.
+    # This call then sees only the second block, so a `first_actor` derived from
+    # it alone names whoever acted AFTER the split and reports the opponent as
+    # having moved first.  Analytic reads exactly that order (`this.queue
+    # .willMove(target)`, data/abilities.ts:110-125), so re-seed from the
+    # earlier blocks of the SAME turn whenever they already name an actor.
+    # synth1000871 T28: Pawmot's Revival Blessing split the turn and Magnezone's
+    # Volt Switch was derived unboosted (max_roll 72 vs PS's observed 82).
+    for _prior in prior_lines or ():
+        _pp = _prior.split("|")
+        if len(_pp) >= 4 and _pp[1] in ("move", "switch"):
+            sidedata["first_actor"] = _slot_of(_pp[2])
+            break
 
     opp_pid = "p1" if user_pid == "p2" else "p2"
     # Zoroark illusion spans: sidecar stats keyed by species are wrong for a
