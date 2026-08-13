@@ -142,7 +142,8 @@ async def async_pick_move(battle):
                     from fp.truestate_policy import pick_move as _ts_pick
 
                     best_move = await loop.run_in_executor(
-                        pool, _ts_pick, battle_copy, FoulPlayConfig.truestate_net
+                        pool, _ts_pick, battle_copy, FoulPlayConfig.truestate_net,
+                        FoulPlayConfig.truestate_temperature,
                     )
                     if best_move is not None:
                         logger.info("truestate net chose: {}".format(best_move))

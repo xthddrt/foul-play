@@ -100,12 +100,17 @@ def _slot_to_decision(battle, slot, info):
     return None
 
 
-def pick_move(battle, ckpt_path):
+def pick_move(battle, ckpt_path, temperature=0.0):
     """Return a decision string chosen by the net, or None to fall back.
 
     Returning None (rather than raising or guessing) is deliberate: every
     caller already has the search path available, and a bad decode should
     degrade to the champion bot, never to an illegal command.
+
+    `temperature` > 0 samples from softmax(masked logits / T) instead of taking
+    the argmax. Deploy stays at 0; RL generation runs at 1.0, because a policy
+    gradient can only learn from actions the policy actually varies over -- an
+    argmax corpus has zero exploration and the update degenerates.
     """
     net = load(ckpt_path)
     info = infostate.build_legal_mask(battle)
@@ -129,7 +134,12 @@ def pick_move(battle, ckpt_path):
     # trust the request-derived mask over the row's copy of it
     neg = _TORCH.full_like(logits, float("-inf"))
     legal = _TORCH.tensor(mask, dtype=_TORCH.bool)
-    slot = int(_TORCH.where(legal, logits, neg).argmax())
+    masked = _TORCH.where(legal, logits, neg)
+    if temperature and temperature > 0:
+        probs = _TORCH.softmax(masked / temperature, dim=-1)
+        slot = int(_TORCH.multinomial(probs, 1))
+    else:
+        slot = int(masked.argmax())
 
     if not mask[slot]:
         return None

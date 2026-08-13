@@ -1,6 +1,7 @@
 import unittest
 import json
 from collections import defaultdict
+from unittest import mock
 
 import constants
 from constants import BattleType
@@ -5130,6 +5131,41 @@ class TestTransform(unittest.TestCase):
 
         self.assertEqual("weedle", self.battle.opponent.active.transformed_into)
 
+    def test_transform_copies_times_attacked_from_the_target(self):
+        # PS sim/pokemon.ts:1314 `this.timesAttacked = pokemon.timesAttacked;` inside
+        # transformInto: a COPY, not a merge, so Rage Fist's BP
+        # (data/moves.ts:14582-14584, 50 + 50 * timesAttacked) scales off the COPIED
+        # mon's hit count and the transformer's own accumulated count is discarded.
+        self.battle.opponent.active.times_attacked = 4
+        self.battle.user.active.times_attacked = 2
+        split_msg = [
+            "",
+            "-transform",
+            "p2a: Ditto",
+            "p1a: Weedle",
+            "[from] ability: Imposter",
+        ]
+
+        transform(self.battle, split_msg)
+
+        self.assertEqual(2, self.battle.opponent.active.times_attacked)
+        self.assertEqual(2, self.battle.user.active.times_attacked)
+
+    def test_transform_copies_a_zero_times_attacked_over_a_nonzero_one(self):
+        self.battle.opponent.active.times_attacked = 3
+        self.battle.user.active.times_attacked = 0
+        split_msg = [
+            "",
+            "-transform",
+            "p2a: Ditto",
+            "p1a: Weedle",
+            "[from] ability: Imposter",
+        ]
+
+        transform(self.battle, split_msg)
+
+        self.assertEqual(0, self.battle.opponent.active.times_attacked)
+
 
 class TestCant(unittest.TestCase):
     def setUp(self):
@@ -5168,6 +5204,17 @@ class TestCant(unittest.TestCase):
         cant(self.battle, ["", "-cant", "p1a: Weedle", "slp"])
         self.assertEqual(0, self.battle.user.active.sleep_turns)
         self.assertEqual(2, self.battle.user.active.rest_turns)
+
+    def test_cant_from_sleep_with_rest_turns_1_does_not_exit_the_process(self):
+        # b004/g3/20260812T034638 and b000/g13/20260812T065006: a desynced
+        # tracker reached this branch and an exit(1) here killed the host
+        # worker.  The mon stays asleep at 1; |-curestatus| resolves it.
+        self.battle.user.active.sleep_turns = 0
+        self.battle.user.active.rest_turns = 1
+        self.battle.user.active.status = constants.SLEEP
+        cant(self.battle, ["", "-cant", "p1a: Weedle", "slp"])
+        self.assertEqual(1, self.battle.user.active.rest_turns)
+        self.assertEqual(0, self.battle.user.active.sleep_turns)
 
     def test_interrupted_two_turn_release_drops_the_charge_volatile(self):
         # PS: twoturnmove.onMoveAborted removes itself (data/conditions.ts:320-322)
@@ -5219,6 +5266,46 @@ class TestCant(unittest.TestCase):
                 constants.PARTIALLY_TRAPPED
             ],
         )
+
+
+class TestProcessBattleUpdatesErrorHandling(unittest.TestCase):
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.user.active = Pokemon("weedle", 100)
+        self.battle.opponent.active = Pokemon("caterpie", 100)
+        self.battle.generation = "gen9"
+        self.battle.request_json = {
+            constants.ACTIVE: [{constants.MOVES: []}],
+            constants.SIDE: {
+                constants.ID: None,
+                constants.NAME: None,
+                constants.POKEMON: [],
+                constants.RQID: None,
+            },
+        }
+
+    def test_partially_applied_block_is_discarded_not_replayed(self):
+        # If a handler raises mid-block and the caller survives (the replay
+        # and mask harnesses swallow per-chunk errors), the block must NOT be
+        # re-applied on the next |request|: that double-apply is what
+        # manufactured the rest_turns==1 + 'cant' state on the mask fleet.
+        self.battle.user.active.status = constants.SLEEP
+        self.battle.user.active.rest_turns = 3
+        self.battle.msg_list = [
+            "|cant|p1a: Weedle|slp",
+            "|upkeep",
+        ]
+        with mock.patch(
+            "fp.battle_modifier.upkeep", side_effect=ValueError("boom")
+        ):
+            with self.assertRaises(ValueError):
+                process_battle_updates(self.battle)
+        self.assertEqual(2, self.battle.user.active.rest_turns)
+        self.assertEqual([], self.battle.msg_list)
+        process_battle_updates(self.battle)
+        self.assertEqual(2, self.battle.user.active.rest_turns)
 
 
 class TestUpkeep(unittest.TestCase):

@@ -1,0 +1,76 @@
+packing current tree -> s3://pokebot-valuenet-389825051723/code.tar.gz ...
+packed at 04:40:39Z
+=== phase 1: generating 4 fresh corpora (40,000 games)
+  corpus 167 (seed 1710001): i-04982cce3cdd70a4f
+  corpus 168 (seed 1720001): i-0baf2c27e763a974f
+  corpus 169 (seed 1730001): i-09910fad36fea401f
+  corpus 170 (seed 1740001): i-04e580d8c6a4bb40c
+  corpus 171 (seed 1750001): i-094b947a53c3f284f
+  corpus 172 (seed 1760001): i-036bcc0e4d61aa820
+  corpus 173 (seed 1770001): i-0465392f21a0e1ed2
+  corpus 174 (seed 1780001): i-0bfd919e06867160f
+  corpus 175 (seed 1790001): i-0ab7261a2b6dfe27d
+  corpus 176 (seed 1800001): i-0ec805fa31479abee
+=== waiting for corpora (up to 90 min)
+all 4 corpora ready (04:45:50Z)
+=== phase 2: sweeping all four in parallel
+  sweep g167: i-0e501c4b31c93a283
+  sweep g168: i-0d236b6ca2428c880
+  sweep g169: i-0b384d1b9d69ea591
+  sweep g170: i-0f0a228083a7270de
+  sweep g171: i-05ab83037ffb4f8c2
+  sweep g172: i-025a7fee1661cf780
+  sweep g173: i-0b63db07dd4db60a8
+  sweep g174: i-08b3701cd9f047445
+  sweep g175: i-0d324cb0f6e1eaa9d
+  sweep g176: i-05ed194fac40fde6e
+=== waiting for sweeps (up to 90 min)
+all 4 sweeps done (04:54:27Z)
+
+================ GATE 5 VERDICTS ================
+--- g167
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g168
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g169
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g170
+ENGINE FINDINGS: 0 hard, 1 soft  (total 1)
+rows:
+  [volatile] battle-gen9randombattle-synth1741197_synthopp.log t23: observed volatile Substitute end on user but no branch removes it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g171
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1754819_synthopp.log t29: observed - def on opp but no branch produces it
+  diverged: 0
+TRACKER WARNINGS (stderr): 1 lines, 1 classes
+--- g172
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g173
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g174
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g175
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g176
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+=================================================

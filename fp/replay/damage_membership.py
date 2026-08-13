@@ -130,6 +130,21 @@ except Exception:  # pragma: no cover
     pokedex = {}
 
 try:
+    # foul-play's LIVE-PLAY mirror of PS's generation-time spread
+    # post-processing (teams.ts:1536-1589).  Reused rather than re-implemented
+    # for the HP-EV shave; see `_randbats_shaved_hp_ev`.
+    from data.pkmn_sets import random_battle_ev_iv_spread
+except Exception:  # pragma: no cover
+    random_battle_ev_iv_spread = None
+
+try:
+    # only for `_fill_unrevealed_reserves`, which materialises sidecar-stated
+    # party slots the protocol never revealed
+    from fp.battle import Pokemon
+except Exception:  # pragma: no cover
+    Pokemon = None
+
+try:
     from fp.search.poke_engine_helpers import battle_to_poke_engine_state
     from poke_engine import calculate_damage, calculate_damage_roll_sets
 except Exception:  # pragma: no cover
@@ -2186,11 +2201,35 @@ def resolve_party_slot(party_order, key: str | None) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def sidecar_path_for_log(log_path: str, teams_dir: str) -> str:
+def sidecar_path_for_log(log_path: str, teams_dir: str, suffix: str = ".teams.json") -> str:
     base = os.path.basename(log_path)
+    # `.log.gz` is the farm's archive form and `fp.replay.protocol.iter_chunks` reads it
+    # directly, so the sidecar must resolve to the SAME name it would for the
+    # uncompressed log -- otherwise sweeping a corpus gzipped silently loses the
+    # exact-damage half again.
+    if base.endswith(".gz"):
+        base = base[:-3]
     if base.endswith(".log"):
         base = base[:-4]
-    return os.path.join(teams_dir, base + ".teams.json")
+    path = os.path.join(teams_dir, base + suffix)
+    # FARM / RL PERSPECTIVE LOGS. The synthetic corpus writes ONE log and ONE
+    # sidecar per game (`<tag>_synthopp.log` / `<tag>_synthopp.teams.json`), so the
+    # log's basename IS the game name. The farm (truestate/farm/lane.py) instead
+    # writes one log PER PERSPECTIVE -- `<gid>.p1.log` and `<gid>.p2.log` -- against
+    # a SINGLE per-game sidecar `<gid>.teams.json` carrying both sides, so the
+    # perspective suffix has to come off before the lookup. Without this the sidecar
+    # never resolved, `exact_teams` stayed None in `run_replay_checks`, and the
+    # exact-damage membership half of the sweep reported 0 events on every farm game
+    # (DATA_GENERATION.md "Still open -- exact-damage membership reports 0 events on
+    # farm games"). The CATEGORICAL half never reads the sidecar, which is why it
+    # looked healthy the whole time.
+    #
+    # Existence-first, so a sidecar named exactly after the log still wins: every
+    # `_synthopp` name resolves byte-identically to before (it cannot match the
+    # suffix test either way), and the gate corpora are untouched.
+    if not os.path.exists(path) and (base.endswith(".p1") or base.endswith(".p2")):
+        return os.path.join(teams_dir, base[:-3] + suffix)
+    return path
 
 
 def load_teams_sidecar(log_path: str, teams_dir: str) -> dict | None:
@@ -2247,6 +2286,407 @@ def _match_exact_mon(lookup: dict, species: str) -> dict | None:
 
 _STAT_ORDER = ("hp", "atk", "def", "spa", "spd", "spe")
 
+# ---------------------------------------------------------------------------
+# PS's gen9 random-battle "no Attack-stat move" spread rule
+# ---------------------------------------------------------------------------
+# data/random-battles/gen9/teams.ts:1565-1584 -- the LAST thing randomSet does
+# before returning:
+#
+#     // Minimize confusion damage
+#     const noAttackStatMoves = [...moves].every(m => {
+#         const move = this.dex.moves.get(m);
+#         if (move.damageCallback || move.damage) return true;
+#         if (move.id === 'shellsidearm') return false;
+#         // Physical Tera Blast
+#         if (move.id === 'terablast' && (species.id === 'porygon2' ||
+#             ['Contrary', 'Defiant'].includes(ability) || moves.has('shiftgear') ||
+#             species.baseStats.atk > species.baseStats.spa)) return false;
+#         return move.category !== 'Physical' || move.id === 'bodypress' ||
+#             move.id === 'foulplay';
+#     });
+#     if (noAttackStatMoves && !moves.has('transform') && ...) {
+#         evs.atk = 0;
+#         ivs.atk = 0;
+#     }
+#
+# The v7 farm2 `<game>.teams.json` sidecar records the NOMINAL 85-EV spread and
+# carries no `ivs` at all (unlike the older synthetic corpus, which carries both
+# `ivs` and the computed `stats`), so without re-deriving the rule the
+# reconstruction hands the opponent an Attack stat PS never had -- e.g. Blissey
+# L85 66 instead of 22, Necrozma L80 217 instead of 176, Yanmega L82 172
+# instead of 129.  That corrupts every derivation that reads Attack:
+#   * Struggle (physical, 50 BP) -- the whole roll set is inflated;
+#   * Photon Geyser / Tera Blast -- `getStat('atk', false, true) > getStat('spa',
+#     false, true)` (data/moves.ts:13348-13350, :19223-19228) flips the category
+#     to Physical off the inflated stat, so a Draco-Meteor'd / Moonblast'd
+#     special attacker derives a physical hit PS resolved as special.
+_ATK_STAT_PHYSICAL_EXEMPT = frozenset(("bodypress", "foulplay"))
+
+# PS moves carrying a `damageCallback` (data/moves.ts, gen9 top-level entries).
+# `move.damage` is exported by foul-play's data/moves.json; `damageCallback` is
+# a function and is not, hence the explicit list.
+_DAMAGE_CALLBACK_MOVES = frozenset(
+    (
+        "comeuppance",
+        "counter",
+        "endeavor",
+        "finalgambit",
+        "guardianofalola",
+        "metalburst",
+        "mirrorcoat",
+        "naturesmadness",
+        "psywave",
+        "ruination",
+        "superfang",
+    )
+)
+
+
+def _randbats_zeroes_attack(move_ids, species_key, ability, base_stats) -> bool:
+    """PS's `noAttackStatMoves && !moves.has('transform')` gate, verbatim.
+
+    Returns False for any move foul-play's move table does not know: an
+    unrecognised move cannot be certified as Attack-blind, and the caller must
+    then leave the default spread alone."""
+    move_ids = [normalize_name(m) for m in move_ids]
+    if "transform" in move_ids:
+        return False
+    for move_id in move_ids:
+        mv = all_move_json.get(move_id)
+        if mv is None:
+            return False
+        if move_id in _DAMAGE_CALLBACK_MOVES or mv.get("damage"):
+            continue
+        if move_id == "shellsidearm":
+            return False
+        if move_id == "terablast":
+            if (
+                species_key == "porygon2"
+                or normalize_name(ability or "") in ("contrary", "defiant")
+                or "shiftgear" in move_ids
+                or base_stats[constants.ATTACK] > base_stats[constants.SPECIAL_ATTACK]
+            ):
+                return False
+            continue
+        if (
+            mv.get("category") == "physical"
+            and move_id not in _ATK_STAT_PHYSICAL_EXEMPT
+        ):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# PS's gen9 random-battle Gyro Ball / Trick Room speed rule
+# ---------------------------------------------------------------------------
+# data/random-battles/gen9/teams.ts:1586-1589, the LAST spread adjustment
+# randomSet makes, immediately after the Attack rule above:
+#
+#     if (moves.has('gyroball') || moves.has('trickroom')) {
+#         evs.spe = 0;
+#         ivs.spe = 0;
+#     }
+#
+# Same sidecar gap as the Attack rule (nominal 85 EVs, no `ivs`), but what it
+# corrupts is TURN ORDER rather than a stat.  gen9 randbats' main Revival
+# Blessing user is Rabsca, whose set ALWAYS carries Trick Room, so the
+# reconstruction stood every opposing Rabsca up at 134 Spe against PS's true 86
+# (L91) -- and the engine then ordered Revival Blessing FIRST on turns PS
+# resolved it LAST.  Revival Blessing arms `force_switch` and PARKS the other
+# side's move for the deferred phase-2 half of the turn (poke-engine
+# genx/generate_instructions.rs:19689-19780), so with the order flipped the
+# foe's move -- and every boost / weather / hazard / status / item loss it
+# carried -- resolved in the wrong half of the turn and no phase-1 branch could
+# reproduce it.  That is the whole "Revival Blessing" finding family: 375 hard
+# findings over its 316 games, 0 with this rule applied, coverage identical.
+_ZERO_SPEED_MOVES = frozenset(("gyroball", "trickroom"))
+
+
+def _randbats_zeroes_speed(move_ids) -> bool:
+    """PS's `moves.has('gyroball') || moves.has('trickroom')` gate, verbatim."""
+    return any(normalize_name(m) in _ZERO_SPEED_MOVES for m in move_ids)
+
+
+def _randbats_set_species_key(species) -> str | None:
+    """The species PS's GENERATOR saw, from the species the sidecar recorded.
+
+    `randomSet` derives the spread from the randbats SET's species, so a forme
+    the BATTLE produced has to be folded back -- but a forme the GENERATOR chose
+    must not be, and `baseSpecies` cannot tell them apart (`Minior-Meteor` and
+    `Ogerpon-Hearthflame` both carry one).  `battleOnly` can, and is exactly the
+    dex field that means it: Minior-Meteor / Eiscue-Noice / Palafin-Hero /
+    Terapagos-Terastal name their set species in it, while Ogerpon-Hearthflame,
+    Arceus-Fire and Urshifu-Rapid-Strike -- real randbats species with their own
+    types, and therefore their own Stealth-Rock weakness -- do not.
+    MEASURED: folding on `baseSpecies` instead shaved Ogerpon-Hearthflame (240
+    vs PS's 239) and Arceus-Fire (292 vs 291) off Teal's pure-Grass / Arceus's
+    pure-Normal Rock matchup instead of their own.
+
+    A COSMETIC forme -- Minior's colours, and Minior is the one species whose HP
+    shave has a branch of its own (teams.ts:1545-1547, `species.id === 'minior'`)
+    -- carries NEITHER field in fp's trimmed pokedex.json, so it is folded by
+    name, and only when the shorter key exists and is stat- and type-IDENTICAL:
+    a genuine forme difference can never be folded away by that arm.
+    """
+    key = _species_key(species)
+    if not key:
+        return None
+    entry = pokedex.get(key)
+    if entry is None:
+        return key
+    battle_only = entry.get("battleOnly")
+    if battle_only:
+        if isinstance(battle_only, (list, tuple)):
+            battle_only = battle_only[0] if battle_only else None
+        if battle_only:
+            return _species_key(normalize_name(battle_only))
+    if entry.get("baseSpecies"):
+        return key  # a generator-chosen forme: PS spread it as itself
+    head = _species_key(str(species).split("-")[0])
+    sibling = pokedex.get(head) if head and head != key else None
+    if (
+        sibling is not None
+        and sibling.get("baseStats") == entry.get("baseStats")
+        and sibling.get("types") == entry.get("types")
+    ):
+        return head
+    return key
+
+
+def _randbats_shaved_hp_ev(rec, level):
+    """PS's HP-EV shave (teams.ts:1536-1564) -> the HP EV randomSet ended on.
+
+    `while (evs.hp > 1)` walks the flat 85 down 4 at a time until the resulting
+    HP hits the set's breakpoint: an EVEN HP for a Belly Drum / Fillet Away /
+    Shed Tail set holding Sitrus Berry (or Gluttony), an HP divisible by 4 for
+    Substitute+Sitrus and for Minior's Shields Down, an HP NOT divisible by 4
+    for Substitute+Endeavor, else the Stealth-Rock-switch-in maximiser keyed on
+    the mon's Rock weakness (skipped outright when the mon cannot be chipped:
+    Magic Guard / Heavy-Duty Boots / Regenerator / Leftovers / Life Orb).
+
+    DELEGATED to foul-play's live-play mirror of the same PS lines
+    (data/pkmn_sets.random_battle_ev_iv_spread) rather than re-implemented, and
+    the delegation is VERIFIED rather than assumed: recomputing all six stats
+    for every mon of the 632 perspective logs behind the 316 Revival-Blessing
+    games and comparing against the exact stats PS states in each `|request|`
+    gives 3783/3792 mons exact (99.7627%), the whole residue being Minior
+    cosmetic formes that `_randbats_set_species_key` folds; the flat 85/31
+    spread the sidecar implies scores 3468/3792 on the same mons.  The only PS
+    line the mirror omits is `if (isDoubles) break;`, unreachable in
+    gen9randombattle(blitz).
+
+    Returns None when the shave cannot be derived (a species fp's pokedex does
+    not know, or the champions 11-EV base spread, which PS does not shave).
+    """
+    if random_battle_ev_iv_spread is None:
+        return None
+    species_key = _randbats_set_species_key(rec.get("species"))
+    if not species_key or species_key not in pokedex:
+        return None
+    evs, _ivs = random_battle_ev_iv_spread(
+        species_key,
+        [normalize_name(m) for m in (rec.get("moves") or ())],
+        normalize_name(rec.get("ability") or ""),
+        normalize_name(rec.get("item") or ""),
+        level,
+    )
+    return evs[0]
+
+
+def _apply_randbats_hp_shave(pkmn, rec) -> None:
+    """Apply PS's HP-EV shave to a v7-sidecar mon (see `_randbats_shaved_hp_ev`).
+
+    WHICH FIELD: fp keeps HP OUT of `Pokemon.stats` -- that dict is
+    atk/def/spa/spd/spe, `calculate_stats`' HITPOINTS entry being popped into
+    `max_hp` (fp/battle.py set_spread:1353-1371) -- and every max-HP consumer in
+    the checker reads `pkmn.max_hp`.  So the shave lands there, and the live
+    `hp` is carried across the correction by `_rebase_hp_onto_exact_max`, the
+    same helper the sidecar's own `stats.hp` override uses: it honours an
+    exact-HP certificate and otherwise re-derives the point estimate from the
+    last percent DISPLAY against the corrected max, which is strictly better
+    than a fraction rescale (that can land outside the band the protocol
+    stated).  `hp` is therefore never "recomputed" -- it stays protocol-tracked,
+    exactly as the Attack arm's note requires.
+
+    `max_hp_exact` IS set, on the same terms the sidecar's stated `stats.hp`
+    claims it: once all three of randomSet's adjustments are re-derived the
+    spread has stopped being a guess, so neither is the max HP that falls out of
+    it.  The claim is MEASURED, not asserted -- recomputing every stat of the
+    3,516 mon-instances behind the 291 ground-truth games and comparing against
+    the exact stats PS states in each `|request|` leaves zero max-HP mismatches
+    -- and it is what lets a deferred HP certificate settle.  Withholding it
+    while the number is exact keeps the checker guessing on purpose, and costs
+    67 soft + 11 hard phantom findings on those games, every one an HP-precision
+    artifact (ko-margin boosts, hazard chip, Sitrus gates).
+
+    Returns True when the spread was derived -- nothing is changed when it could
+    not be (unknown species, non-flat base spread, the champions 11-EV format).
+    """
+    if getattr(pkmn, "transformed_into", None) or pkmn.name == "shedinja":
+        return False
+    if tuple(pkmn.evs)[0] != 85:
+        return False  # not the flat base spread randomSet shaves down from
+    hp_ev = _randbats_shaved_hp_ev(rec, pkmn.level)
+    if hp_ev is None or not pkmn.max_hp:
+        return False
+    evs = list(pkmn.evs)
+    evs[0] = hp_ev
+    new_max_hp = calculate_stats(
+        pkmn.base_stats,
+        pkmn.level,
+        ivs=pkmn.ivs,
+        evs=evs,
+        nature=pkmn.nature,
+    )[constants.HITPOINTS]
+    hp_frac = pkmn.hp / pkmn.max_hp
+    pkmn.evs = tuple(evs)
+    pkmn.max_hp = new_max_hp
+    pkmn.max_hp_exact = True
+    # Unconditional, exactly as the `stats.hp` override below does it: even when
+    # the max HP itself did not move, this is the point at which a DEFERRED
+    # display-consistency check on an HP certificate becomes decidable.
+    _rebase_hp_onto_exact_max(pkmn, hp_frac)
+    return True
+
+
+def _fold_forme_duplicate_rows(battler, lookup: dict) -> None:
+    """Collapse tracked rows that are the same PS roster slot.
+
+    `load_teams_sidecar` indexes the team dump one record per party member, and
+    `sim/side.ts getRequestData` pushes exactly one entry per member of
+    `this.pokemon` -- so the sidecar IS the opponent's roster, exactly as the
+    `|request|` party list is the user's.  Two tracked rows that claim the SAME
+    record are therefore one physical pokemon, and this is the opponent-side
+    counterpart of `Battler._drop_unclaimed_forme_duplicates` (fp/battle.py:769),
+    which cannot run here because the opponent has no `|request|` to claim rows.
+
+    The gap this closes is TERA formes.  `battleOnly` marks every forme a battle
+    can produce, tera formes included -- `ogerpontealtera -> Ogerpon`,
+    `ogerponhearthflametera -> Ogerpon-Hearthflame`, `terapagosstellar ->
+    Terapagos` (data/pokedex.ts; PS only ever enters them through
+    `formeChange` on terastallization, so none can be a SET species) -- but
+    nothing was folding them onto the row they share a slot with, so a
+    terastallized Ogerpon held TWO of the six slots.  Measured, fresh100k
+    arbiter #1's single hard finding: side p1 reconstructed as HAWLUCHA BISHARP
+    COMFEY UXIE OGERPON OGERPONTEALTERA against a true roster of Bisharp,
+    Ogerpon, Masquerain, Comfey, Hawlucha, Uxie -- the duplicate consumed the
+    slot `_fill_unrevealed_reserves` needed for MASQUERAIN, so when Roar dragged
+    Masquerain in, its Intimidate had no mon in the state to come from and no
+    branch could produce the observed `-unboost`.
+
+    WHICH ROW SURVIVES.  Never the one still on the field, and never the one
+    carrying more of the battle: the live object is kept and the stale one
+    dropped, scored on how much of the battle it has actually seen (turns
+    active, move actions, revealed moves), with the SET species -- the sidecar's
+    own species, which `sim/pokemon.ts` never moves -- as the tie-break.  So a
+    Terapagos that detailschanged while active keeps its Terastal row (which
+    carries that forme's real max HP), while this game's two never-active,
+    identical 259/259 Ogerpon rows collapse onto the canonical `ogerpon`.
+    """
+    if os.environ.get("FP_CONTROL_KEEP_FORME_DUPLICATES"):
+        # CONTROL ONLY (shared with fp/battle.py:800 and
+        # poke_engine_helpers.py:395): restores the pre-fix pipeline whole, so
+        # the fix can be shown capable of failing.
+        return
+    groups: dict = {}
+    for pkmn in battler.reserve:
+        rec = _match_exact_mon(lookup, pkmn.name)
+        if rec is not None:
+            groups.setdefault(id(rec), []).append(pkmn)
+    active_rec = (
+        _match_exact_mon(lookup, battler.active.name)
+        if battler.active is not None
+        else None
+    )
+    drop: set = set()
+    for rec_id, rows in groups.items():
+        if active_rec is not None and id(active_rec) == rec_id:
+            # the active already holds this slot, and one physical pokemon cannot
+            # also be sitting on the bench: EVERY bench row for it is stale, even
+            # a lone one (`|switch|Terapagos` -> `|detailschange|Terapagos-Terastal`
+            # benches the pre-change object while the mon never left the field).
+            drop.update(id(p) for p in rows)
+            continue
+        if len(rows) < 2:
+            continue
+        rec = _match_exact_mon(lookup, rows[0].name) or {}
+        set_key = _species_key(rec.get("species") or "")
+
+        def _liveness(p):
+            return (
+                getattr(p, "active_turns", 0) or 0,
+                getattr(p, "active_move_actions", 0) or 0,
+                len(getattr(p, "moves", ()) or ()),
+                _species_key(p.name) == set_key,
+            )
+
+        keep = max(rows, key=_liveness)
+        drop.update(id(p) for p in rows if p is not keep)
+    if drop:
+        battler.reserve[:] = [p for p in battler.reserve if id(p) not in drop]
+
+
+def _fill_unrevealed_reserves(battler, lookup: dict) -> None:
+    """Materialise the party slots the protocol never revealed.
+
+    fp tracks only what it has SEEN, so a reserve that never switched in is
+    simply ABSENT from `battler.reserve`, and the engine side is padded out to
+    six with maxhp-0 placeholders (`_padded_party` ->
+    `get_dummy_poke_engine_pkmn`, fp/search/poke_engine_helpers.py:349-353,
+    :437-439).  That is right for LIVE play, where those slots really are
+    unknown, and wrong here, where the sidecar states the whole team -- and it
+    is wrong in a way that anything COUNTING party members reads.  Beat Up
+    throws one hit per unfainted, unstatused party member (data/moves.ts beatup
+    `onModifyMove`: `move.allies = pokemon.side.pokemon.filter(ally => ally ===
+    pokemon || (!ally.fainted && !ally.status))`, then `move.multihit =
+    move.allies.length`), so a side still holding two unrevealed mons threw FOUR
+    hits in-engine where PS threw SIX.  The PS-exact derivation on this side of
+    the checker never had the bug -- `_beatup_base_powers` walks the sidecar's
+    `party_order` -- which is exactly why the two disagreed.
+
+    Only the OPPONENT can have unseen slots (the user's six are in every
+    `|request|`), and this runs only on the per-turn `deepcopy(battle)` snapshot
+    the sidecar path owns (checker.py:4251,:5440), so nothing added here can
+    leak back into the protocol reconstruction, into a later turn, or into live
+    play.
+
+    A filled mon is at full HP with no status BY CONSTRUCTION: a mon that never
+    entered the battle cannot have been damaged, statused or fainted.  That is
+    the same reasoning `_beatup_base_powers` already documents for the mons it
+    cannot see, and it is what makes the filled slot safe to count.
+
+    The party is capped at PS's six: `_padded_party` refuses a longer one, so
+    when fp is already tracking six (a forme duplicate, say) nothing is added.
+    """
+    if Pokemon is None:
+        return
+    _fold_forme_duplicate_rows(battler, lookup)
+    party = list(battler.reserve)
+    if battler.active is not None:
+        party.append(battler.active)
+    room = 6 - len(party)
+    if room <= 0:
+        return
+    # Identity, not species keys: `_match_exact_mon` also resolves forme
+    # families and unique prefixes, so the mon fp is tracking as
+    # `Terapagos-Terastal` already claims the sidecar's `Terapagos` slot.
+    claimed = set()
+    for pkmn in party:
+        rec = _match_exact_mon(lookup, pkmn.name)
+        if rec is not None:
+            claimed.add(id(rec))
+    for rec in lookup.values():  # sidecar order == PS's initial party order
+        if room <= 0:
+            break
+        if id(rec) in claimed:
+            continue
+        species = normalize_name(rec.get("species") or "")
+        level = rec.get("level")
+        if not species or species not in pokedex or not level:
+            continue  # never guess a slot the sidecar does not fully state
+        battler.reserve.append(Pokemon(species, int(level)))
+        room -= 1
+
 
 def apply_exact_team(battler, lookup: dict, is_user: bool) -> None:
     """Override a battler's reconstructed knowledge with the sidecar's exact
@@ -2258,6 +2698,10 @@ def apply_exact_team(battler, lookup: dict, is_user: bool) -> None:
     |request| (stats/hp/ability/item), so only its tera type is filled."""
     if not lookup:
         return
+    # BEFORE the knowledge pass, so a slot the protocol never revealed is filled
+    # in and then set up by exactly the same arms as every other mon.
+    if not is_user and not os.environ.get("FP_CONTROL_NO_ROSTER_FILL"):
+        _fill_unrevealed_reserves(battler, lookup)
     mons = list(battler.reserve)
     if battler.active is not None:
         mons.append(battler.active)
@@ -2296,7 +2740,38 @@ def apply_exact_team(battler, lookup: dict, is_user: bool) -> None:
         item_is_guess = getattr(pkmn, "item_inferred", False) and not (
             getattr(pkmn, "knocked_off", False) or getattr(pkmn, "removed_item", None)
         )
-        if (pkmn.item == constants.UNKNOWN_ITEM or item_is_guess) and "item" in rec:
+        # DISGUISE-POLLUTED HOLD.  A `removed_item` the sidecar CONTRADICTS names
+        # an item this mon provably never held: the protocol printed that item
+        # line under its face while an Illusion bearer wore it
+        # (`_undo_disguised_item_misattribution` owns the acquisition half of
+        # this; the residue it leaves behind is the removal half).  With
+        # `removed_item` set, `item_is_guess` is false by construction, so a
+        # WRONG hold that the tracker went on to infer from the bearer's
+        # behaviour could never be corrected: synthu6012750 T42 stood the real
+        # Assault-Vest Basculegion up in a CHOICE SCARF (its `removed_item` was
+        # the disguised Zoroark's Life Orb), which made it outspeed Venusaur,
+        # kill it before Leech Seed, and leave the observed `-start` in no
+        # branch.  Requires a THREE-way contradiction -- sidecar item, held
+        # item and removed item all different, nothing knocked off, something
+        # still held -- so every legitimate mid-battle change is excluded: Knock
+        # Off, Trick, Bestow and a consumed berry all leave `removed_item`
+        # EQUAL to the sidecar's item, and a knocked-off mon holds nothing.
+        sidecar_item = normalize_name(rec["item"]) if rec.get("item") else None
+        removed_item = getattr(pkmn, "removed_item", None)
+        removed_item = normalize_name(removed_item) if removed_item else None
+        held = normalize_name(pkmn.item) if pkmn.item else None
+        disguise_polluted = (
+            sidecar_item is not None
+            and removed_item is not None
+            and held is not None
+            and held != constants.UNKNOWN_ITEM
+            and removed_item != sidecar_item
+            and held != sidecar_item
+            and not getattr(pkmn, "knocked_off", False)
+        )
+        if (
+            pkmn.item == constants.UNKNOWN_ITEM or item_is_guess or disguise_polluted
+        ) and "item" in rec:
             # An empty sidecar item ("") is KNOWLEDGE (the set truly holds no
             # item -- Acrobatics doubles, engine Items::NONE), not ignorance:
             # fill None (fp's no-item value, converted to "None" by
@@ -2326,6 +2801,55 @@ def apply_exact_team(battler, lookup: dict, is_user: bool) -> None:
             ivs = rec.get("ivs")
             if ivs:
                 pkmn.ivs = tuple(int(ivs[s]) for s in _STAT_ORDER)
+            else:
+                # No `ivs` in the sidecar -> the v7 farm2 dump, which also wrote
+                # the NOMINAL 85-EV spread, so ALL THREE of randomSet's
+                # generation-time adjustments (teams.ts:1536-1589) have to be
+                # re-derived from the (exact) sidecar set.  The arms are
+                # independent and one set can hit several -- a Gyro Ball wall
+                # zeroes Attack AND Speed -- so each is gated on its own rule
+                # and recomputes only the stat that rule touches.  A sidecar
+                # that DOES carry `ivs` (and its computed `stats`, applied just
+                # below) is authoritative and is left exactly as it was.
+                if not os.environ.get(
+                    "FP_CONTROL_NO_RANDBATS_ATK_ZERO"
+                ) and _randbats_zeroes_attack(
+                    rec.get("moves") or (),
+                    _species_key(rec.get("species") or pkmn.name),
+                    rec.get("ability"),
+                    pkmn.base_stats,
+                ):
+                    # Re-derive PS's Attack zeroing (see
+                    # `_randbats_zeroes_attack`) and recompute ONLY the Attack
+                    # stat: the rule touches no other stat, and HP must not be
+                    # re-derived here (fp's `hp` is protocol-tracked, not a
+                    # fraction of a freshly computed max).
+                    pkmn.evs = tuple(0 if i == 1 else v for i, v in enumerate(pkmn.evs))
+                    pkmn.ivs = tuple(0 if i == 1 else v for i, v in enumerate(pkmn.ivs))
+                    pkmn.stats[constants.ATTACK] = calculate_stats(
+                        pkmn.base_stats,
+                        pkmn.level,
+                        ivs=pkmn.ivs,
+                        evs=pkmn.evs,
+                        nature=pkmn.nature,
+                    )[constants.ATTACK]
+                if not os.environ.get(
+                    "FP_CONTROL_NO_RANDBATS_SPE_ZERO"
+                ) and _randbats_zeroes_speed(rec.get("moves") or ()):
+                    # teams.ts:1586-1589; recompute ONLY the Speed stat.
+                    pkmn.evs = tuple(0 if i == 5 else v for i, v in enumerate(pkmn.evs))
+                    pkmn.ivs = tuple(0 if i == 5 else v for i, v in enumerate(pkmn.ivs))
+                    pkmn.stats[constants.SPEED] = calculate_stats(
+                        pkmn.base_stats,
+                        pkmn.level,
+                        ivs=pkmn.ivs,
+                        evs=pkmn.evs,
+                        nature=pkmn.nature,
+                    )[constants.SPEED]
+                if not os.environ.get("FP_CONTROL_NO_RANDBATS_HP_SHAVE"):
+                    # teams.ts:1536-1564; touches `max_hp` only, and carries the
+                    # protocol-tracked `hp` across it.
+                    _apply_randbats_hp_shave(pkmn, rec)
         except (KeyError, TypeError):
             pass
 
@@ -2465,6 +2989,105 @@ def apply_exact_teams(snap, user_pid: str, exact_teams: dict) -> None:
     # a transformed mon's copied stats were taken BEFORE the two calls above
     # corrected the original's stats; refresh them (see the helper's docstring)
     _refresh_transform_copied_stats(snap)
+
+
+# ---------------------------------------------------------------------------
+# HP-TRUTH sidecar (`<game>.hptruth.json`): exact per-turn HP for BOTH sides,
+# observed by the generator from PS's own battle object at each `|turn|N`
+# boundary (see foul-play/tools/conformance/gen_random_corpus.js).  The same
+# authoritative-sidecar pattern as the teams sidecar: exact values win over
+# /100-quantized display parsing.  Replay-with-sidecar only -- nothing here
+# runs in live play (loaded only via check_replays' --teams-dir path).
+# ---------------------------------------------------------------------------
+
+
+def load_hptruth_sidecar(log_path: str, teams_dir: str) -> dict | None:
+    """Load `<game>.hptruth.json` -> {"<turn>": {"p1": {species: [hp, maxhp]},
+    "p2": {...}}} keyed by species (same start-of-battle naming as the teams
+    sidecar, so `_match_exact_mon`'s forme-family resolution applies).
+    Returns the turns mapping (JSON string keys) or None."""
+    path = sidecar_path_for_log(log_path, teams_dir, suffix=".hptruth.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    turns = payload.get("turns") or {}
+    out = {}
+    for turn, entry in turns.items():
+        sides = {}
+        for pid in ("p1", "p2"):
+            lookup = {}
+            for species, hp_pair in (entry.get(pid) or {}).items():
+                key = _species_key(species)
+                if key:
+                    lookup[key] = hp_pair
+            sides[pid] = lookup
+        out[str(turn)] = sides
+    return out or None
+
+
+def apply_hptruth(snap, user_pid: str, turn_entry: dict, stats: dict) -> None:
+    """Pin every roster mon's pre-turn HP to the generator-observed exact value
+    via `hp_certificate.set_exact` (the same call the user side's absolute
+    conditions use).  Runs AFTER `apply_exact_teams` (max_hp already exact) and
+    BEFORE the protocol-certificate clamps, which treat an exact HP as strictly
+    better information.  Misses (a roster mon with no truth entry) are counted,
+    not silently skipped -- the canary gate reads them."""
+    from fp import hp_certificate
+
+    opp_pid = "p1" if user_pid == "p2" else "p2"
+    for pid, battler in ((user_pid, snap.user), (opp_pid, snap.opponent)):
+        lookup = turn_entry.get(pid) or {}
+        if not lookup:
+            continue
+        mons = list(battler.reserve)
+        if battler.active is not None:
+            mons.append(battler.active)
+        # AMBIGUOUS-ROSTER GUARD: a reconstructed side can carry two mons with
+        # the same species key (lead Impostor Ditto recorded under its
+        # transformed species by the teams-sidecar convention).  Pinning either
+        # one from a species-keyed lookup would be a coin flip, and a wrong pin
+        # manufactures findings (a live mon pinned to a dead twin's HP).  Skip
+        # the whole side, keep live-tracked values, and surface the count.
+        keys = [k for k in (_species_key(p.name) for p in mons) if k]
+        if len(keys) != len(set(keys)):
+            stats["hptruth_roster_dupe"] = stats.get("hptruth_roster_dupe", 0) + 1
+            continue
+        for pkmn in mons:
+            # ILLUSION: the truth entries are keyed by the PHYSICAL mon, while a
+            # disguised bearer is standing under the shown species' name.
+            # `_apply_illusion` (checker.py) has already rebuilt this object as
+            # the bearer -- level, types, moveset, ability, max HP -- and stamps
+            # the identity it resolved, so honour it rather than re-resolving to
+            # the disguise.
+            true_species = getattr(pkmn, "illusion_true_species", None)
+            rec = _match_exact_mon(lookup, true_species or pkmn.name)
+            if rec is None:
+                stats["hptruth_misses"] = stats.get("hptruth_misses", 0) + 1
+                continue
+            try:
+                hp = int(rec[0])
+                truth_max = int(rec[1])
+            except (TypeError, ValueError, IndexError):
+                stats["hptruth_misses"] = stats.get("hptruth_misses", 0) + 1
+                continue
+            # IDENTITY GUARD: the entry's max HP is a property of the physical
+            # mon, so it must agree with the reconstruction's own max HP.  When
+            # it does not, this entry belongs to a DIFFERENT mon than the object
+            # in hand -- an unresolved disguise, a forme the truth was recorded
+            # under, a roster desync -- and pinning it would manufacture
+            # findings (a live mon on a dead twin's HP).  DECLINE, by name: the
+            # live-tracked value stands and the count is visible.
+            if pkmn.max_hp and truth_max and int(pkmn.max_hp) != truth_max:
+                stats["hptruth_identity_mismatch"] = (
+                    stats.get("hptruth_identity_mismatch", 0) + 1
+                )
+                continue
+            hp_certificate.set_exact(pkmn, hp)
+            stats["hptruth_applied"] = stats.get("hptruth_applied", 0) + 1
 
 
 # ---------------------------------------------------------------------------

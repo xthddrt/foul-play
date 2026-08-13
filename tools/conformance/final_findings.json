@@ -1,0 +1,738 @@
+[
+ {
+  "game": "i-005adc19f61405de9~b006~g15~20260812T055341-l4-000080.p1.log.gz",
+  "turn": 50,
+  "severity": "soft",
+  "category": "boost",
+  "message": "observed - atk on user but no branch produces it [ko-margin]",
+  "observed": "|-unboost|p1a: Granbull|atk|1",
+  "user_move": "rotomfan",
+  "opp_move": "gardevoir",
+  "user_active": "granbull",
+  "opp_active": "wugtrio",
+  "branches": [
+   [
+    "Boost SideTwo Attack: 1",
+    "Switch SideTwo: P0 -> P3",
+    "SetLastUsedMove SideTwo: Move(M1) -> Switch(P3)",
+    "Damage SideTwo: 26 [hazard]",
+    "Damage SideTwo: 0 [hazard]",
+    "Switch SideOne: P0 -> P4",
+    "SetLastUsedMove SideOne: Switch(P0) -> Switch(P4)",
+    "ChangeAbility SideTwo: 28"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786514704",
+   "|switch|p2a: Gardevoir|Gardevoir, L83, M|44/100 par",
+   "|-damage|p2a: Gardevoir|31/100 par|[from] Stealth Rock",
+   "|-damage|p2a: Gardevoir|7/100 par|[from] Spikes",
+   "|-ability|p2a: Gardevoir|Intimidate|Trace|[from] ability: Trace|[of] p1a: Granbull",
+   "|-ability|p2a: Gardevoir|Intimidate|boost",
+   "|-unboost|p1a: Granbull|atk|1",
+   "|switch|p1a: Rotom|Rotom-Fan, L86, tera:Steel|172/226",
+   "|",
+   "|upkeep",
+   "|turn|51"
+  ],
+  "state_string": "GRANBULL,88,FAIRY,TYPELESS,FAIRY,TYPELESS,101,302,INTIMIDATE,INTIMIDATE,NONE,SERIOUS,85;85;85;85;85;85,261,182,156,156,129,NONE,0,0,48.7,EARTHQUAKE;false;15,PLAYROUGH;false;14,ENCORE;false;8,THUNDERWAVE;false;31,false,GROUND,true,false,true,2,NONE,false,0,0,0=MOLTRESGALAR,79,DARK,FLYING,DARK,FLYING,0,271,BERSERK,BERSERK,NONE,SERIOUS,85;85;85;85;85;85,139,188,204,243,188,NONE,0,0,66,NASTYPLOT;false;32,FIERYWRATH;false;16,HURRICANE;false;16,AGILITY;false;48,false,STEEL,true,false,true,2,WEAKNESSPOLICY,false,0,0,0=KLEFKI,84,STEEL,FAIRY,STEEL,FAIRY,0,233,PRANKSTER,PRANKSTER,LEFTOVERS,SERIOUS,85;85;85;85;85;85,139,201,183,194,174,NONE,0,0,3,DAZZLINGGLEAM;false;15,SPIKES;false;29,FOULPLAY;false;22,THUNDERWAVE;false;32,false,FLYING,true,false,true,6,NONE,false,3,0,0=AMOONGUSS,82,GRASS,POISON,GRASS,POISON,0,321,REGENERATOR,REGENERATOR,NONE,SERIOUS,85;85;85;85;85;85,187,162,187,178,96,NONE,0,0,10.5,SLUDGEBOMB;false;14,SPORE;false;19,GIGADRAIN;false;10,STOMPINGTANTRUM;false;16,false,STEEL,true,false,true,14,NONE,false,2,0,0=ROTOMFAN,86,ELECTRIC,FLYING,ELECTRIC,FLYING,172,226,LEVITATE,LEVITATE,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,116,233,230,233,197,NONE,0,0,0.3,AIRSLASH;false;23,THUNDERWAVE;false;31,NASTYPLOT;false;31,THUNDERBOLT;false;23,true,STEEL,true,false,true,1,NONE,false,1,0,0=PILOSWINE,85,ICE,GROUND,ICE,GROUND,0,309,THICKFAT,THICKFAT,NONE,SERIOUS,85;85;85;85;85;85,219,185,151,151,134,NONE,0,0,55.8,STEALTHROCK;false;31,EARTHQUAKE;false;15,ICICLECRASH;false;16,ICESHARD;false;47,false,DRAGON,true,false,true,4,NONE,false,1,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/WUGTRIO,91,WATER,TYPELESS,WATER,TYPELESS,94,212,GOOEY,GOOEY,CHOICEBAND,SERIOUS,85;85;85;85;85;85,234,143,143,179,270,NONE,0,0,5.4,STOMPINGTANTRUM;false;14,AQUAJET;false;31,THROATCHOP;false;24,LIQUIDATION;false;16,true,GROUND,true,false,true,0,NONE,false,1,0,0=EELEKTROSS,87,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,0,290,LEVITATE,LEVITATE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,250,189,232,189,137,POISON,0,0,80.5,COIL;false;30,KNOCKOFF;false;28,DRAINPUNCH;false;12,SUPERCELLSLAM;false;24,false,TYPELESS,true,false,true,7,NONE,false,14,0,0=BEARTIC,91,ICE,TYPELESS,ICE,TYPELESS,0,321,SLUSHRUSH,SLUSHRUSH,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,288,197,179,197,143,NONE,0,0,260,SWORDSDANCE;false;31,AQUAJET;false;31,ICICLECRASH;false;16,EARTHQUAKE;false;16,false,TYPELESS,true,false,true,3,NONE,false,2,0,0=GARDEVOIR,83,PSYCHIC,FAIRY,PSYCHIC,FAIRY,26,249,TRACE,TRACE,CHOICESCARF,SERIOUS,85;0;85;85;85;85,112,156,255,239,180,PARALYZE,0,0,48.4,MOONBLAST;false;17,PSYSHOCK;false;12,TRICK;false;16,MYSTICALFIRE;false;16,false,TYPELESS,true,false,true,2,NONE,false,4,0,0=PACHIRISU,96,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,271,271,VOLTABSORB,VOLTABSORB,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,141,189,141,227,237,NONE,0,0,3.9,SUPERFANG;false;14,UTURN;false;30,ENCORE;false;8,DISCHARGE;false;24,false,TYPELESS,true,false,true,1,NONE,false,2,0,0=BASCULEGIONF,83,WATER,GHOST,WATER,GHOST,0,335,ADAPTABILITY,ADAPTABILITY,ASSAULTVEST,SERIOUS,85;85;85;85;85;85,200,156,214,172,177,NONE,0,0,110,SHADOWBALL;false;21,WAVECRASH;false;16,HYDROPUMP;false;8,FLIPTURN;false;32,false,TYPELESS,true,false,true,2,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;3;1;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=-1=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:1=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-00cabc96530ceb0d2~b003~g13~20260812T050905-l3-000027.p1.log.gz",
+  "turn": 41,
+  "severity": "soft",
+  "category": "boost",
+  "message": "observed + atk on user but no branch produces it [ko-margin]",
+  "observed": "|-boost|p1a: Haxorus|atk|2",
+  "user_move": "swordsdance",
+  "opp_move": "ragefist",
+  "user_active": "haxorus",
+  "opp_active": "ditto",
+  "branches": [
+   [
+    "DisableMove SideTwo: M0",
+    "DisableMove SideTwo: M1",
+    "DisableMove SideTwo: M2",
+    "DecrementPP SideTwo: M3 1",
+    "Damage SideOne: 244 [move]",
+    "ChangeTimesAttacked SideOne-P0: 1"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786511585",
+   "|move|p2a: Ditto|Rage Fist|p1a: Haxorus",
+   "|-damage|p1a: Haxorus|58/244",
+   "|move|p1a: Haxorus|Swords Dance|p1a: Haxorus",
+   "|-boost|p1a: Haxorus|atk|2",
+   "|",
+   "|upkeep",
+   "|turn|42"
+  ],
+  "state_string": "HAXORUS,77,DRAGON,TYPELESS,DRAGON,TYPELESS,244,244,MOLDBREAKER,MOLDBREAKER,LOADEDDICE,SERIOUS,85;85;85;85;85;85,271,183,137,152,194,NONE,0,0,105.5,SWORDSDANCE;false;32,IRONHEAD;false;24,SCALESHOT;false;32,EARTHQUAKE;false;16,false,STEEL,true,false,true,0,NONE,false,0,0,0=VOLCARONA,77,BUG,FIRE,BUG,FIRE,0,257,SWARM,SWARM,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,97,145,252,206,199,NONE,0,0,46,BUGBUZZ;false;14,FIERYDANCE;false;14,QUIVERDANCE;false;32,TERABLAST;false;16,true,GROUND,true,false,true,1,NONE,false,4,0,0=ANNIHILAPE,76,FIGHTING,GHOST,FIGHTING,GHOST,0,292,DEFIANT,DEFIANT,LEFTOVERS,SERIOUS,85;85;85;85;85;85,219,166,120,181,181,NONE,0,0,56,TAUNT;false;29,BULKUP;false;31,DRAINPUNCH;false;14,RAGEFIST;false;7,false,STEEL,true,false,true,3,NONE,false,2,0,0=BELLIBOLT,84,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,0,320,ELECTROMORPHOSIS,ELECTROMORPHOSIS,LEFTOVERS,SERIOUS,85;85;85;85;85;85,112,201,221,188,124,NONE,0,0,113,MUDDYWATER;false;15,SLACKOFF;false;7,THUNDERBOLT;false;18,VOLTSWITCH;false;29,false,ELECTRIC,true,false,true,7,NONE,false,0,0,0=IRONBOULDER,77,ROCK,PSYCHIC,ROCK,PSYCHIC,0,265,QUARKDRIVE,QUARKDRIVE,LIFEORB,SERIOUS,85;85;85;85;85;85,229,168,149,211,236,NONE,0,0,162.5,CLOSECOMBAT;false;7,MIGHTYCLEAVE;false;8,ZENHEADBUTT;false;24,SWORDSDANCE;false;32,false,FIGHTING,true,false,true,2,NONE,false,0,0,0=ESPATHRA,80,PSYCHIC,TYPELESS,PSYCHIC,TYPELESS,0,283,SPEEDBOOST,SPEEDBOOST,CHOICESPECS,SERIOUS,85;85;85;85;85;85,142,142,208,142,214,NONE,0,0,90,LUMINACRASH;false;15,DAZZLINGGLEAM;false;16,UTURN;false;32,SHADOWBALL;false;24,false,FAIRY,true,false,true,1,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/ANNIHILAPE,87,FIGHTING,GHOST,FIGHTING,GHOST,138,225,DEFIANT,IMPOSTER,CHOICESCARF,SERIOUS,85;85;85;85;85;85,219,166,120,181,181,NONE,0,0,56,TAUNT;false;5,BULKUP;false;5,DRAINPUNCH;false;5,RAGEFIST;false;1,false,TYPELESS,true,false,true,4,NONE,false,4,0,0=APPLETUN,92,GRASS,DRAGON,GRASS,DRAGON,0,352,THICKFAT,THICKFAT,LEFTOVERS,SERIOUS,85;0;85;85;85;85,161,200,236,200,108,NONE,0,0,13,LEECHSEED;false;15,RECOVER;false;8,DRAGONPULSE;false;16,APPLEACID;false;16,true,TYPELESS,true,false,true,3,NONE,false,1,0,0=BASTIODON,89,ROCK,STEEL,ROCK,STEEL,0,252,SOUNDPROOF,SOUNDPROOF,NONE,SERIOUS,85;0;85;85;85;85,97,350,134,296,104,NONE,0,0,149.5,REST;false;7,IRONDEFENSE;false;22,BODYPRESS;false;10,FOULPLAY;false;24,false,FIGHTING,true,false,true,11,CHESTOBERRY,false,0,0,0=SNEASLER,74,FIGHTING,POISON,FIGHTING,POISON,0,240,POISONTOUCH,POISONTOUCH,CHOICEBAND,SERIOUS,85;85;85;85;85;85,235,132,102,161,221,NONE,0,0,43,DIRECLAW;false;23,CLOSECOMBAT;false;7,UTURN;false;32,THROATCHOP;false;24,false,TYPELESS,true,false,true,2,NONE,false,1,0,0=SCIZOR,79,BUG,STEEL,BUG,STEEL,0,240,TECHNICIAN,TECHNICIAN,LEFTOVERS,SERIOUS,85;85;85;85;85;85,251,204,132,172,148,NONE,0,0,118,BULLETPUNCH;false;46,UTURN;false;29,CLOSECOMBAT;false;7,DEFOG;false;24,false,TYPELESS,true,false,true,3,NONE,false,1,0,0=VOLCANION,79,FIRE,WATER,FIRE,WATER,0,256,WATERABSORB,WATERABSORB,HEAVYDUTYBOOTS,SERIOUS,85;0;85;85;85;85,178,235,251,188,156,NONE,0,0,195,STEAMERUPTION;false;6,HAZE;false;48,FLAMETHROWER;false;24,EARTHPOWER;false;16,false,TYPELESS,true,false,true,4,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0=TRANSFORM:=0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:3=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-00cabc96530ceb0d2~b003~g13~20260812T050905-l3-000027.p2.log.gz",
+  "turn": 41,
+  "severity": "soft",
+  "category": "boost",
+  "message": "observed + atk on opp but no branch produces it [ko-margin]",
+  "observed": "|-boost|p1a: Haxorus|atk|2",
+  "user_move": "ragefist",
+  "opp_move": "swordsdance",
+  "user_active": "ditto",
+  "opp_active": "haxorus",
+  "branches": [
+   [
+    "DecrementPP SideOne: M3 1",
+    "Damage SideTwo: 244 [move]",
+    "ChangeTimesAttacked SideTwo-P0: 1"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786511585",
+   "|move|p2a: Ditto|Rage Fist|p1a: Haxorus",
+   "|-damage|p1a: Haxorus|24/100",
+   "|move|p1a: Haxorus|Swords Dance|p1a: Haxorus",
+   "|-boost|p1a: Haxorus|atk|2",
+   "|",
+   "|upkeep",
+   "|turn|42"
+  ],
+  "state_string": "ANNIHILAPE,87,FIGHTING,GHOST,FIGHTING,GHOST,139,225,DEFIANT,IMPOSTER,CHOICESCARF,SERIOUS,85;85;85;85;85;85,219,166,120,181,181,NONE,0,0,56,TAUNT;true;5,BULKUP;true;5,DRAINPUNCH;true;5,RAGEFIST;false;1,false,STEEL,true,false,true,4,NONE,false,4,0,0=APPLETUN,92,GRASS,DRAGON,GRASS,DRAGON,0,352,THICKFAT,THICKFAT,LEFTOVERS,SERIOUS,85;85;85;85;85;85,161,200,236,200,108,NONE,0,0,13,RECOVER;false;8,LEECHSEED;false;15,DRAGONPULSE;false;16,APPLEACID;false;16,true,STEEL,true,false,true,3,NONE,false,1,0,0=BASTIODON,89,ROCK,STEEL,ROCK,STEEL,0,252,SOUNDPROOF,SOUNDPROOF,NONE,SERIOUS,85;85;85;85;85;85,97,350,134,296,104,NONE,0,0,149.5,FOULPLAY;false;24,IRONDEFENSE;false;22,REST;false;7,BODYPRESS;false;10,false,FIGHTING,true,false,true,11,CHESTOBERRY,false,0,0,0=SNEASLER,74,FIGHTING,POISON,FIGHTING,POISON,0,240,POISONTOUCH,POISONTOUCH,CHOICEBAND,SERIOUS,85;85;85;85;85;85,235,132,102,161,221,NONE,0,0,43,DIRECLAW;false;23,UTURN;false;32,THROATCHOP;false;24,CLOSECOMBAT;false;7,false,DARK,true,false,true,2,NONE,false,1,0,0=SCIZOR,79,BUG,STEEL,BUG,STEEL,0,240,TECHNICIAN,TECHNICIAN,LEFTOVERS,SERIOUS,85;85;85;85;85;85,251,204,132,172,148,NONE,0,0,118,DEFOG;false;24,BULLETPUNCH;false;46,CLOSECOMBAT;false;7,UTURN;false;29,false,DRAGON,true,false,true,3,NONE,false,1,0,0=VOLCANION,79,FIRE,WATER,FIRE,WATER,0,256,WATERABSORB,WATERABSORB,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,178,235,251,188,156,NONE,0,0,195,HAZE;false;48,FLAMETHROWER;false;24,EARTHPOWER;false;16,STEAMERUPTION;false;6,false,WATER,true,false,true,4,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0=TRANSFORM:=0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:3=false=0=false/HAXORUS,77,DRAGON,TYPELESS,DRAGON,TYPELESS,244,244,MOLDBREAKER,MOLDBREAKER,LOADEDDICE,SERIOUS,85;85;85;85;85;85,271,183,137,152,194,NONE,0,0,105.5,SWORDSDANCE;false;32,IRONHEAD;false;24,SCALESHOT;false;32,EARTHQUAKE;false;16,false,TYPELESS,true,false,true,0,NONE,false,0,0,0=VOLCARONA,77,BUG,FIRE,BUG,FIRE,0,257,SWARM,SWARM,HEAVYDUTYBOOTS,SERIOUS,85;0;85;85;85;85,97,145,252,206,199,POISON,0,0,46,FIERYDANCE;false;14,BUGBUZZ;false;14,QUIVERDANCE;false;32,TERABLAST;false;16,true,TYPELESS,true,false,true,1,NONE,false,4,0,0=ANNIHILAPE,76,FIGHTING,GHOST,FIGHTING,GHOST,0,292,DEFIANT,DEFIANT,LEFTOVERS,SERIOUS,85;85;85;85;85;85,219,166,120,181,181,BURN,0,0,56,BULKUP;false;31,DRAINPUNCH;false;14,RAGEFIST;false;7,TAUNT;false;29,false,TYPELESS,true,false,true,3,NONE,false,2,0,0=BELLIBOLT,84,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,0,320,ELECTROMORPHOSIS,ELECTROMORPHOSIS,LEFTOVERS,SERIOUS,85;0;85;85;85;85,112,201,221,188,124,NONE,0,0,113,THUNDERBOLT;false;18,MUDDYWATER;false;15,VOLTSWITCH;false;29,SLACKOFF;false;7,false,TYPELESS,true,false,true,7,NONE,false,0,0,0=IRONBOULDER,77,ROCK,PSYCHIC,ROCK,PSYCHIC,0,265,QUARKDRIVE,QUARKDRIVE,LIFEORB,SERIOUS,85;85;85;85;85;85,229,168,149,211,236,NONE,0,0,162.5,CLOSECOMBAT;false;7,MIGHTYCLEAVE;false;8,ZENHEADBUTT;false;24,SWORDSDANCE;false;32,false,FIGHTING,true,false,true,2,NONE,false,0,0,0=ESPATHRA,80,PSYCHIC,TYPELESS,PSYCHIC,TYPELESS,0,283,SPEEDBOOST,SPEEDBOOST,CHOICESPECS,SERIOUS,85;85;85;85;85;85,142,142,208,142,214,NONE,0,0,90,LUMINACRASH;false;15,DAZZLINGGLEAM;false;16,UTURN;false;32,SHADOWBALL;false;24,false,TYPELESS,true,false,true,1,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-04845ae510c0280d3~b006~g4~20260812T055039-l6-000048.p1.log.gz",
+  "turn": 91,
+  "severity": "soft",
+  "category": "heal",
+  "message": "observed heal on user but no branch heals it",
+  "observed": "|-heal|p1a: Bellibolt|320/320|[from] item: Leftovers",
+  "user_move": "thunderbolt",
+  "opp_move": "struggle",
+  "user_active": "bellibolt",
+  "opp_active": "dachsbun",
+  "branches": [
+   [
+    "Damage SideTwo: 194 [move]",
+    "RemoveVolatileStatus SideOne: CHARGE"
+   ],
+   [
+    "Damage SideTwo: 194 [move]",
+    "RemoveVolatileStatus SideOne: CHARGE",
+    "Damage SideOne: 18 [move]",
+    "ApplyVolatileStatus SideOne: CHARGE",
+    "Damage SideTwo: 60 [recoil]"
+   ],
+   [
+    "Damage SideTwo: 194 [move]",
+    "RemoveVolatileStatus SideOne: CHARGE",
+    "Damage SideOne: 53 [move]",
+    "ApplyVolatileStatus SideOne: CHARGE",
+    "Damage SideTwo: 60 [recoil]"
+   ],
+   [
+    "Damage SideTwo: 254 [move]",
+    "RemoveVolatileStatus SideOne: CHARGE"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786514240",
+   "|move|p1a: Bellibolt|Thunderbolt|p2a: Dachsbun",
+   "|-damage|p2a: Dachsbun|27/100 par",
+   "|-end|p1a: Bellibolt|Charge|[silent]",
+   "|-activate|p2a: Dachsbun|move: Struggle",
+   "|move|p2a: Dachsbun|Struggle|p1a: Bellibolt",
+   "|-damage|p1a: Bellibolt|301/320",
+   "|-start|p1a: Bellibolt|Charge|Struggle|[from] ability: Electromorphosis",
+   "|-damage|p2a: Dachsbun|2/100 par|[from] recoil",
+   "|",
+   "|-heal|p1a: Bellibolt|320/320|[from] item: Leftovers",
+   "|upkeep",
+   "|turn|92"
+  ],
+  "state_string": "BELLIBOLT,84,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,320,320,ELECTROMORPHOSIS,ELECTROMORPHOSIS,LEFTOVERS,SERIOUS,85;85;85;85;85;85,112,201,221,188,124,NONE,0,0,113,THUNDERBOLT;false;21,SLACKOFF;false;8,VOLTSWITCH;false;31,MUDDYWATER;false;15,false,WATER,true,false,true,3,NONE,false,0,0,0=DRAGONITE,74,DRAGON,FLYING,DRAGON,FLYING,0,257,MULTISCALE,MULTISCALE,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,241,184,191,191,161,NONE,0,0,210,DRAGONDANCE;false;32,OUTRAGE;false;15,IRONHEAD;false;24,EARTHQUAKE;false;16,false,STEEL,true,false,true,1,NONE,false,1,0,0=HAWLUCHA,80,FIGHTING,FLYING,FIGHTING,FLYING,0,256,UNBURDEN,UNBURDEN,NONE,SERIOUS,85;85;85;85;85;85,193,166,165,147,235,NONE,0,0,21.5,BRAVEBIRD;false;23,CLOSECOMBAT;false;6,THROATCHOP;false;24,SWORDSDANCE;false;31,false,FIGHTING,true,false,true,2,WHITEHERB,false,4,0,0=BANETTE,93,GHOST,TYPELESS,GHOST,TYPELESS,98,270,CURSEDBODY,CURSEDBODY,LIFEORB,SERIOUS,85;85;85;85;85;85,267,174,207,170,174,NONE,0,0,12.5,SHADOWSNEAK;false;46,THUNDERWAVE;false;32,GUNKSHOT;false;8,POLTERGEIST;false;4,false,GHOST,true,false,true,1,NONE,false,6,0,0=SWALOT,90,POISON,TYPELESS,POISON,TYPELESS,304,326,LIQUIDOOZE,LIQUIDOOZE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,183,201,183,201,150,NONE,0,0,80,THUNDERWAVE;false;31,KNOCKOFF;false;30,EARTHQUAKE;false;16,SLUDGEBOMB;false;16,false,DARK,true,false,true,2,NONE,false,0,0,0=BELLOSSOM,84,GRASS,TYPELESS,GRASS,TYPELESS,215,263,CHLOROPHYLL,CHLOROPHYLL,NONE,SERIOUS,85;85;85;85;85;85,139,208,199,216,132,NONE,0,0,5.8,GIGADRAIN;false;0,STRENGTHSAP;false;4,QUIVERDANCE;false;19,SLUDGEBOMB;false;2,true,POISON,true,false,true,26,NONE,false,3,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0=CHARGE:=0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/DACHSBUN,92,FAIRY,TYPELESS,FAIRY,TYPELESS,254,254,WELLBAKEDBODY,WELLBAKEDBODY,NONE,SERIOUS,85;85;85;85;85;85,200,264,144,200,227,PARALYZE,0,0,14.9,PROTECT;false;0,BODYPRESS;false;0,WISH;false;0,PLAYROUGH;false;0,true,STEEL,true,false,true,12,NONE,false,36,0,0=MUDSDALE,83,GROUND,TYPELESS,GROUND,TYPELESS,0,302,STAMINA,STAMINA,NONE,SERIOUS,85;85;85;85;85;85,255,214,139,189,106,NONE,0,0,920,EARTHQUAKE;false;15,HEAVYSLAM;false;14,STONEEDGE;false;8,STEALTHROCK;false;32,false,TYPELESS,true,false,true,3,NONE,false,3,0,0=HATTERENE,85,PSYCHIC,FAIRY,PSYCHIC,FAIRY,0,236,MAGICBOUNCE,MAGICBOUNCE,LEFTOVERS,SERIOUS,85;0;85;85;85;85,158,210,280,224,98,POISON,0,0,5.1,CALMMIND;false;30,PSYCHIC;false;16,MYSTICALFIRE;false;16,DRAININGKISS;false;16,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=BOMBIRDIER,85,FLYING,DARK,FLYING,DARK,0,258,BIGPECKS,BIGPECKS,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,224,193,151,193,188,POISON,0,0,42.9,KNOCKOFF;false;31,ROOST;false;8,SUCKERPUNCH;false;8,BRAVEBIRD;false;24,false,TYPELESS,true,false,true,2,NONE,false,1,0,0=RAICHUALOLA,87,ELECTRIC,PSYCHIC,ELECTRIC,PSYCHIC,0,246,SURGESURFER,SURGESURFER,LIFEORB,SERIOUS,85;0;85;85;85;85,152,137,215,198,241,NONE,0,0,21,SURF;false;23,NASTYPLOT;false;30,THUNDERBOLT;false;24,PSYSHOCK;false;16,false,TYPELESS,true,false,true,5,NONE,false,2,0,0=RESHIRAM,76,DRAGON,FIRE,DRAGON,FIRE,0,277,TURBOBLAZE,TURBOBLAZE,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,226,196,272,226,181,NONE,0,0,330,DRACOMETEOR;false;6,DRAGONTAIL;false;16,BLUEFLARE;false;8,EARTHPOWER;false;16,false,TYPELESS,true,false,true,2,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=-2=0=0=0=0=0=0=0=127=0=0=false=NONE=false=false=false=false=move:struggle=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-05b586360961cef63~b001~g0~20260812T043839-l2-000025.p1.log.gz",
+  "turn": 6,
+  "severity": "soft",
+  "category": "status",
+  "message": "observed tox on opp but no branch applies it [ko-margin]",
+  "observed": "|-status|p2a: Eiscue|tox|[from] ability: Toxic Chain|[of] p1a: Fezandipiti",
+  "user_move": "terablast-tera",
+  "opp_move": "zenheadbutt",
+  "user_active": "fezandipiti",
+  "opp_active": "eiscue",
+  "branches": [
+   [
+    "ToggleTerastallized SideOne",
+    "Damage SideTwo: 78 [move]",
+    "Heal SideOne: 13"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786509713",
+   "|-terastallize|p1a: Fezandipiti|Ground",
+   "|move|p1a: Fezandipiti|Tera Blast|p2a: Eiscue|[anim] Tera Blast Ground",
+   "|-activate|p2a: Eiscue|ability: Ice Face",
+   "|-damage|p2a: Eiscue|29/100",
+   "|-status|p2a: Eiscue|tox|[from] ability: Toxic Chain|[of] p1a: Fezandipiti",
+   "|detailschange|p2a: Eiscue|Eiscue-Noice, L88, M, tera:Water",
+   "|move|p2a: Eiscue|Zen Headbutt|p1a: Fezandipiti",
+   "|-damage|p1a: Fezandipiti|207/278",
+   "|",
+   "|-heal|p1a: Fezandipiti|224/278|[from] item: Leftovers",
+   "|-damage|p2a: Eiscue|23/100 tox|[from] psn",
+   "|upkeep",
+   "|turn|7"
+  ],
+  "state_string": "FEZANDIPITI,82,POISON,FAIRY,POISON,FAIRY,265,278,TOXICCHAIN,TOXICCHAIN,LEFTOVERS,SERIOUS,85;85;85;85;85;85,196,182,162,252,210,NONE,0,0,30.1,SWORDSDANCE;false;31,GUNKSHOT;false;8,TERABLAST;false;16,PLAYROUGH;false;16,false,GROUND,true,false,true,1,NONE,false,1,0,0=SUNFLORA,100,GRASS,TYPELESS,GRASS,TYPELESS,312,312,CHLOROPHYLL,CHLOROPHYLL,LIFEORB,SERIOUS,85;85;85;85;85;85,155,167,267,227,117,NONE,0,0,8.5,WEATHERBALL;false;16,SOLARBEAM;false;16,EARTHPOWER;false;16,SUNNYDAY;false;8,false,FIRE,false,false,false,0,NONE,false,0,0,0=KINGDRA,84,WATER,DRAGON,WATER,DRAGON,263,263,SNIPER,SNIPER,LUMBERRY,SERIOUS,85;85;85;85;85;85,208,208,208,208,191,NONE,0,0,152,WAVECRASH;false;16,OUTRAGE;false;16,IRONHEAD;false;24,DRAGONDANCE;false;32,false,STEEL,false,false,false,0,NONE,false,0,0,0=SCEPTILE,87,GRASS,TYPELESS,GRASS,TYPELESS,264,264,OVERGROW,OVERGROW,LIFEORB,SERIOUS,85;85;85;85;85;85,198,163,232,198,259,NONE,0,0,52.2,SWORDSDANCE;false;32,LEAFBLADE;false;24,ROCKSLIDE;false;16,EARTHQUAKE;false;16,false,ROCK,true,false,true,0,NONE,false,0,0,0=TORNADUSTHERIAN,79,FLYING,TYPELESS,FLYING,TYPELESS,0,254,REGENERATOR,REGENERATOR,CHOICESPECS,SERIOUS,85;85;85;85;85;85,204,172,219,188,237,NONE,0,0,63,BLEAKWINDSTORM;false;16,HEATWAVE;false;16,UTURN;false;32,FOCUSBLAST;false;7,false,FIRE,true,false,true,1,NONE,false,1,0,0=FROSMOTH,82,ICE,BUG,ICE,BUG,249,249,ICESCALES,ICESCALES,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,111,146,252,195,154,NONE,0,0,42,QUIVERDANCE;false;32,GIGADRAIN;false;15,ICEBEAM;false;16,HURRICANE;false;16,false,WATER,true,false,true,0,NONE,false,1,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=2=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/EISCUE,88,ICE,TYPELESS,ICE,TYPELESS,78,274,ICEFACE,ICEFACE,NONE,SERIOUS,81;85;85;85;85;85,191,244,165,209,138,NONE,0,0,89,BELLYDRUM;false;15,ICESPINNER;false;23,ZENHEADBUTT;false;24,LIQUIDATION;false;16,true,WATER,true,false,true,1,SITRUSBERRY,false,0,0,0=ZAMAZENTA,71,FIGHTING,TYPELESS,FIGHTING,TYPELESS,187,248,DAUNTLESSSHIELD,DAUNTLESSSHIELD,CHOICEBAND,SERIOUS,85;85;85;85;85;85,212,205,155,205,237,NONE,0,0,210,CLOSECOMBAT;false;7,PSYCHICFANGS;false;16,IRONHEAD;false;24,CRUNCH;false;24,false,TYPELESS,true,false,true,1,NONE,true,1,0,0=EISCUENOICE,88,ICE,TYPELESS,ICE,TYPELESS,274,274,ICEFACE,ICEFACE,SITRUSBERRY,SERIOUS,81;85;85;85;85;85,191,173,165,138,279,NONE,0,0,89,ICESPINNER;false;24,ZENHEADBUTT;false;24,LIQUIDATION;false;16,BELLYDRUM;false;16,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=TAUROSPALDEAAQUA,81,FIGHTING,WATER,FIGHTING,WATER,254,254,INTIMIDATE,INTIMIDATE,LIFEORB,SERIOUS,85;85;85;85;85;85,225,217,95,160,209,NONE,0,0,110,CLOSECOMBAT;false;8,AQUAJET;false;32,LIQUIDATION;false;16,BULKUP;false;32,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=MEWTWO,72,PSYCHIC,TYPELESS,PSYCHIC,TYPELESS,272,272,UNNERVE,UNNERVE,LIFEORB,SERIOUS,85;0;85;85;85;85,163,172,264,172,229,NONE,0,0,122,DARKPULSE;false;24,NASTYPLOT;false;32,PSYSTRIKE;false;16,FIREBLAST;false;8,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=KROOKODILE,79,GROUND,DARK,GROUND,DARK,280,280,INTIMIDATE,INTIMIDATE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,172,148,156,191,NONE,0,0,96.3,EARTHQUAKE;false;16,GUNKSHOT;false;8,BULKUP;false;32,KNOCKOFF;false;32,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-05b586360961cef63~b001~g0~20260812T043839-l2-000025.p2.log.gz",
+  "turn": 6,
+  "severity": "soft",
+  "category": "status",
+  "message": "observed tox on user but no branch applies it [ko-margin]",
+  "observed": "|-status|p2a: Eiscue|tox|[from] ability: Toxic Chain|[of] p1a: Fezandipiti",
+  "user_move": "zenheadbutt",
+  "opp_move": "terablast-tera",
+  "user_active": "eiscue",
+  "opp_active": "fezandipiti",
+  "branches": [
+   [
+    "ToggleTerastallized SideTwo",
+    "SetLastUsedMove SideTwo: Move(M0) -> Move(M2)",
+    "Damage SideOne: 79 [move]",
+    "Heal SideTwo: 13"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786509713",
+   "|-terastallize|p1a: Fezandipiti|Ground",
+   "|move|p1a: Fezandipiti|Tera Blast|p2a: Eiscue|[anim] Tera Blast Ground",
+   "|-activate|p2a: Eiscue|ability: Ice Face",
+   "|-damage|p2a: Eiscue|79/274",
+   "|-status|p2a: Eiscue|tox|[from] ability: Toxic Chain|[of] p1a: Fezandipiti",
+   "|detailschange|p2a: Eiscue|Eiscue-Noice, L88, M, tera:Water",
+   "|move|p2a: Eiscue|Zen Headbutt|p1a: Fezandipiti",
+   "|-damage|p1a: Fezandipiti|75/100",
+   "|",
+   "|-heal|p1a: Fezandipiti|81/100|[from] item: Leftovers",
+   "|-damage|p2a: Eiscue|62/274 tox|[from] psn",
+   "|upkeep",
+   "|turn|7"
+  ],
+  "state_string": "EISCUE,88,ICE,TYPELESS,ICE,TYPELESS,79,274,ICEFACE,ICEFACE,NONE,SERIOUS,85;85;85;85;85;85,191,244,165,209,138,NONE,0,0,89,ICESPINNER;false;23,ZENHEADBUTT;false;24,LIQUIDATION;false;16,BELLYDRUM;false;15,true,WATER,true,false,true,1,SITRUSBERRY,false,0,0,0=KROOKODILE,79,GROUND,DARK,GROUND,DARK,280,280,INTIMIDATE,INTIMIDATE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,172,148,156,191,NONE,0,0,96.3,EARTHQUAKE;false;16,GUNKSHOT;false;8,BULKUP;false;32,KNOCKOFF;false;32,false,POISON,false,false,false,0,NONE,false,0,0,0=TAUROSPALDEAAQUA,81,FIGHTING,WATER,FIGHTING,WATER,254,254,INTIMIDATE,INTIMIDATE,LIFEORB,SERIOUS,85;85;85;85;85;85,225,217,95,160,209,NONE,0,0,110,CLOSECOMBAT;false;8,AQUAJET;false;32,LIQUIDATION;false;16,BULKUP;false;32,false,WATER,false,false,false,0,NONE,false,0,0,0=MEWTWO,72,PSYCHIC,TYPELESS,PSYCHIC,TYPELESS,272,272,UNNERVE,UNNERVE,LIFEORB,SERIOUS,85;85;85;85;85;85,163,172,264,172,229,NONE,0,0,122,DARKPULSE;false;24,NASTYPLOT;false;32,PSYSTRIKE;false;16,FIREBLAST;false;8,false,FIRE,false,false,false,0,NONE,false,0,0,0=GOLDUCK,90,WATER,TYPELESS,WATER,TYPELESS,290,290,CLOUDNINE,CLOUDNINE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,152,192,222,195,204,NONE,0,0,76.6,ENCORE;false;8,NASTYPLOT;false;32,HYDROPUMP;false;8,GRASSKNOT;false;32,false,WATER,false,false,false,0,NONE,false,0,0,0=ZAMAZENTA,71,FIGHTING,TYPELESS,FIGHTING,TYPELESS,187,248,DAUNTLESSSHIELD,DAUNTLESSSHIELD,CHOICEBAND,SERIOUS,85;85;85;85;85;85,212,205,155,205,237,NONE,0,0,210,PSYCHICFANGS;false;16,IRONHEAD;false;24,CLOSECOMBAT;false;7,CRUNCH;false;24,false,FIGHTING,true,false,true,1,NONE,true,1,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/FEZANDIPITI,82,POISON,FAIRY,POISON,FAIRY,265,278,TOXICCHAIN,TOXICCHAIN,LEFTOVERS,SERIOUS,85;85;85;85;85;85,196,182,162,252,210,NONE,0,0,30.1,SWORDSDANCE;false;31,GUNKSHOT;false;8,TERABLAST;false;16,PLAYROUGH;false;16,false,GROUND,true,false,true,1,NONE,false,1,0,0=SCEPTILE,87,GRASS,TYPELESS,GRASS,TYPELESS,264,264,OVERGROW,OVERGROW,LIFEORB,SERIOUS,85;85;85;85;85;85,198,163,232,198,259,NONE,0,0,52.2,SWORDSDANCE;false;32,LEAFBLADE;false;24,ROCKSLIDE;false;16,EARTHQUAKE;false;16,false,TYPELESS,true,false,true,0,NONE,false,0,0,0=TORNADUSTHERIAN,79,FLYING,TYPELESS,FLYING,TYPELESS,0,254,REGENERATOR,REGENERATOR,CHOICESPECS,SERIOUS,85;85;85;85;85;85,204,172,219,188,237,NONE,0,0,63,FOCUSBLAST;false;7,BLEAKWINDSTORM;false;16,HEATWAVE;false;16,UTURN;false;32,false,TYPELESS,true,false,true,1,NONE,false,1,0,0=FROSMOTH,82,ICE,BUG,ICE,BUG,249,249,ICESCALES,ICESCALES,HEAVYDUTYBOOTS,SERIOUS,85;0;85;85;85;85,111,146,252,195,154,NONE,0,0,42,GIGADRAIN;false;15,QUIVERDANCE;false;32,ICEBEAM;false;16,HURRICANE;false;16,false,TYPELESS,true,false,true,0,NONE,false,1,0,0=KINGDRA,84,WATER,DRAGON,WATER,DRAGON,263,263,SNIPER,SNIPER,LUMBERRY,SERIOUS,85;85;85;85;85;85,208,208,208,208,191,NONE,0,0,152,WAVECRASH;false;16,OUTRAGE;false;16,IRONHEAD;false;24,DRAGONDANCE;false;32,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=SUNFLORA,100,GRASS,TYPELESS,GRASS,TYPELESS,312,312,CHLOROPHYLL,CHLOROPHYLL,LIFEORB,SERIOUS,85;0;85;85;85;85,155,167,267,227,117,NONE,0,0,8.5,WEATHERBALL;false;16,SOLARBEAM;false;16,EARTHPOWER;false;16,SUNNYDAY;false;8,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=2=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-08a8cdc31c0c99872~b004~g7~20260812T051813-l5-000053.p2.log.gz",
+  "turn": 2,
+  "severity": "soft",
+  "category": "boost",
+  "message": "observed - def on user but no branch produces it [ko-margin]",
+  "observed": "|-unboost|p2a: Ceruledge|def|1",
+  "user_move": "bitterblade",
+  "opp_move": "knockoff",
+  "user_active": "ceruledge",
+  "opp_active": "ogerponhearthflame",
+  "branches": [
+   [
+    "SetLastUsedMove SideOne: Switch(P0) -> Move(M2)",
+    "Damage SideTwo: 109 [move]",
+    "Heal SideOne: 55",
+    "Damage SideOne: 136 [move]"
+   ],
+   [
+    "SetLastUsedMove SideOne: Switch(P0) -> Move(M2)",
+    "Damage SideTwo: 123 [move]",
+    "Heal SideOne: 62",
+    "Damage SideOne: 143 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786512261",
+   "|move|p2a: Ceruledge|Bitter Blade|p1a: Ogerpon",
+   "|-crit|p1a: Ogerpon",
+   "|-damage|p1a: Ogerpon|23/100",
+   "|-heal|p2a: Ceruledge|174/245|[from] drain|[of] p1a: Ogerpon",
+   "|move|p1a: Ogerpon|Knock Off|p2a: Ceruledge",
+   "|-supereffective|p2a: Ceruledge",
+   "|-damage|p2a: Ceruledge|8/245",
+   "|-ability|p2a: Ceruledge|Weak Armor|boost",
+   "|-unboost|p2a: Ceruledge|def|1",
+   "|-boost|p2a: Ceruledge|spe|2",
+   "|",
+   "|upkeep",
+   "|turn|3"
+  ],
+  "state_string": "CERULEDGE,78,FIRE,GHOST,FIRE,GHOST,81,245,WEAKARMOR,WEAKARMOR,NONE,SERIOUS,85;85;85;85;85;85,240,170,139,201,178,NONE,0,0,62,SWORDSDANCE;false;32,CLOSECOMBAT;false;8,BITTERBLADE;false;16,POLTERGEIST;false;8,false,FIGHTING,true,false,true,1,NONE,false,0,0,0=IRONCROWN,78,STEEL,PSYCHIC,STEEL,PSYCHIC,268,268,QUARKDRIVE,QUARKDRIVE,CHOICESPECS,SERIOUS,85;85;85;85;85;85,117,201,235,214,198,NONE,0,0,156,TACHYONCUTTER;false;16,VOLTSWITCH;false;32,PSYSHOCK;false;16,FOCUSBLAST;false;8,false,FIGHTING,false,false,false,0,NONE,false,0,0,0=ZEKROM,71,DRAGON,ELECTRIC,DRAGON,ELECTRIC,259,259,TERAVOLT,TERAVOLT,LEFTOVERS,SERIOUS,85;85;85;85;85;85,254,212,212,183,169,NONE,0,0,345,BOLTSTRIKE;false;8,OUTRAGE;false;16,DRAGONDANCE;false;32,SUBSTITUTE;false;16,false,FAIRY,false,false,false,0,NONE,false,0,0,0=MIENSHAO,83,FIGHTING,TYPELESS,FIGHTING,TYPELESS,244,244,REGENERATOR,REGENERATOR,LIFEORB,SERIOUS,85;85;85;85;85;85,255,147,205,147,222,NONE,0,0,35.5,CLOSECOMBAT;false;8,POISONJAB;false;32,KNOCKOFF;false;32,SWORDSDANCE;false;32,false,POISON,false,false,false,0,NONE,false,0,0,0=LUVDISC,100,WATER,TYPELESS,WATER,TYPELESS,247,247,SWIFTSWIM,SWIFTSWIM,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,65,167,137,187,251,NONE,0,0,8.7,WHIRLPOOL;false;24,ENDEAVOR;false;8,SURF;false;24,SUBSTITUTE;false;16,false,GROUND,false,false,false,0,NONE,false,0,0,0=HOOPA,85,PSYCHIC,GHOST,PSYCHIC,GHOST,275,275,MAGICIAN,MAGICIAN,LIFEORB,SERIOUS,85;85;85;85;85;85,192,151,304,270,168,NONE,0,0,9,NASTYPLOT;false;32,PSYSHOCK;false;16,SHADOWBALL;false;24,FOCUSBLAST;false;8,false,FIGHTING,true,false,true,0,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=-1=0=0=2=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/OGERPONHEARTHFLAME,74,GRASS,FIRE,GRASS,FIRE,239,239,MOLDBREAKER,MOLDBREAKER,HEARTHFLAMEMASK,SERIOUS,77;85;85;85;85;85,221,167,132,185,206,NONE,0,0,39.8,KNOCKOFF;false;31,SWORDSDANCE;false;32,POWERWHIP;false;16,IVYCUDGEL;false;16,false,TYPELESS,true,false,true,0,NONE,false,1,0,0=DRAGALGE,88,POISON,DRAGON,POISON,DRAGON,258,258,ADAPTABILITY,ADAPTABILITY,ASSAULTVEST,SERIOUS,85;85;85;85;85;85,182,209,221,267,128,NONE,0,0,81.5,DRAGONTAIL;false;16,SLUDGEWAVE;false;16,FOCUSBLAST;false;8,DRACOMETEOR;false;8,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=PALOSSAND,89,GHOST,GROUND,GHOST,GROUND,296,296,WATERCOMPACTION,WATERCOMPACTION,LEFTOVERS,SERIOUS,85;0;85;85;85;85,138,247,229,184,113,NONE,0,0,250,SHOREUP;false;8,EARTHPOWER;false;16,STEALTHROCK;false;32,SHADOWBALL;false;24,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=SABLEYE,88,DARK,GHOST,DARK,GHOST,231,231,PRANKSTER,PRANKSTER,LEFTOVERS,SERIOUS,85;85;85;85;85;85,182,182,165,165,138,NONE,0,0,11,KNOCKOFF;false;32,THUNDERWAVE;false;32,ENCORE;false;8,RECOVER;false;8,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=HITMONLEE,85,FIGHTING,TYPELESS,FIGHTING,TYPELESS,224,224,UNBURDEN,UNBURDEN,WHITEHERB,SERIOUS,85;85;85;85;85;85,253,139,108,236,197,NONE,0,0,49.8,CLOSECOMBAT;false;8,KNOCKOFF;false;32,STONEEDGE;false;8,SWORDSDANCE;false;32,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=YANMEGA,82,BUG,FLYING,BUG,FLYING,275,275,TINTEDLENS,TINTEDLENS,CHOICESPECS,SERIOUS,85;85;85;85;85;85,172,188,237,139,203,NONE,0,0,51.5,UTURN;false;32,AIRSLASH;false;24,BUGBUZZ;false;16,GIGADRAIN;false;16,false,BUG,false,false,false,0,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-08a8cdc31c0c99872~b004~g7~20260812T051813-l5-000053.p2.log.gz",
+  "turn": 2,
+  "severity": "soft",
+  "category": "boost",
+  "message": "observed + spe on user but no branch produces it [ko-margin]",
+  "observed": "|-boost|p2a: Ceruledge|spe|2",
+  "user_move": "bitterblade",
+  "opp_move": "knockoff",
+  "user_active": "ceruledge",
+  "opp_active": "ogerponhearthflame",
+  "branches": [
+   [
+    "SetLastUsedMove SideOne: Switch(P0) -> Move(M2)",
+    "Damage SideTwo: 109 [move]",
+    "Heal SideOne: 55",
+    "Damage SideOne: 136 [move]"
+   ],
+   [
+    "SetLastUsedMove SideOne: Switch(P0) -> Move(M2)",
+    "Damage SideTwo: 123 [move]",
+    "Heal SideOne: 62",
+    "Damage SideOne: 143 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786512261",
+   "|move|p2a: Ceruledge|Bitter Blade|p1a: Ogerpon",
+   "|-crit|p1a: Ogerpon",
+   "|-damage|p1a: Ogerpon|23/100",
+   "|-heal|p2a: Ceruledge|174/245|[from] drain|[of] p1a: Ogerpon",
+   "|move|p1a: Ogerpon|Knock Off|p2a: Ceruledge",
+   "|-supereffective|p2a: Ceruledge",
+   "|-damage|p2a: Ceruledge|8/245",
+   "|-ability|p2a: Ceruledge|Weak Armor|boost",
+   "|-unboost|p2a: Ceruledge|def|1",
+   "|-boost|p2a: Ceruledge|spe|2",
+   "|",
+   "|upkeep",
+   "|turn|3"
+  ],
+  "state_string": "CERULEDGE,78,FIRE,GHOST,FIRE,GHOST,81,245,WEAKARMOR,WEAKARMOR,NONE,SERIOUS,85;85;85;85;85;85,240,170,139,201,178,NONE,0,0,62,SWORDSDANCE;false;32,CLOSECOMBAT;false;8,BITTERBLADE;false;16,POLTERGEIST;false;8,false,FIGHTING,true,false,true,1,NONE,false,0,0,0=IRONCROWN,78,STEEL,PSYCHIC,STEEL,PSYCHIC,268,268,QUARKDRIVE,QUARKDRIVE,CHOICESPECS,SERIOUS,85;85;85;85;85;85,117,201,235,214,198,NONE,0,0,156,TACHYONCUTTER;false;16,VOLTSWITCH;false;32,PSYSHOCK;false;16,FOCUSBLAST;false;8,false,FIGHTING,false,false,false,0,NONE,false,0,0,0=ZEKROM,71,DRAGON,ELECTRIC,DRAGON,ELECTRIC,259,259,TERAVOLT,TERAVOLT,LEFTOVERS,SERIOUS,85;85;85;85;85;85,254,212,212,183,169,NONE,0,0,345,BOLTSTRIKE;false;8,OUTRAGE;false;16,DRAGONDANCE;false;32,SUBSTITUTE;false;16,false,FAIRY,false,false,false,0,NONE,false,0,0,0=MIENSHAO,83,FIGHTING,TYPELESS,FIGHTING,TYPELESS,244,244,REGENERATOR,REGENERATOR,LIFEORB,SERIOUS,85;85;85;85;85;85,255,147,205,147,222,NONE,0,0,35.5,CLOSECOMBAT;false;8,POISONJAB;false;32,KNOCKOFF;false;32,SWORDSDANCE;false;32,false,POISON,false,false,false,0,NONE,false,0,0,0=LUVDISC,100,WATER,TYPELESS,WATER,TYPELESS,247,247,SWIFTSWIM,SWIFTSWIM,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,65,167,137,187,251,NONE,0,0,8.7,WHIRLPOOL;false;24,ENDEAVOR;false;8,SURF;false;24,SUBSTITUTE;false;16,false,GROUND,false,false,false,0,NONE,false,0,0,0=HOOPA,85,PSYCHIC,GHOST,PSYCHIC,GHOST,275,275,MAGICIAN,MAGICIAN,LIFEORB,SERIOUS,85;85;85;85;85;85,192,151,304,270,168,NONE,0,0,9,NASTYPLOT;false;32,PSYSHOCK;false;16,SHADOWBALL;false;24,FOCUSBLAST;false;8,false,FIGHTING,true,false,true,0,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=-1=0=0=2=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/OGERPONHEARTHFLAME,74,GRASS,FIRE,GRASS,FIRE,239,239,MOLDBREAKER,MOLDBREAKER,HEARTHFLAMEMASK,SERIOUS,77;85;85;85;85;85,221,167,132,185,206,NONE,0,0,39.8,KNOCKOFF;false;31,SWORDSDANCE;false;32,POWERWHIP;false;16,IVYCUDGEL;false;16,false,TYPELESS,true,false,true,0,NONE,false,1,0,0=DRAGALGE,88,POISON,DRAGON,POISON,DRAGON,258,258,ADAPTABILITY,ADAPTABILITY,ASSAULTVEST,SERIOUS,85;85;85;85;85;85,182,209,221,267,128,NONE,0,0,81.5,DRAGONTAIL;false;16,SLUDGEWAVE;false;16,FOCUSBLAST;false;8,DRACOMETEOR;false;8,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=PALOSSAND,89,GHOST,GROUND,GHOST,GROUND,296,296,WATERCOMPACTION,WATERCOMPACTION,LEFTOVERS,SERIOUS,85;0;85;85;85;85,138,247,229,184,113,NONE,0,0,250,SHOREUP;false;8,EARTHPOWER;false;16,STEALTHROCK;false;32,SHADOWBALL;false;24,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=SABLEYE,88,DARK,GHOST,DARK,GHOST,231,231,PRANKSTER,PRANKSTER,LEFTOVERS,SERIOUS,85;85;85;85;85;85,182,182,165,165,138,NONE,0,0,11,KNOCKOFF;false;32,THUNDERWAVE;false;32,ENCORE;false;8,RECOVER;false;8,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=HITMONLEE,85,FIGHTING,TYPELESS,FIGHTING,TYPELESS,224,224,UNBURDEN,UNBURDEN,WHITEHERB,SERIOUS,85;85;85;85;85;85,253,139,108,236,197,NONE,0,0,49.8,CLOSECOMBAT;false;8,KNOCKOFF;false;32,STONEEDGE;false;8,SWORDSDANCE;false;32,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=YANMEGA,82,BUG,FLYING,BUG,FLYING,275,275,TINTEDLENS,TINTEDLENS,CHOICESPECS,SERIOUS,85;85;85;85;85;85,172,188,237,139,203,NONE,0,0,51.5,UTURN;false;32,AIRSLASH;false;24,BUGBUZZ;false;16,GIGADRAIN;false;16,false,BUG,false,false,false,0,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0a598c0100d4cadc1~b000~g6~20260812T065016-l3-000003.p1.log.gz",
+  "turn": 20,
+  "severity": "soft",
+  "category": "boost",
+  "message": "observed + spe on user but no branch produces it [ko-margin]",
+  "observed": "|-boost|p1a: Blaziken|spe|1",
+  "user_move": "flareblitz",
+  "opp_move": "gigadrain",
+  "user_active": "blaziken",
+  "opp_active": "lilligant",
+  "branches": [
+   [
+    "Damage SideOne: 116 [move]",
+    "Heal SideTwo: 51",
+    "Heal SideTwo: -26",
+    "Damage SideTwo: 235 [move]",
+    "Damage SideOne: 78 [recoil]",
+    "Heal SideOne: -23"
+   ],
+   [
+    "Damage SideOne: 174 [move]",
+    "Heal SideTwo: 51",
+    "Heal SideTwo: -26",
+    "Damage SideTwo: 235 [move]",
+    "Damage SideOne: 43 [recoil]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786517460",
+   "|move|p2a: Lilligant|Giga Drain|p1a: Blaziken",
+   "|-resisted|p1a: Blaziken",
+   "|-damage|p1a: Blaziken|109/247",
+   "|-heal|p2a: Lilligant|100/100|[from] drain|[of] p1a: Blaziken",
+   "|-damage|p2a: Lilligant|91/100|[from] item: Life Orb",
+   "|move|p1a: Blaziken|Flare Blitz|p2a: Lilligant",
+   "|-supereffective|p2a: Lilligant",
+   "|-damage|p2a: Lilligant|0 fnt",
+   "|faint|p2a: Lilligant",
+   "|-damage|p1a: Blaziken|31/247|[from] Recoil",
+   "|-damage|p1a: Blaziken|7/247|[from] item: Life Orb",
+   "|",
+   "|-ability|p1a: Blaziken|Speed Boost|boost",
+   "|-boost|p1a: Blaziken|spe|1",
+   "|upkeep",
+   "|",
+   "|t:|1786517460",
+   "|switch|p2a: Munkidori|Munkidori, L79, M|100/100",
+   "|turn|21"
+  ],
+  "state_string": "BLAZIKEN,76,FIRE,FIGHTING,FIRE,FIGHTING,217,247,SPEEDBOOST,SPEEDBOOST,LIFEORB,SERIOUS,85;85;85;85;85;85,226,150,211,150,166,NONE,0,0,52,CLOSECOMBAT;false;8,SWORDSDANCE;false;32,FLAREBLITZ;false;24,STONEEDGE;false;8,false,FIGHTING,true,false,true,0,NONE,false,0,0,0=ROARINGMOON,72,DRAGON,DARK,DRAGON,DARK,0,270,PROTOSYNTHESIS,PROTOSYNTHESIS,NONE,SERIOUS,85;85;85;85;85;85,242,144,121,187,213,NONE,0,0,380,OUTRAGE;false;15,UTURN;false;32,IRONHEAD;false;23,KNOCKOFF;false;31,false,DARK,true,false,true,3,NONE,false,4,0,0=CRAWDAUNT,84,WATER,DARK,WATER,DARK,0,243,ADAPTABILITY,ADAPTABILITY,LIFEORB,SERIOUS,85;85;85;85;85;85,250,191,199,141,141,NONE,0,0,32.8,KNOCKOFF;false;31,DRAGONDANCE;false;30,CLOSECOMBAT;false;8,CRABHAMMER;false;14,false,FIGHTING,true,false,true,2,NONE,false,5,0,0=IRONBOULDER,77,ROCK,PSYCHIC,ROCK,PSYCHIC,0,265,QUARKDRIVE,QUARKDRIVE,NONE,SERIOUS,85;85;85;85;85;85,229,168,149,211,236,NONE,0,0,162.5,CLOSECOMBAT;false;8,SWORDSDANCE;false;31,MIGHTYCLEAVE;false;7,ZENHEADBUTT;false;24,false,FIGHTING,true,false,true,2,BOOSTERENERGY,false,2,0,0=ALCREMIERUBYSWIRL,90,FAIRY,TYPELESS,FAIRY,TYPELESS,247,263,AROMAVEIL,AROMAVEIL,LEFTOVERS,SERIOUS,85;85;85;85;85;85,113,186,249,269,167,NONE,0,0,0.5,CALMMIND;false;32,ALLURINGVOICE;false;16,TERABLAST;false;16,RECOVER;false;8,false,GROUND,true,false,true,0,NONE,false,0,0,0=SCYTHER,82,BUG,FLYING,BUG,FLYING,0,249,TECHNICIAN,TECHNICIAN,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,228,178,137,178,219,NONE,0,2,56,DEFOG;false;24,UTURN;false;30,CLOSECOMBAT;false;8,DUALWINGBEAT;false;16,false,FIGHTING,true,false,true,2,NONE,false,2,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;1;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/LILLIGANT,86,GRASS,TYPELESS,GRASS,TYPELESS,210,261,CHLOROPHYLL,CHLOROPHYLL,LIFEORB,SERIOUS,85;0;85;85;85;85,108,178,238,178,204,NONE,0,0,16.3,SLEEPPOWDER;false;23,QUIVERDANCE;false;31,TERABLAST;false;14,GIGADRAIN;false;16,false,TYPELESS,true,false,true,0,NONE,false,4,0,0=IRONTHORNS,83,ROCK,ELECTRIC,ROCK,ELECTRIC,0,302,QUARKDRIVE,QUARKDRIVE,NONE,SERIOUS,85;85;85;85;85;85,270,230,164,187,167,NONE,0,0,303,WILDCHARGE;false;23,SPIKES;false;31,STONEEDGE;false;8,STEALTHROCK;false;32,true,WATER,true,false,true,3,AIRBALLOON,false,0,0,0=KROOKODILE,79,GROUND,DARK,GROUND,DARK,0,280,INTIMIDATE,INTIMIDATE,NONE,SERIOUS,85;85;85;85;85;85,230,172,148,156,191,NONE,0,0,96.3,KNOCKOFF;false;30,GUNKSHOT;false;6,EARTHQUAKE;false;16,STONEEDGE;false;8,false,TYPELESS,true,false,true,3,NONE,false,1,0,0=REUNICLUS,88,PSYCHIC,TYPELESS,PSYCHIC,TYPELESS,0,337,MAGICGUARD,MAGICGUARD,LIFEORB,SERIOUS,85;0;85;85;85;85,119,182,270,200,103,NONE,0,0,20.1,RECOVER;false;7,FOCUSBLAST;false;6,CALMMIND;false;32,PSYCHIC;false;16,false,TYPELESS,true,false,true,3,NONE,false,2,0,0=MUNKIDORI,79,POISON,PSYCHIC,POISON,PSYCHIC,269,269,TOXICCHAIN,TOXICCHAIN,CHOICESPECS,SERIOUS,85;85;85;85;85;85,164,150,251,188,213,NONE,0,0,12.2,PSYSHOCK;false;16,UTURN;false;32,FOCUSBLAST;false;8,SLUDGEWAVE;false;16,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=TERRAKION,79,ROCK,FIGHTING,ROCK,FIGHTING,273,273,JUSTIFIED,JUSTIFIED,CHOICEBAND,SERIOUS,85;85;85;85;85;85,249,188,159,188,216,NONE,0,0,260,CLOSECOMBAT;false;8,QUICKATTACK;false;48,EARTHQUAKE;false;16,STONEEDGE;false;8,false,TYPELESS,false,false,false,0,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=1=1=1=0=0=0=0=0=0=false=NONE=false=false=false=false=move:2=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0a598c0100d4cadc1~b000~g6~20260812T065016-l3-000003.p2.log.gz",
+  "turn": 20,
+  "severity": "soft",
+  "category": "boost",
+  "message": "observed + spe on opp but no branch produces it [ko-margin]",
+  "observed": "|-boost|p1a: Blaziken|spe|1",
+  "user_move": "gigadrain",
+  "opp_move": "flareblitz",
+  "user_active": "lilligant",
+  "opp_active": "blaziken",
+  "branches": [
+   [
+    "Damage SideTwo: 116 [move]",
+    "Heal SideOne: 52",
+    "Heal SideOne: -26",
+    "Damage SideOne: 235 [move]",
+    "Damage SideTwo: 78 [recoil]",
+    "Heal SideTwo: -22"
+   ],
+   [
+    "Damage SideTwo: 174 [move]",
+    "Heal SideOne: 52",
+    "Heal SideOne: -26",
+    "Damage SideOne: 235 [move]",
+    "Damage SideTwo: 42 [recoil]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786517460",
+   "|move|p2a: Lilligant|Giga Drain|p1a: Blaziken",
+   "|-resisted|p1a: Blaziken",
+   "|-damage|p1a: Blaziken|45/100",
+   "|-heal|p2a: Lilligant|261/261|[from] drain|[of] p1a: Blaziken",
+   "|-damage|p2a: Lilligant|235/261|[from] item: Life Orb",
+   "|move|p1a: Blaziken|Flare Blitz|p2a: Lilligant",
+   "|-supereffective|p2a: Lilligant",
+   "|-damage|p2a: Lilligant|0 fnt",
+   "|faint|p2a: Lilligant",
+   "|-damage|p1a: Blaziken|13/100|[from] Recoil",
+   "|-damage|p1a: Blaziken|3/100|[from] item: Life Orb",
+   "|",
+   "|-ability|p1a: Blaziken|Speed Boost|boost",
+   "|-boost|p1a: Blaziken|spe|1",
+   "|upkeep"
+  ],
+  "state_string": "LILLIGANT,86,GRASS,TYPELESS,GRASS,TYPELESS,209,261,CHLOROPHYLL,CHLOROPHYLL,LIFEORB,SERIOUS,85;85;85;85;85;85,108,178,238,178,204,NONE,0,0,16.3,SLEEPPOWDER;false;23,TERABLAST;false;14,GIGADRAIN;false;16,QUIVERDANCE;false;31,false,FIRE,true,false,true,0,NONE,false,4,0,0=TERRAKION,79,ROCK,FIGHTING,ROCK,FIGHTING,273,273,JUSTIFIED,JUSTIFIED,CHOICEBAND,SERIOUS,85;85;85;85;85;85,249,188,159,188,216,NONE,0,0,260,CLOSECOMBAT;false;8,QUICKATTACK;false;48,EARTHQUAKE;false;16,STONEEDGE;false;8,false,GROUND,false,false,false,0,NONE,false,0,0,0=MUNKIDORI,79,POISON,PSYCHIC,POISON,PSYCHIC,269,269,TOXICCHAIN,TOXICCHAIN,CHOICESPECS,SERIOUS,85;85;85;85;85;85,164,150,251,188,213,NONE,0,0,12.2,PSYSHOCK;false;16,UTURN;false;32,FOCUSBLAST;false;8,SLUDGEWAVE;false;16,false,POISON,false,false,false,0,NONE,false,0,0,0=IRONTHORNS,83,ROCK,ELECTRIC,ROCK,ELECTRIC,0,302,QUARKDRIVE,QUARKDRIVE,NONE,SERIOUS,85;85;85;85;85;85,270,230,164,187,167,NONE,0,0,303,STONEEDGE;false;8,SPIKES;false;31,WILDCHARGE;false;23,STEALTHROCK;false;32,true,WATER,true,false,true,3,AIRBALLOON,false,0,0,0=KROOKODILE,79,GROUND,DARK,GROUND,DARK,0,280,INTIMIDATE,INTIMIDATE,NONE,SERIOUS,85;85;85;85;85;85,230,172,148,156,191,NONE,0,0,96.3,EARTHQUAKE;false;16,GUNKSHOT;false;6,STONEEDGE;false;8,KNOCKOFF;false;30,false,POISON,true,false,true,3,NONE,false,1,0,0=REUNICLUS,88,PSYCHIC,TYPELESS,PSYCHIC,TYPELESS,0,337,MAGICGUARD,MAGICGUARD,LIFEORB,SERIOUS,85;85;85;85;85;85,119,182,270,200,103,NONE,0,0,20.1,CALMMIND;false;32,FOCUSBLAST;false;6,RECOVER;false;7,PSYCHIC;false;16,false,FIGHTING,true,false,true,3,NONE,false,2,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=1=1=1=0=0=0=0=0=0=false=NONE=false=false=false=false=move:1=false=0=false/BLAZIKEN,76,FIRE,FIGHTING,FIRE,FIGHTING,216,247,SPEEDBOOST,SPEEDBOOST,LIFEORB,SERIOUS,85;85;85;85;85;85,226,150,211,150,166,NONE,0,0,52,CLOSECOMBAT;false;8,SWORDSDANCE;false;32,FLAREBLITZ;false;24,STONEEDGE;false;8,false,TYPELESS,true,false,true,0,NONE,false,0,0,0=ROARINGMOON,72,DRAGON,DARK,DRAGON,DARK,0,270,PROTOSYNTHESIS,PROTOSYNTHESIS,NONE,SERIOUS,85;85;85;85;85;85,242,144,121,187,213,NONE,0,0,380,OUTRAGE;false;15,KNOCKOFF;false;31,IRONHEAD;false;23,UTURN;false;32,false,TYPELESS,true,false,true,3,NONE,false,4,0,0=CRAWDAUNT,84,WATER,DARK,WATER,DARK,0,243,ADAPTABILITY,ADAPTABILITY,LIFEORB,SERIOUS,85;85;85;85;85;85,250,191,199,141,141,NONE,0,0,32.8,DRAGONDANCE;false;30,KNOCKOFF;false;31,CRABHAMMER;false;14,CLOSECOMBAT;false;8,false,TYPELESS,true,false,true,2,NONE,false,5,0,0=IRONBOULDER,77,ROCK,PSYCHIC,ROCK,PSYCHIC,0,265,QUARKDRIVE,QUARKDRIVE,NONE,SERIOUS,85;85;85;85;85;85,229,168,149,211,236,NONE,0,0,162.5,SWORDSDANCE;false;31,MIGHTYCLEAVE;false;7,CLOSECOMBAT;false;8,ZENHEADBUTT;false;24,false,TYPELESS,true,false,true,2,BOOSTERENERGY,false,2,0,0=ALCREMIERUBYSWIRL,90,FAIRY,TYPELESS,FAIRY,TYPELESS,246,263,AROMAVEIL,AROMAVEIL,LEFTOVERS,SERIOUS,85;0;85;85;85;85,113,186,249,269,167,NONE,0,0,0.5,CALMMIND;false;32,ALLURINGVOICE;false;16,TERABLAST;false;16,RECOVER;false;8,false,GROUND,true,false,true,0,NONE,false,0,0,0=SCYTHER,82,BUG,FLYING,BUG,FLYING,0,249,TECHNICIAN,TECHNICIAN,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,228,178,137,178,219,SLEEP,0,2,56,UTURN;false;30,DEFOG;false;24,CLOSECOMBAT;false;8,DUALWINGBEAT;false;16,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;1;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=switch:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0cc7d43b357302299~b004~g6~20260812T051859-l6-000006.p1.log.gz",
+  "turn": 42,
+  "severity": "soft",
+  "category": "heal",
+  "message": "observed heal on opp but no branch heals it",
+  "observed": "|-heal|p2a: Wigglytuff|83/100|[from] move: Wish|[wisher] Wigglytuff",
+  "user_move": "struggle",
+  "opp_move": "alluringvoice",
+  "user_active": "cinderace",
+  "opp_active": "wigglytuff",
+  "branches": [
+   [
+    "ChangeType SideOne: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideOne: TYPECHANGE",
+    "SetLastUsedMove SideOne: Move(M0) -> Struggle",
+    "Damage SideTwo: 70 [move]",
+    "Damage SideOne: 62 [recoil]",
+    "SetLastUsedMove SideTwo: Move(M1) -> Move(M0)",
+    "Damage SideOne: 68 [move]"
+   ],
+   [
+    "ChangeType SideOne: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideOne: TYPECHANGE",
+    "SetLastUsedMove SideOne: Move(M0) -> Struggle",
+    "Damage SideTwo: 105 [move]",
+    "Damage SideOne: 62 [recoil]",
+    "SetLastUsedMove SideTwo: Move(M1) -> Move(M0)",
+    "Damage SideOne: 68 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786511998",
+   "|-activate|p1a: Cinderace|move: Struggle",
+   "|move|p1a: Cinderace|Struggle|p2a: Wigglytuff",
+   "|-damage|p2a: Wigglytuff|33/100",
+   "|-damage|p1a: Cinderace|68/249|[from] recoil",
+   "|move|p2a: Wigglytuff|Alluring Voice|p1a: Cinderace",
+   "|-resisted|p1a: Cinderace",
+   "|-damage|p1a: Cinderace|8/249",
+   "|",
+   "|-heal|p2a: Wigglytuff|83/100|[from] move: Wish|[wisher] Wigglytuff",
+   "|-heal|p2a: Wigglytuff|89/100|[from] item: Leftovers",
+   "|upkeep",
+   "|turn|43"
+  ],
+  "state_string": "CINDERACE,77,FIRE,TYPELESS,FIRE,TYPELESS,130,249,LIBERO,LIBERO,CHOICEBAND,SERIOUS,85;85;85;85;85;85,223,160,145,160,228,NONE,0,0,33,PYROBALL;true;0,HIGHJUMPKICK;true;16,GUNKSHOT;true;8,UTURN;true;32,false,FIRE,true,false,true,2,NONE,false,5,0,0=HERACROSS,80,BUG,FIGHTING,BUG,FIGHTING,0,259,GUTS,GUTS,FLAMEORB,SERIOUS,85;85;85;85;85;85,246,166,110,198,182,NONE,0,0,54,KNOCKOFF;false;32,TRAILBLAZE;false;32,CLOSECOMBAT;false;5,FACADE;false;31,true,NORMAL,true,false,true,2,NONE,false,2,0,0=PLUSLE,95,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,0,268,LIGHTNINGROD,LIGHTNINGROD,LIFEORB,SERIOUS,85;85;85;85;85;85,100,130,215,196,234,NONE,0,0,4.2,GRASSKNOT;false;32,THUNDERBOLT;false;23,ALLURINGVOICE;false;16,NASTYPLOT;false;31,false,ELECTRIC,true,false,true,2,NONE,false,2,0,0=GLALIE,96,ICE,TYPELESS,ICE,TYPELESS,0,309,INNERFOCUS,INNERFOCUS,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,208,208,208,208,208,NONE,0,0,256.5,SPIKES;false;31,TAUNT;false;32,EARTHQUAKE;false;16,FREEZEDRY;false;31,false,GROUND,true,false,true,3,NONE,false,0,0,0=ARIADOS,95,BUG,POISON,BUG,POISON,0,287,SWARM,SWARM,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,225,187,168,187,130,NONE,0,0,33.5,POISONJAB;false;32,SUCKERPUNCH;false;8,MEGAHORN;false;16,STICKYWEB;false;28,false,GHOST,true,false,true,4,NONE,false,0,0,0=IRONHANDS,79,FIGHTING,ELECTRIC,FIGHTING,ELECTRIC,0,373,QUARKDRIVE,QUARKDRIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,267,216,125,153,125,NONE,0,0,380.7,DRAINPUNCH;false;12,WILDCHARGE;false;23,ICEPUNCH;false;24,SWORDSDANCE;false;29,false,FIGHTING,true,false,true,7,NONE,false,1,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/WIGGLYTUFF,96,NORMAL,FAIRY,NORMAL,FAIRY,210,424,COMPETITIVE,COMPETITIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,189,141,218,150,141,NONE,0,0,12,ALLURINGVOICE;false;13,WISH;false;13,PROTECT;false;14,KNOCKOFF;false;32,true,POISON,true,false,true,3,NONE,false,6,0,0=GRANBULL,88,FAIRY,TYPELESS,FAIRY,TYPELESS,0,302,INTIMIDATE,INTIMIDATE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,261,182,156,156,129,NONE,0,0,48.7,PLAYROUGH;false;12,ENCORE;false;7,EARTHQUAKE;false;15,THUNDERWAVE;false;32,false,TYPELESS,true,false,true,5,NONE,false,2,0,0=IRONTREADS,77,GROUND,STEEL,GROUND,STEEL,0,265,QUARKDRIVE,QUARKDRIVE,ASSAULTVEST,SERIOUS,85;85;85;85;85;85,217,229,155,152,208,NONE,0,0,240,RAPIDSPIN;false;59,EARTHQUAKE;false;15,IRONHEAD;false;24,KNOCKOFF;false;32,false,TYPELESS,true,false,true,1,NONE,false,2,0,0=VIKAVOLT,83,BUG,ELECTRIC,BUG,ELECTRIC,0,263,LEVITATE,LEVITATE,HEAVYDUTYBOOTS,SERIOUS,85;0;85;85;85;85,121,197,288,172,119,NONE,0,0,45,VOLTSWITCH;false;31,DISCHARGE;false;23,BUGBUZZ;false;15,STICKYWEB;false;32,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=SKARMORY,80,STEEL,FLYING,STEEL,FLYING,0,235,STURDY,STURDY,ROCKYHELMET,SERIOUS,85;85;85;85;85;85,174,270,110,158,158,NONE,0,0,50.5,BRAVEBIRD;false;23,BODYPRESS;false;16,STEALTHROCK;false;32,ROOST;false;8,false,TYPELESS,true,false,true,3,NONE,false,1,0,0=FLOATZEL,86,WATER,TYPELESS,WATER,TYPELESS,0,286,WATERVEIL,WATERVEIL,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,144,195,135,247,NONE,0,0,33.5,WAVECRASH;false;12,TAUNT;false;32,ICESPINNER;false;24,BULKUP;false;32,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=1=212=0=0=false=NONE=false=false=false=false=move:1=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0cc7d43b357302299~b004~g6~20260812T051859-l6-000006.p1.log.gz",
+  "turn": 42,
+  "severity": "soft",
+  "category": "heal",
+  "message": "observed heal on opp but no branch heals it",
+  "observed": "|-heal|p2a: Wigglytuff|89/100|[from] item: Leftovers",
+  "user_move": "struggle",
+  "opp_move": "alluringvoice",
+  "user_active": "cinderace",
+  "opp_active": "wigglytuff",
+  "branches": [
+   [
+    "ChangeType SideOne: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideOne: TYPECHANGE",
+    "SetLastUsedMove SideOne: Move(M0) -> Struggle",
+    "Damage SideTwo: 70 [move]",
+    "Damage SideOne: 62 [recoil]",
+    "SetLastUsedMove SideTwo: Move(M1) -> Move(M0)",
+    "Damage SideOne: 68 [move]"
+   ],
+   [
+    "ChangeType SideOne: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideOne: TYPECHANGE",
+    "SetLastUsedMove SideOne: Move(M0) -> Struggle",
+    "Damage SideTwo: 105 [move]",
+    "Damage SideOne: 62 [recoil]",
+    "SetLastUsedMove SideTwo: Move(M1) -> Move(M0)",
+    "Damage SideOne: 68 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786511998",
+   "|-activate|p1a: Cinderace|move: Struggle",
+   "|move|p1a: Cinderace|Struggle|p2a: Wigglytuff",
+   "|-damage|p2a: Wigglytuff|33/100",
+   "|-damage|p1a: Cinderace|68/249|[from] recoil",
+   "|move|p2a: Wigglytuff|Alluring Voice|p1a: Cinderace",
+   "|-resisted|p1a: Cinderace",
+   "|-damage|p1a: Cinderace|8/249",
+   "|",
+   "|-heal|p2a: Wigglytuff|83/100|[from] move: Wish|[wisher] Wigglytuff",
+   "|-heal|p2a: Wigglytuff|89/100|[from] item: Leftovers",
+   "|upkeep",
+   "|turn|43"
+  ],
+  "state_string": "CINDERACE,77,FIRE,TYPELESS,FIRE,TYPELESS,130,249,LIBERO,LIBERO,CHOICEBAND,SERIOUS,85;85;85;85;85;85,223,160,145,160,228,NONE,0,0,33,PYROBALL;true;0,HIGHJUMPKICK;true;16,GUNKSHOT;true;8,UTURN;true;32,false,FIRE,true,false,true,2,NONE,false,5,0,0=HERACROSS,80,BUG,FIGHTING,BUG,FIGHTING,0,259,GUTS,GUTS,FLAMEORB,SERIOUS,85;85;85;85;85;85,246,166,110,198,182,NONE,0,0,54,KNOCKOFF;false;32,TRAILBLAZE;false;32,CLOSECOMBAT;false;5,FACADE;false;31,true,NORMAL,true,false,true,2,NONE,false,2,0,0=PLUSLE,95,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,0,268,LIGHTNINGROD,LIGHTNINGROD,LIFEORB,SERIOUS,85;85;85;85;85;85,100,130,215,196,234,NONE,0,0,4.2,GRASSKNOT;false;32,THUNDERBOLT;false;23,ALLURINGVOICE;false;16,NASTYPLOT;false;31,false,ELECTRIC,true,false,true,2,NONE,false,2,0,0=GLALIE,96,ICE,TYPELESS,ICE,TYPELESS,0,309,INNERFOCUS,INNERFOCUS,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,208,208,208,208,208,NONE,0,0,256.5,SPIKES;false;31,TAUNT;false;32,EARTHQUAKE;false;16,FREEZEDRY;false;31,false,GROUND,true,false,true,3,NONE,false,0,0,0=ARIADOS,95,BUG,POISON,BUG,POISON,0,287,SWARM,SWARM,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,225,187,168,187,130,NONE,0,0,33.5,POISONJAB;false;32,SUCKERPUNCH;false;8,MEGAHORN;false;16,STICKYWEB;false;28,false,GHOST,true,false,true,4,NONE,false,0,0,0=IRONHANDS,79,FIGHTING,ELECTRIC,FIGHTING,ELECTRIC,0,373,QUARKDRIVE,QUARKDRIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,267,216,125,153,125,NONE,0,0,380.7,DRAINPUNCH;false;12,WILDCHARGE;false;23,ICEPUNCH;false;24,SWORDSDANCE;false;29,false,FIGHTING,true,false,true,7,NONE,false,1,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/WIGGLYTUFF,96,NORMAL,FAIRY,NORMAL,FAIRY,210,424,COMPETITIVE,COMPETITIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,189,141,218,150,141,NONE,0,0,12,ALLURINGVOICE;false;13,WISH;false;13,PROTECT;false;14,KNOCKOFF;false;32,true,POISON,true,false,true,3,NONE,false,6,0,0=GRANBULL,88,FAIRY,TYPELESS,FAIRY,TYPELESS,0,302,INTIMIDATE,INTIMIDATE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,261,182,156,156,129,NONE,0,0,48.7,PLAYROUGH;false;12,ENCORE;false;7,EARTHQUAKE;false;15,THUNDERWAVE;false;32,false,TYPELESS,true,false,true,5,NONE,false,2,0,0=IRONTREADS,77,GROUND,STEEL,GROUND,STEEL,0,265,QUARKDRIVE,QUARKDRIVE,ASSAULTVEST,SERIOUS,85;85;85;85;85;85,217,229,155,152,208,NONE,0,0,240,RAPIDSPIN;false;59,EARTHQUAKE;false;15,IRONHEAD;false;24,KNOCKOFF;false;32,false,TYPELESS,true,false,true,1,NONE,false,2,0,0=VIKAVOLT,83,BUG,ELECTRIC,BUG,ELECTRIC,0,263,LEVITATE,LEVITATE,HEAVYDUTYBOOTS,SERIOUS,85;0;85;85;85;85,121,197,288,172,119,NONE,0,0,45,VOLTSWITCH;false;31,DISCHARGE;false;23,BUGBUZZ;false;15,STICKYWEB;false;32,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=SKARMORY,80,STEEL,FLYING,STEEL,FLYING,0,235,STURDY,STURDY,ROCKYHELMET,SERIOUS,85;85;85;85;85;85,174,270,110,158,158,NONE,0,0,50.5,BRAVEBIRD;false;23,BODYPRESS;false;16,STEALTHROCK;false;32,ROOST;false;8,false,TYPELESS,true,false,true,3,NONE,false,1,0,0=FLOATZEL,86,WATER,TYPELESS,WATER,TYPELESS,0,286,WATERVEIL,WATERVEIL,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,144,195,135,247,NONE,0,0,33.5,WAVECRASH;false;12,TAUNT;false;32,ICESPINNER;false;24,BULKUP;false;32,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=1=212=0=0=false=NONE=false=false=false=false=move:1=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0cc7d43b357302299~b004~g6~20260812T051859-l6-000006.p2.log.gz",
+  "turn": 42,
+  "severity": "soft",
+  "category": "heal",
+  "message": "observed heal on user but no branch heals it",
+  "observed": "|-heal|p2a: Wigglytuff|350/424|[from] move: Wish|[wisher] Wigglytuff",
+  "user_move": "alluringvoice",
+  "opp_move": "struggle",
+  "user_active": "wigglytuff",
+  "opp_active": "cinderace",
+  "branches": [
+   [
+    "ChangeType SideTwo: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideTwo: TYPECHANGE",
+    "SetLastUsedMove SideTwo: Move(M0) -> Struggle",
+    "Damage SideOne: 70 [move]",
+    "Damage SideTwo: 62 [recoil]",
+    "SetLastUsedMove SideOne: Move(M1) -> Move(M2)",
+    "Damage SideTwo: 68 [move]"
+   ],
+   [
+    "ChangeType SideTwo: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideTwo: TYPECHANGE",
+    "SetLastUsedMove SideTwo: Move(M0) -> Struggle",
+    "Damage SideOne: 105 [move]",
+    "Damage SideTwo: 62 [recoil]",
+    "SetLastUsedMove SideOne: Move(M1) -> Move(M2)",
+    "Damage SideTwo: 68 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786511998",
+   "|-activate|p1a: Cinderace|move: Struggle",
+   "|move|p1a: Cinderace|Struggle|p2a: Wigglytuff",
+   "|-damage|p2a: Wigglytuff|138/424",
+   "|-damage|p1a: Cinderace|28/100|[from] recoil",
+   "|move|p2a: Wigglytuff|Alluring Voice|p1a: Cinderace",
+   "|-resisted|p1a: Cinderace",
+   "|-damage|p1a: Cinderace|4/100",
+   "|",
+   "|-heal|p2a: Wigglytuff|350/424|[from] move: Wish|[wisher] Wigglytuff",
+   "|-heal|p2a: Wigglytuff|376/424|[from] item: Leftovers",
+   "|upkeep",
+   "|turn|43"
+  ],
+  "state_string": "WIGGLYTUFF,96,NORMAL,FAIRY,NORMAL,FAIRY,211,424,COMPETITIVE,COMPETITIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,189,141,218,150,141,NONE,0,0,12,KNOCKOFF;false;32,WISH;false;13,ALLURINGVOICE;false;13,PROTECT;false;14,true,POISON,true,false,true,3,NONE,false,6,0,0=GRANBULL,88,FAIRY,TYPELESS,FAIRY,TYPELESS,0,302,INTIMIDATE,INTIMIDATE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,261,182,156,156,129,NONE,0,0,48.7,EARTHQUAKE;false;15,ENCORE;false;7,PLAYROUGH;false;12,THUNDERWAVE;false;32,false,GROUND,true,false,true,5,NONE,false,2,0,0=IRONTREADS,77,GROUND,STEEL,GROUND,STEEL,0,265,QUARKDRIVE,QUARKDRIVE,ASSAULTVEST,SERIOUS,85;85;85;85;85;85,217,229,155,152,208,NONE,0,0,240,IRONHEAD;false;24,KNOCKOFF;false;32,EARTHQUAKE;false;15,RAPIDSPIN;false;59,false,WATER,true,false,true,1,NONE,false,2,0,0=VIKAVOLT,83,BUG,ELECTRIC,BUG,ELECTRIC,0,263,LEVITATE,LEVITATE,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,121,197,288,172,119,NONE,0,0,45,STICKYWEB;false;32,DISCHARGE;false;23,VOLTSWITCH;false;31,BUGBUZZ;false;15,false,ELECTRIC,true,false,true,2,NONE,false,2,0,0=SKARMORY,80,STEEL,FLYING,STEEL,FLYING,0,235,STURDY,STURDY,ROCKYHELMET,SERIOUS,85;85;85;85;85;85,174,270,110,158,158,NONE,0,0,50.5,BODYPRESS;false;16,STEALTHROCK;false;32,BRAVEBIRD;false;23,ROOST;false;8,false,DRAGON,true,false,true,3,NONE,false,1,0,0=FLOATZEL,86,WATER,TYPELESS,WATER,TYPELESS,0,286,WATERVEIL,WATERVEIL,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,144,195,135,247,NONE,0,0,33.5,WAVECRASH;false;12,TAUNT;false;32,ICESPINNER;false;24,BULKUP;false;32,false,STEEL,true,false,true,2,NONE,false,2,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=1=212=0=0=false=NONE=false=false=false=false=move:1=false=0=false/CINDERACE,77,FIRE,TYPELESS,FIRE,TYPELESS,130,249,LIBERO,LIBERO,CHOICEBAND,SERIOUS,81;85;85;85;85;85,223,160,145,160,228,NONE,0,0,33,PYROBALL;false;0,HIGHJUMPKICK;false;16,GUNKSHOT;false;8,UTURN;false;32,false,TYPELESS,true,false,true,2,NONE,false,5,0,0=HERACROSS,80,BUG,FIGHTING,BUG,FIGHTING,0,259,GUTS,GUTS,FLAMEORB,SERIOUS,85;85;85;85;85;85,246,166,110,198,182,BURN,0,0,54,CLOSECOMBAT;false;5,FACADE;false;31,KNOCKOFF;false;32,TRAILBLAZE;false;32,true,TYPELESS,true,false,true,2,NONE,false,2,0,0=PLUSLE,95,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,0,268,LIGHTNINGROD,LIGHTNINGROD,LIFEORB,SERIOUS,85;0;85;85;85;85,100,130,215,196,234,NONE,0,0,4.2,NASTYPLOT;false;31,THUNDERBOLT;false;23,GRASSKNOT;false;32,ALLURINGVOICE;false;16,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=GLALIE,96,ICE,TYPELESS,ICE,TYPELESS,0,309,INNERFOCUS,INNERFOCUS,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,208,208,208,208,208,NONE,0,0,256.5,FREEZEDRY;false;31,SPIKES;false;31,TAUNT;false;32,EARTHQUAKE;false;16,false,TYPELESS,true,false,true,3,NONE,false,0,0,0=ARIADOS,95,BUG,POISON,BUG,POISON,0,287,SWARM,SWARM,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,225,187,168,187,130,NONE,0,0,33.5,STICKYWEB;false;28,POISONJAB;false;32,SUCKERPUNCH;false;8,MEGAHORN;false;16,false,TYPELESS,true,false,true,4,NONE,false,0,0,0=IRONHANDS,79,FIGHTING,ELECTRIC,FIGHTING,ELECTRIC,0,373,QUARKDRIVE,QUARKDRIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,267,216,125,153,125,NONE,0,0,380.7,SWORDSDANCE;false;29,WILDCHARGE;false;23,DRAINPUNCH;false;12,ICEPUNCH;false;24,false,FIGHTING,true,false,true,7,NONE,false,1,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0cc7d43b357302299~b004~g6~20260812T051859-l6-000006.p2.log.gz",
+  "turn": 42,
+  "severity": "soft",
+  "category": "heal",
+  "message": "observed heal on user but no branch heals it",
+  "observed": "|-heal|p2a: Wigglytuff|376/424|[from] item: Leftovers",
+  "user_move": "alluringvoice",
+  "opp_move": "struggle",
+  "user_active": "wigglytuff",
+  "opp_active": "cinderace",
+  "branches": [
+   [
+    "ChangeType SideTwo: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideTwo: TYPECHANGE",
+    "SetLastUsedMove SideTwo: Move(M0) -> Struggle",
+    "Damage SideOne: 70 [move]",
+    "Damage SideTwo: 62 [recoil]",
+    "SetLastUsedMove SideOne: Move(M1) -> Move(M2)",
+    "Damage SideTwo: 68 [move]"
+   ],
+   [
+    "ChangeType SideTwo: (FIRE, TYPELESS) -> (TYPELESS, TYPELESS)",
+    "ApplyVolatileStatus SideTwo: TYPECHANGE",
+    "SetLastUsedMove SideTwo: Move(M0) -> Struggle",
+    "Damage SideOne: 105 [move]",
+    "Damage SideTwo: 62 [recoil]",
+    "SetLastUsedMove SideOne: Move(M1) -> Move(M2)",
+    "Damage SideTwo: 68 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786511998",
+   "|-activate|p1a: Cinderace|move: Struggle",
+   "|move|p1a: Cinderace|Struggle|p2a: Wigglytuff",
+   "|-damage|p2a: Wigglytuff|138/424",
+   "|-damage|p1a: Cinderace|28/100|[from] recoil",
+   "|move|p2a: Wigglytuff|Alluring Voice|p1a: Cinderace",
+   "|-resisted|p1a: Cinderace",
+   "|-damage|p1a: Cinderace|4/100",
+   "|",
+   "|-heal|p2a: Wigglytuff|350/424|[from] move: Wish|[wisher] Wigglytuff",
+   "|-heal|p2a: Wigglytuff|376/424|[from] item: Leftovers",
+   "|upkeep",
+   "|turn|43"
+  ],
+  "state_string": "WIGGLYTUFF,96,NORMAL,FAIRY,NORMAL,FAIRY,211,424,COMPETITIVE,COMPETITIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,189,141,218,150,141,NONE,0,0,12,KNOCKOFF;false;32,WISH;false;13,ALLURINGVOICE;false;13,PROTECT;false;14,true,POISON,true,false,true,3,NONE,false,6,0,0=GRANBULL,88,FAIRY,TYPELESS,FAIRY,TYPELESS,0,302,INTIMIDATE,INTIMIDATE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,261,182,156,156,129,NONE,0,0,48.7,EARTHQUAKE;false;15,ENCORE;false;7,PLAYROUGH;false;12,THUNDERWAVE;false;32,false,GROUND,true,false,true,5,NONE,false,2,0,0=IRONTREADS,77,GROUND,STEEL,GROUND,STEEL,0,265,QUARKDRIVE,QUARKDRIVE,ASSAULTVEST,SERIOUS,85;85;85;85;85;85,217,229,155,152,208,NONE,0,0,240,IRONHEAD;false;24,KNOCKOFF;false;32,EARTHQUAKE;false;15,RAPIDSPIN;false;59,false,WATER,true,false,true,1,NONE,false,2,0,0=VIKAVOLT,83,BUG,ELECTRIC,BUG,ELECTRIC,0,263,LEVITATE,LEVITATE,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,121,197,288,172,119,NONE,0,0,45,STICKYWEB;false;32,DISCHARGE;false;23,VOLTSWITCH;false;31,BUGBUZZ;false;15,false,ELECTRIC,true,false,true,2,NONE,false,2,0,0=SKARMORY,80,STEEL,FLYING,STEEL,FLYING,0,235,STURDY,STURDY,ROCKYHELMET,SERIOUS,85;85;85;85;85;85,174,270,110,158,158,NONE,0,0,50.5,BODYPRESS;false;16,STEALTHROCK;false;32,BRAVEBIRD;false;23,ROOST;false;8,false,DRAGON,true,false,true,3,NONE,false,1,0,0=FLOATZEL,86,WATER,TYPELESS,WATER,TYPELESS,0,286,WATERVEIL,WATERVEIL,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,144,195,135,247,NONE,0,0,33.5,WAVECRASH;false;12,TAUNT;false;32,ICESPINNER;false;24,BULKUP;false;32,false,STEEL,true,false,true,2,NONE,false,2,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=1=212=0=0=false=NONE=false=false=false=false=move:1=false=0=false/CINDERACE,77,FIRE,TYPELESS,FIRE,TYPELESS,130,249,LIBERO,LIBERO,CHOICEBAND,SERIOUS,81;85;85;85;85;85,223,160,145,160,228,NONE,0,0,33,PYROBALL;false;0,HIGHJUMPKICK;false;16,GUNKSHOT;false;8,UTURN;false;32,false,TYPELESS,true,false,true,2,NONE,false,5,0,0=HERACROSS,80,BUG,FIGHTING,BUG,FIGHTING,0,259,GUTS,GUTS,FLAMEORB,SERIOUS,85;85;85;85;85;85,246,166,110,198,182,BURN,0,0,54,CLOSECOMBAT;false;5,FACADE;false;31,KNOCKOFF;false;32,TRAILBLAZE;false;32,true,TYPELESS,true,false,true,2,NONE,false,2,0,0=PLUSLE,95,ELECTRIC,TYPELESS,ELECTRIC,TYPELESS,0,268,LIGHTNINGROD,LIGHTNINGROD,LIFEORB,SERIOUS,85;0;85;85;85;85,100,130,215,196,234,NONE,0,0,4.2,NASTYPLOT;false;31,THUNDERBOLT;false;23,GRASSKNOT;false;32,ALLURINGVOICE;false;16,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=GLALIE,96,ICE,TYPELESS,ICE,TYPELESS,0,309,INNERFOCUS,INNERFOCUS,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,208,208,208,208,208,NONE,0,0,256.5,FREEZEDRY;false;31,SPIKES;false;31,TAUNT;false;32,EARTHQUAKE;false;16,false,TYPELESS,true,false,true,3,NONE,false,0,0,0=ARIADOS,95,BUG,POISON,BUG,POISON,0,287,SWARM,SWARM,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,225,187,168,187,130,NONE,0,0,33.5,STICKYWEB;false;28,POISONJAB;false;32,SUCKERPUNCH;false;8,MEGAHORN;false;16,false,TYPELESS,true,false,true,4,NONE,false,0,0,0=IRONHANDS,79,FIGHTING,ELECTRIC,FIGHTING,ELECTRIC,0,373,QUARKDRIVE,QUARKDRIVE,LEFTOVERS,SERIOUS,85;85;85;85;85;85,267,216,125,153,125,NONE,0,0,380.7,SWORDSDANCE;false;29,WILDCHARGE;false;23,DRAINPUNCH;false;12,ICEPUNCH;false;24,false,FIGHTING,true,false,true,7,NONE,false,1,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0==0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/NONE;-1/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0df73ea55b899c9c7~b000~g7~20260812T065011-l6-000035.p1.log.gz",
+  "turn": 113,
+  "severity": "soft",
+  "category": "heal",
+  "message": "observed heal on user but no branch heals it",
+  "observed": "|-heal|p1a: Brute Bonnet|237/309 tox|[from] item: Leftovers",
+  "user_move": "suckerpunch",
+  "opp_move": "struggle",
+  "user_active": "brutebonnet",
+  "opp_active": "screamtail",
+  "branches": [
+   [
+    "DecrementPP SideOne: M0 1",
+    "SetLastUsedMove SideOne: Move(M2) -> Move(M0)",
+    "Damage SideTwo: 151 [move]",
+    "Damage SideOne: 25 [move]",
+    "Damage SideTwo: 75 [recoil]"
+   ],
+   [
+    "DecrementPP SideOne: M0 1",
+    "SetLastUsedMove SideOne: Move(M2) -> Move(M0)",
+    "Damage SideTwo: 151 [move]",
+    "Damage SideOne: 38 [move]",
+    "Damage SideTwo: 75 [recoil]"
+   ],
+   [
+    "DecrementPP SideOne: M0 1",
+    "SetLastUsedMove SideOne: Move(M2) -> Move(M0)",
+    "Damage SideTwo: 226 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786517752",
+   "|move|p1a: Brute Bonnet|Sucker Punch|p2a: Scream Tail",
+   "|-damage|p2a: Scream Tail|27/100",
+   "|-activate|p2a: Scream Tail|move: Struggle",
+   "|move|p2a: Scream Tail|Struggle|p1a: Brute Bonnet",
+   "|-damage|p1a: Brute Bonnet|218/309 tox",
+   "|-damage|p2a: Scream Tail|2/100|[from] recoil",
+   "|",
+   "|-weather|SunnyDay|[upkeep]",
+   "|-heal|p2a: Scream Tail|8/100|[from] item: Leftovers",
+   "|-heal|p1a: Brute Bonnet|237/309 tox|[from] item: Leftovers",
+   "|-damage|p1a: Brute Bonnet|180/309 tox|[from] psn",
+   "|upkeep",
+   "|turn|114"
+  ],
+  "state_string": "BRUTEBONNET,80,GRASS,DARK,GRASS,DARK,246,309,PROTOSYNTHESIS,PROTOSYNTHESIS,LEFTOVERS,SERIOUS,85;85;85;85;85;85,249,205,173,205,134,TOXIC,0,0,21,SUCKERPUNCH;false;8,SEEDBOMB;false;24,CRUNCH;false;22,SPORE;false;24,false,DARK,true,false,true,1,NONE,false,2,0,0=RESHIRAM,76,DRAGON,FIRE,DRAGON,FIRE,0,277,TURBOBLAZE,TURBOBLAZE,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,226,196,272,226,181,NONE,0,2,330,STONEEDGE;false;8,FLAREBLITZ;false;24,DRAGONDANCE;false;32,OUTRAGE;false;16,false,FIRE,true,false,true,2,NONE,false,2,0,0=DUDUNSPARCETHREESEGMENT,83,NORMAL,TYPELESS,NORMAL,TYPELESS,0,343,RATTLED,RATTLED,NONE,SERIOUS,85;85;85;85;85;85,214,180,189,172,139,NONE,0,0,47.4,TOXIC;false;13,EARTHQUAKE;false;11,ROOST;false;3,BOOMBURST;false;5,false,GROUND,true,false,true,12,NONE,false,1,0,0=TERAPAGOSTERASTAL,77,NORMAL,TYPELESS,NORMAL,TYPELESS,89,273,TERASHELL,TERASHELL,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,191,214,206,214,175,NONE,0,0,16,RAPIDSPIN;false;63,DARKPULSE;false;24,TERASTARSTORM;false;5,CALMMIND;false;32,false,STELLAR,true,false,true,2,NONE,false,0,0,0=CHESNAUGHT,84,GRASS,FIGHTING,GRASS,FIGHTING,258,285,BULLETPROOF,BULLETPROOF,NONE,SERIOUS,85;85;85;85;85;85,228,253,173,174,156,NONE,0,0,90,SYNTHESIS;false;6,TRAILBLAZE;false;8,IRONDEFENSE;false;5,BODYPRESS;false;2,true,STEEL,true,false,true,17,NONE,false,29,0,0=KORAIDON,64,FIGHTING,DRAGON,FIGHTING,DRAGON,0,235,ORICHALCUMPULSE,ORICHALCUMPULSE,LOADEDDICE,SERIOUS,85;85;85;85;85;85,211,185,147,166,211,NONE,0,0,303,COLLISIONCOURSE;false;8,SWORDSDANCE;false;32,FLAREBLITZ;false;23,SCALESHOT;false;32,false,FIRE,true,false,true,1,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;2;0;0=PROTOSYNTHESISATK:=0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:2=false=0=false/SCREAMTAIL,84,FAIRY,PSYCHIC,FAIRY,PSYCHIC,226,330,PROTOSYNTHESIS,PROTOSYNTHESIS,LEFTOVERS,SERIOUS,85;85;85;85;85;85,157,215,157,241,235,NONE,0,0,8,PLAYROUGH;false;0,PROTECT;false;0,ENCORE;false;0,WISH;false;0,false,TYPELESS,true,false,true,28,NONE,false,30,0,0=MEOWSCARADA,78,GRASS,DARK,GRASS,DARK,0,247,PROTEAN,PROTEAN,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,217,154,171,154,237,NONE,0,0,31.2,TOXICSPIKES;false;30,KNOCKOFF;false;32,FLOWERTRICK;false;16,UTURN;false;32,true,TYPELESS,true,false,true,2,NONE,false,2,0,0=SOLGALEO,74,PSYCHIC,STEEL,PSYCHIC,STEEL,0,325,FULLMETALBODY,FULLMETALBODY,WEAKNESSPOLICY,SERIOUS,85;85;85;85;85;85,246,201,210,175,187,NONE,0,0,230,SUNSTEELSTRIKE;false;2,PSYCHIC;false;15,FLAMECHARGE;false;32,EARTHQUAKE;false;16,false,TYPELESS,true,false,true,4,NONE,false,7,0,0=VENOMOTH,84,BUG,POISON,BUG,POISON,0,255,TINTEDLENS,TINTEDLENS,HEAVYDUTYBOOTS,SERIOUS,85;0;85;85;85;85,114,149,199,174,199,NONE,0,0,12.5,QUIVERDANCE;false;30,SLEEPPOWDER;false;22,BUGBUZZ;false;14,SLUDGEWAVE;false;16,false,BUG,true,false,true,1,NONE,false,6,0,0=MUK,86,POISON,TYPELESS,POISON,TYPELESS,0,321,POISONTOUCH,POISONTOUCH,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,178,161,221,135,NONE,0,0,30,GUNKSHOT;false;5,KNOCKOFF;false;30,HAZE;false;44,ICEPUNCH;false;24,false,TYPELESS,true,false,true,11,NONE,false,5,0,0=DIPPLIN,88,GRASS,DRAGON,GRASS,DRAGON,0,284,STICKYHOLD,STICKYHOLD,EVIOLITE,SERIOUS,85;85;85;85;85;85,191,244,217,191,121,TOXIC,0,0,4.4,DRAGONPULSE;false;15,DRAGONTAIL;false;11,RECOVER;false;5,GIGADRAIN;false;16,false,TYPELESS,true,false,true,5,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0=PROTOSYNTHESISSPD:=0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=-1=0=0=0=0=0=0=165=0=0=false=NONE=false=false=false=false=move:struggle=false=0=false/SUN;2/NONE;0/false;0/false"
+ },
+ {
+  "game": "i-0df73ea55b899c9c7~b000~g7~20260812T065011-l6-000035.p2.log.gz",
+  "turn": 113,
+  "severity": "soft",
+  "category": "heal",
+  "message": "observed heal on opp but no branch heals it",
+  "observed": "|-heal|p1a: Brute Bonnet|77/100 tox|[from] item: Leftovers",
+  "user_move": "struggle",
+  "opp_move": "suckerpunch",
+  "user_active": "screamtail",
+  "opp_active": "brutebonnet",
+  "branches": [
+   [
+    "DecrementPP SideTwo: M1 1",
+    "SetLastUsedMove SideTwo: Move(M0) -> Move(M1)",
+    "Damage SideOne: 151 [move]",
+    "Damage SideTwo: 25 [move]",
+    "Damage SideOne: 75 [recoil]"
+   ],
+   [
+    "DecrementPP SideTwo: M1 1",
+    "SetLastUsedMove SideTwo: Move(M0) -> Move(M1)",
+    "Damage SideOne: 151 [move]",
+    "Damage SideTwo: 38 [move]",
+    "Damage SideOne: 75 [recoil]"
+   ],
+   [
+    "DecrementPP SideTwo: M1 1",
+    "SetLastUsedMove SideTwo: Move(M0) -> Move(M1)",
+    "Damage SideOne: 226 [move]"
+   ]
+  ],
+  "block": [
+   "|inactive|Time left: 300 sec this turn | 300 sec total",
+   "|",
+   "|t:|1786517752",
+   "|move|p1a: Brute Bonnet|Sucker Punch|p2a: Scream Tail",
+   "|-damage|p2a: Scream Tail|88/330",
+   "|-activate|p2a: Scream Tail|move: Struggle",
+   "|move|p2a: Scream Tail|Struggle|p1a: Brute Bonnet",
+   "|-damage|p1a: Brute Bonnet|71/100 tox",
+   "|-damage|p2a: Scream Tail|5/330|[from] recoil",
+   "|",
+   "|-weather|SunnyDay|[upkeep]",
+   "|-heal|p2a: Scream Tail|25/330|[from] item: Leftovers",
+   "|-heal|p1a: Brute Bonnet|77/100 tox|[from] item: Leftovers",
+   "|-damage|p1a: Brute Bonnet|59/100 tox|[from] psn",
+   "|upkeep",
+   "|turn|114"
+  ],
+  "state_string": "SCREAMTAIL,84,FAIRY,PSYCHIC,FAIRY,PSYCHIC,226,330,PROTOSYNTHESIS,PROTOSYNTHESIS,LEFTOVERS,SERIOUS,85;85;85;85;85;85,157,215,157,241,235,NONE,0,0,8,ENCORE;true;0,WISH;true;0,PLAYROUGH;true;0,PROTECT;true;0,false,STEEL,true,false,true,28,NONE,false,30,0,0=MEOWSCARADA,78,GRASS,DARK,GRASS,DARK,0,247,PROTEAN,PROTEAN,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,217,154,171,154,237,NONE,0,0,31.2,TOXICSPIKES;false;30,KNOCKOFF;false;32,FLOWERTRICK;false;16,UTURN;false;32,true,GRASS,true,false,true,2,NONE,false,2,0,0=SOLGALEO,74,PSYCHIC,STEEL,PSYCHIC,STEEL,0,325,FULLMETALBODY,FULLMETALBODY,WEAKNESSPOLICY,SERIOUS,85;85;85;85;85;85,246,201,210,175,187,NONE,0,0,230,FLAMECHARGE;false;32,SUNSTEELSTRIKE;false;2,PSYCHIC;false;15,EARTHQUAKE;false;16,false,GROUND,true,false,true,4,NONE,false,7,0,0=VENOMOTH,84,BUG,POISON,BUG,POISON,0,255,TINTEDLENS,TINTEDLENS,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,114,149,199,174,199,NONE,0,0,12.5,BUGBUZZ;false;14,SLEEPPOWDER;false;22,QUIVERDANCE;false;30,SLUDGEWAVE;false;16,false,BUG,true,false,true,1,NONE,false,6,0,0=MUK,86,POISON,TYPELESS,POISON,TYPELESS,0,321,POISONTOUCH,POISONTOUCH,LEFTOVERS,SERIOUS,85;85;85;85;85;85,230,178,161,221,135,NONE,0,0,30,HAZE;false;44,ICEPUNCH;false;24,KNOCKOFF;false;30,GUNKSHOT;false;5,false,DARK,true,false,true,11,NONE,false,5,0,0=DIPPLIN,88,GRASS,DRAGON,GRASS,DRAGON,0,284,STICKYHOLD,STICKYHOLD,EVIOLITE,SERIOUS,85;85;85;85;85;85,191,244,217,191,121,NONE,0,0,4.4,GIGADRAIN;false;16,DRAGONPULSE;false;15,RECOVER;false;5,DRAGONTAIL;false;11,false,STEEL,true,false,true,5,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0=PROTOSYNTHESISSPD:=0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=-1=0=0=0=0=0=0=165=0=0=false=NONE=false=false=false=false=move:struggle=false=0=false/BRUTEBONNET,80,GRASS,DARK,GRASS,DARK,246,309,PROTOSYNTHESIS,PROTOSYNTHESIS,LEFTOVERS,SERIOUS,85;85;85;85;85;85,249,205,173,205,134,TOXIC,0,0,21,CRUNCH;false;22,SUCKERPUNCH;false;8,SEEDBOMB;false;24,SPORE;false;24,false,TYPELESS,true,false,true,1,NONE,false,2,0,0=RESHIRAM,76,DRAGON,FIRE,DRAGON,FIRE,0,277,TURBOBLAZE,TURBOBLAZE,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,226,196,272,226,181,SLEEP,0,2,330,STONEEDGE;false;8,FLAREBLITZ;false;24,DRAGONDANCE;false;32,OUTRAGE;false;16,false,TYPELESS,true,false,true,2,NONE,false,2,0,0=DUDUNSPARCETHREESEGMENT,83,NORMAL,TYPELESS,NORMAL,TYPELESS,0,343,RATTLED,RATTLED,NONE,SERIOUS,85;85;85;85;85;85,214,180,189,172,139,POISON,0,0,47.4,BOOMBURST;false;5,TOXIC;false;13,ROOST;false;3,EARTHQUAKE;false;11,false,TYPELESS,true,false,true,12,NONE,false,1,0,0=TERAPAGOSTERASTAL,77,NORMAL,TYPELESS,NORMAL,TYPELESS,89,273,TERASHELL,TERASHELL,HEAVYDUTYBOOTS,SERIOUS,85;85;85;85;85;85,191,214,206,214,175,NONE,0,0,16,RAPIDSPIN;false;63,TERASTARSTORM;false;5,DARKPULSE;false;24,CALMMIND;false;32,false,TYPELESS,true,false,true,2,NONE,false,0,0,0=CHESNAUGHT,84,GRASS,FIGHTING,GRASS,FIGHTING,258,285,BULLETPROOF,BULLETPROOF,NONE,SERIOUS,85;85;85;85;85;85,228,253,173,174,156,NONE,0,0,90,IRONDEFENSE;false;5,BODYPRESS;false;2,TRAILBLAZE;false;8,SYNTHESIS;false;6,true,STEEL,true,false,true,17,NONE,false,29,0,0=KORAIDON,64,FIGHTING,DRAGON,FIGHTING,DRAGON,0,235,ORICHALCUMPULSE,ORICHALCUMPULSE,LOADEDDICE,SERIOUS,85;85;85;85;85;85,211,185,147,166,211,NONE,0,0,303,FLAREBLITZ;false;23,COLLISIONCOURSE;false;8,SWORDSDANCE;false;32,SCALESHOT;false;32,false,TYPELESS,true,false,true,1,NONE,false,0,0,0=0=0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;2;0;0=PROTOSYNTHESISATK:=0;0;0;0;0;0;0;0;0;0;0;0;0=0=0=0=0=0=0=0=0=0=0=0=0=false=NONE=false=false=false=false=move:0=false=0=false/SUN;2/NONE;0/false;0/false"
+ }
+]

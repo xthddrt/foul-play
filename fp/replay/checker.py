@@ -653,6 +653,10 @@ def _harvest_reveals(chunks: list[str]) -> dict:
         # percent rendering, indistinguishable from a real max of exactly 100,
         # so it is refused to None (the safe direction).
         entry_maxhp = None
+        # ...and the NUMERATOR of a percent-rendered entry, which the hptruth
+        # sidecar can identify even though the denominator cannot (see the
+        # `entry_pct` arm in `_infer_illusion_spans`).
+        entry_pct = None
         cond = condition.split()
         if cond and "/" in cond[0]:
             try:
@@ -661,6 +665,10 @@ def _harvest_reveals(chunks: list[str]) -> dict:
                 entry_maxhp = None
             if entry_maxhp == 100:
                 entry_maxhp = None
+                try:
+                    entry_pct = int(cond[0].split("/", 1)[0])
+                except ValueError:
+                    entry_pct = None
         occ = {
             "pid": slot[:2],
             "slot": slot,
@@ -668,6 +676,7 @@ def _harvest_reveals(chunks: list[str]) -> dict:
             "start_turn": entry_turn,
             "end_turn": entry_turn,
             "entry_maxhp": entry_maxhp,
+            "entry_pct": entry_pct,
             "moves": set(),
             # (turn, item) the PHYSICAL occupant of this slot was PROVEN to be
             # holding.  Slot-keyed, so unlike `reveals["items"]` / `item_gains`
@@ -1482,6 +1491,26 @@ def _reattribute_disguised_item_gains(reveals) -> None:
         dst.extend(moved)
         dst.sort(key=lambda r: r[0])
         stolen.setdefault((pid, disguise), set()).update(r[1] for r in moved)
+        # ...and record that THESE records' species key is an identity.  The span
+        # is the proof: during it the bearer is the only pokemon in that slot, so
+        # a gain inside the window is physically its own no matter what name the
+        # protocol printed.  `_backfill_revealed_knowledge`'s override guard asks
+        # `_species_keyed_event_is_reliable` about the key instead, and that
+        # question is answered per TURN, not per record -- so it refuses a record
+        # this function already proved whenever ANY p2 occupancy touching that
+        # turn was undecided, including the outgoing one.
+        # MEASURED (i-01bf39e3c9478af89 b005/g14/...-l4-000018 T29): Hoopa Tricks
+        # its Choice Scarf onto a Zoroark-Hisui disguised as Decidueye-Hisui during
+        # T25.  The span (25..29) and this reattribution are both exactly right, but
+        # `illusion_unresolved` also carries (24, 25] for the occupant that LEFT on
+        # that switch, so `illusion_unresolved_turn(..., 25)` is True, the override
+        # was refused, and `apply_exact_teams` refilled the bearer's start-of-battle
+        # Choice Specs.  The engine then had Wugtrio (270) outspeeding an unscarfed
+        # Zoroark (222) and KOing it before Bitter Malice resolved, so the observed
+        # `|-unboost|p1a: Wugtrio|atk|1` was in no branch.
+        reveals.setdefault("illusion_proven_item_gains", set()).update(
+            (pid, bearer, r[0], r[1]) for r in moved
+        )
 
 
 def _undo_disguised_item_misattribution(battler, pid, reveals) -> None:
@@ -1610,10 +1639,25 @@ def _backfill_revealed_knowledge(battler, pid, reveals, snapshot_turn) -> None:
             # for is unaffected.
             if pkmn.item is None:
                 continue
+            # A record `_reattribute_disguised_item_gains` MOVED here is exempt from
+            # the species-key question: the span it was moved under is the proof that
+            # this key is an identity for this record, and that proof is per-RECORD
+            # while `_species_keyed_event_is_reliable` answers per-TURN and so cannot
+            # tell the bearer that switched IN during a turn from the occupant that
+            # left on the same switch (see the note at the reattribution site).
+            proven = (
+                pid,
+                _species_key(pkmn.name),
+                gain_turn,
+                gain_item,
+            ) in (reveals.get("illusion_proven_item_gains") or ())
             if pkmn.item != constants.UNKNOWN_ITEM and not (
                 may_override
-                and _species_keyed_event_is_reliable(
-                    reveals, pid, _species_key(pkmn.name), gain_turn
+                and (
+                    proven
+                    or _species_keyed_event_is_reliable(
+                        reveals, pid, _species_key(pkmn.name), gain_turn
+                    )
                 )
             ):
                 continue
@@ -1838,7 +1882,7 @@ def _bearer_tera_from(occ: dict) -> int:
     return occ["start_turn"]
 
 
-def _infer_illusion_spans(reveals: dict, exact_teams) -> None:
+def _infer_illusion_spans(reveals: dict, exact_teams, hptruth=None) -> None:
     """Resolve the Illusion spans the PROTOCOL alone cannot, using the sidecar.
 
     `illusions` (built above) only holds spans a |replace| announced, and PS only
@@ -2012,6 +2056,71 @@ def _infer_illusion_spans(reveals: dict, exact_teams) -> None:
                             "bearer_tera": occ["tera_during"] or occ["entry_tera"],
                             "bearer_tera_from": _bearer_tera_from(occ),
                             "inferred_from": ["maxhp:{}".format(entry_maxhp)],
+                        }
+                    )
+                    continue
+        # THE HP-TRUTH SIDECAR DECIDES THE PERCENT-RENDERED ENTRIES the max-HP
+        # arm above has to refuse.  An opponent-side |switch| condition is
+        # `<pct>/100`, so its denominator identifies nobody -- but the sidecar
+        # states every roster mon's EXACT hp/maxhp at each turn boundary, and PS
+        # renders the shared-side percent as `ceil(hp*100/maxhp)`
+        # (sim/pokemon.ts getHealth -> `Math.ceil(ratio * 100)`).  Whenever the
+        # shown species and the bearer round to DIFFERENT percents, the entry
+        # line names its occupant outright.  synthu6012750 T29: "Basculegion"
+        # enters at 91/100 -- Zoroark's 212/235 = 91%, not Basculegion's
+        # 283/323 = 88% -- so the Choice Scarf Tricked onto that slot was the
+        # BEARER's; filed under `basculegion` it was re-stamped by
+        # `_backfill_revealed_knowledge` onto the real Assault-Vest Basculegion,
+        # which then outsped Venusaur at T42 and killed it before Leech Seed
+        # could land in any branch.
+        #
+        # Refuses unless the verdict is unambiguous: the two candidate percents
+        # must differ by more than the rendering can blur (>1), the observed
+        # percent must equal exactly one of them, and the PS-impossibility
+        # tripwire the max-HP arm uses applies unchanged (a stay that survived a
+        # damaging hit with no |replace| cannot have been a disguise).
+        entry_pct = occ.get("entry_pct")
+        turn_truth = (hptruth or {}).get(str(occ["start_turn"]), {}).get(occ["pid"], {})
+        # OPT-IN, default OFF.  The evidence is sound (probe:
+        # scratchpad/probe_illusion_hptruth.py) but enabling it moves coverage
+        # by +31 turns on the four exam exemplars alone and re-decides
+        # occupancies the undecidability tagger currently refuses -- one of them
+        # (synthu6024342 T25) flips from a tagged soft to a hard.  That is a
+        # gate-level change, not a bug fix, so it ships behind a flag until it
+        # has been swept.
+        if entry_pct and turn_truth and os.environ.get("FP_CONTROL_HPTRUTH_ILLUSION"):
+            def _pct(key):
+                pair = turn_truth.get(key)
+                try:
+                    hp, mx = int(pair[0]), int(pair[1])
+                except (TypeError, ValueError, IndexError):
+                    return None
+                return math.ceil(hp * 100 / mx) if mx > 0 and hp > 0 else None
+
+            shown_pct, bearer_pct = _pct(occ["species"]), _pct(bearer_key)
+            if (
+                shown_pct
+                and bearer_pct
+                and abs(shown_pct - bearer_pct) > 1
+                and (entry_pct == shown_pct) != (entry_pct == bearer_pct)
+            ):
+                if entry_pct == shown_pct:
+                    continue  # proven the genuine article
+                if not (
+                    occ.get("survived_damaging_hit")
+                    and not occ.get("revealed_true_species")
+                ):
+                    illusions.append(
+                        {
+                            "pid": occ["pid"],
+                            "disguise": occ["species"],
+                            "true_species": occ.get("revealed_true_species")
+                            or bearer_key,
+                            "start_turn": occ["start_turn"],
+                            "end_turn": occ["end_turn"],
+                            "bearer_tera": occ["tera_during"] or occ["entry_tera"],
+                            "bearer_tera_from": _bearer_tera_from(occ),
+                            "inferred_from": ["hptruth_pct:{}".format(entry_pct)],
                         }
                     )
                     continue
@@ -2614,6 +2723,58 @@ def _seed_inferred_entrant_hp(battler, pid, reveals, turn, block_lines) -> None:
         return
 
 
+def _seed_entrant_hp_from_switch_line(battler, pid, reveals, turn, block_lines) -> None:
+    """The |switch| line's condition is PS ground truth for the entrant's HP
+    (sim/pokemon.ts:544-552 -- getFullDetails renders `this.getHealth()`), and it
+    is the ONLY protocol witness for bench heals: a TRACED Regenerator restores
+    maxhp/3 on switch-out with no protocol line at all (data/abilities.ts
+    regenerator onSwitchOut; Trace handed the ability over mid-game, so no
+    roster-derived model can see it).  The reserve model keeps whatever the mon
+    last showed while ACTIVE: i-005adc19f61405de9 b006/g15 T50 -- Gardevoir left
+    at 11/100 having traced Amoonguss's Regenerator two stints earlier, returns
+    at 44/100 (27 + 83 = 110/249, exactly the maxhp/3), and the stale 26/249
+    reconstruction died to Stealth Rock on entry, so the traced-Intimidate
+    `-unboost` PS printed was reproducible in no branch -- the engine, handed the
+    true HP, emits the full observed sequence.
+
+    Opponent side only (the user's request JSON reports exact HP already), and
+    non-illusion entrants only: `_seed_inferred_entrant_hp` above owns the bearer
+    case, where the shown health belongs to the PHYSICAL mon rather than the
+    shown species.  Applied only when the shown fraction disagrees beyond the
+    /100 display quantum, so already-consistent reserves are never nudged by
+    percent rounding."""
+    for il in (reveals or {}).get("illusions", ()):
+        if il["pid"] == pid and il["start_turn"] == turn:
+            return
+    for line in block_lines:
+        sp = line.split("|")
+        if len(sp) < 5 or sp[1] != "switch":
+            continue
+        if sp[2].split(":")[0].strip() != pid + "a":
+            continue
+        species = normalize_name(sp[3].split(",")[0].strip())
+        cond = sp[4].strip().split()[0] if sp[4].strip() else ""
+        if "/" not in cond:
+            return
+        try:
+            cur, den = cond.split("/", 1)
+            frac = int(cur) / int(den)
+        except (ValueError, ZeroDivisionError):
+            return
+        if not (0 < frac <= 1):
+            return
+        resolved = _resolve_switch_target(battler, species)
+        for _reserve in battler.reserve:
+            if getattr(_reserve, "name", None) != resolved or not _reserve.max_hp:
+                continue
+            seeded = min(_reserve.max_hp, round(frac * _reserve.max_hp))
+            # beyond one display percent == a real bench heal / desync, not rounding
+            if abs(seeded - int(_reserve.hp)) * 100 > _reserve.max_hp:
+                _reserve.hp = seeded
+            return
+        return
+
+
 def _apply_illusion(battler, pid, reveals, turn) -> None:
     """Substitute a disguised Zoroark's real types onto a side's active.
     When a |replace| (or the sidecar inference above) reveals the current active
@@ -2680,6 +2841,16 @@ def _apply_illusion(battler, pid, reveals, turn) -> None:
         if not (il["start_turn"] < turn <= il["end_turn"]):
             continue
         standing_as_disguise = active_key == il["disguise"]
+        # The physical mon is the BEARER, whatever name the reconstruction is
+        # standing it under.  Stamp that identity on the object so a later pass
+        # keyed by species does not re-resolve it to the DISGUISE: `apply_hptruth`
+        # is exactly such a pass, and pinning the disguise's exact HP onto the
+        # bearer is how synthu6057735 T22 lost its freeze -- a "Cacturne" that is
+        # a disguised Zoroark got Cacturne's 158/278 truth on Zoroark's 235 max,
+        # which put Blizzard's damage across the KO boundary and folded the 10%
+        # freeze secondary away in every branch (8 branches, 0 freeze; with the
+        # bearer's own 235/235 it is 16 branches, 4 freeze).
+        battler.active.illusion_true_species = il["true_species"]
         # The physical mon is the Illusion bearer, so TRUANT is never in play:
         # battle_modifier.move() keys its truant volatile on the DISGUISE's
         # name/ability ("slaking"/truant), so a disguised Zoroark that moved
@@ -4115,10 +4286,13 @@ def check_log(
         return findings, stats
 
     exact_teams = None
+    hptruth = None
     if teams_dir is not None:
         from fp.replay import damage_membership
 
         exact_teams = damage_membership.load_teams_sidecar(log_path, teams_dir)
+        # exact per-turn HP truth (generator-observed); replay-with-sidecar only
+        hptruth = damage_membership.load_hptruth_sidecar(log_path, teams_dir)
 
     chunks = list(iter_chunks(log_path))
     tag = _tag_from_chunks(
@@ -4181,7 +4355,7 @@ def check_log(
     # feeds, then record which sides are still ambiguous so the damage check can
     # refuse there instead of asserting against a possibly-wrong species
     try:
-        _infer_illusion_spans(reveals, exact_teams)
+        _infer_illusion_spans(reveals, exact_teams, hptruth)
     except Exception:
         reveals.setdefault("illusions", [])
         reveals["illusion_unresolved"] = {}
@@ -4252,6 +4426,15 @@ def check_log(
                 "faints": dict(faints),
                 "party_order": {k: list(v) for k, v in party_order.items()},
                 "move_failed": _move_failed_sides(mf_lines),
+                # TRUE only when the consumed block crossed a |turn| boundary, i.e.
+                # this snapshot is the state AT TURN START.  A mid-turn request
+                # (pivot switch wave) arms a MID-TURN snapshot under the same turn
+                # number; the HP-truth sidecar records turn-START values, so
+                # applying them there would rewind same-turn damage (synthu5000129
+                # T14: U-turn chip undone, Rest wrongly failed at full HP).
+                "at_turn_start": any(
+                    ln.startswith("|turn|") for ln in block_lines
+                ),
             }
             mf_carry = (
                 [] if any(ln.startswith("|turn|") for ln in block_lines) else mf_lines
@@ -4271,6 +4454,7 @@ def check_log(
             damage_collector=damage_collector,
             damage_tolerance=damage_tolerance,
             prior_lines=mf_carry,
+            hptruth=hptruth,
         )
         _apply_block_to_side_state(
             block_lines, faints, party_order, reveals, side_turn
@@ -4284,6 +4468,9 @@ def check_log(
             # PS `moveLastTurnResult` for the turn now being armed: whether each side's
             # move FAILED in the turn just consumed (ALL its blocks -- see mf_carry)
             "move_failed": _move_failed_sides(mf_lines),
+            # see the first arming site: HP truth is turn-START data and must not
+            # touch a mid-turn (pivot-wave) snapshot
+            "at_turn_start": any(ln.startswith("|turn|") for ln in block_lines),
         }
         mf_carry = (
             [] if any(ln.startswith("|turn|") for ln in block_lines) else mf_lines
@@ -5280,6 +5467,7 @@ def _fire_turn(
     damage_collector=None,
     damage_tolerance=0,
     prior_lines=None,
+    hptruth=None,
 ):
     turn = armed["turn"]
     snap = armed["snapshot"]
@@ -5506,6 +5694,15 @@ def _fire_turn(
                 )
             except Exception:
                 pass
+            # ...and the NON-illusion entrant's HP from the same line: the switch
+            # line is the only witness for bench heals (traced Regenerator) --
+            # see _seed_entrant_hp_from_switch_line
+            try:
+                _seed_entrant_hp_from_switch_line(
+                    snap.opponent, opp_pid, reveals, turn, block_lines
+                )
+            except Exception:
+                pass
         # sleep attempts the bearer served under someone else's name (slot-counted)
         for _bt, _pid in ((snap.user, user_pid), (snap.opponent, opp_pid)):
             try:
@@ -5529,6 +5726,21 @@ def _fire_turn(
             _apply_forme_abilities(_battler)
         except Exception:
             pass
+
+    # HP-TRUTH sidecar: pin every roster mon's pre-turn HP to the generator-
+    # observed exact value (strictly better information than any display-derived
+    # estimate; the certificate clamp below already treats exact HP as senior).
+    # After every knowledge fill, before the clamps.
+    if hptruth is not None and armed.get("at_turn_start"):
+        entry = hptruth.get(str(turn))
+        if entry:
+            from fp.replay import damage_membership
+
+            try:
+                damage_membership.apply_hptruth(snap, user_pid, entry, stats)
+                stats["hptruth_turns"] = stats.get("hptruth_turns", 0) + 1
+            except Exception:
+                stats["hptruth_errors"] = stats.get("hptruth_errors", 0) + 1
 
     # a move the block shows being USED had >=1 PP at turn start (Leppa / drift)
     try:

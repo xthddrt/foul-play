@@ -1,0 +1,39 @@
+box	game_id	families	n_hard	n_soft	n_damage	n_findings	perspectives	sample_turn	sample_message
+i-005adc19f61405de9	b006/g15/20260812T055341-l4-000080	unclassified	0	1	0	1	p1	50	observed - atk on user but no branch produces it [ko-margin]
+i-00cabc96530ceb0d2	b003/g13/20260812T050905-l3-000027	unclassified	0	2	0	2	p1+p2	41	observed + atk on user but no branch produces it [ko-margin]
+i-01bf39e3c9478af89	b005/g14/20260812T053120-l4-000018	unclassified	1	0	0	1	p1	29	observed - atk on user but no branch produces it
+i-01c0cbf75c89ba9a8	b005/g4/20260812T053129-l4-000068	beat_up_substitute	1	0	0	1	p2	17	observed tox on user but no branch applies it
+i-02f01ed666ca9089c	b009/g9/20260812T062426-l2-000071	unclassified	1	0	0	1	p1	2	observed item loss (Focus Sash) on opp but no branch removes it [membership 0/10 legal actions reproduce]
+i-03b2652e9e4861e93	b006/g10/20260812T054817-l6-000064	unclassified	1	0	0	1	p2	17	observed par on opp but no branch applies it [membership 0/9 legal actions reproduce]
+i-041d165646def21ce	b000/g1/20260812T065019-l5-000017	unclassified	4	0	0	4	p1+p2	18	observed - def on opp but no branch produces it
+i-04845ae510c0280d3	b006/g4/20260812T055039-l6-000048	unclassified	0	1	0	1	p1	91	observed heal on user but no branch heals it
+i-04845ae510c0280d3	b007/g4/20260812T060324-l6-000072	cursed_body_sleep_talk	1	0	0	1	p2	42	observed volatile Disable start on user but no branch applies it
+i-059714674885bf5ed	b001/g15/20260812T043835-l2-000086	cursed_body_sleep_talk	2	0	0	2	p1+p2	21	observed volatile Disable start on user but no branch applies it
+i-05b586360961cef63	b001/g0/20260812T043839-l2-000025	unclassified	0	2	0	2	p1+p2	6	observed tox on opp but no branch applies it [ko-margin]
+i-05c3503b2c9659367	b007/g1/20260812T060033-l3-000022	unclassified	0	4	0	4	p1+p2	11	observed item loss (Sitrus Berry) on opp but no branch removes it
+i-0649cc4359c805377	b000/g8/20260812T042515-l2-000002	heal_block_psychic_noise	2	0	0	2	p1+p2	10	observed volatile Heal Block start on user but no branch applies it
+i-0649cc4359c805377	b001/g4/20260812T044206-l2-000060	unclassified	0	4	0	4	p1+p2	15	observed item loss (Sitrus Berry) on opp but no branch removes it
+i-06907ed6ea89577f1	b002/g7/20260812T045628-l6-000012	heal_block_psychic_noise	1	0	0	1	p1	10	observed volatile Substitute start on user but no branch applies it
+i-06907ed6ea89577f1	b006/g8/20260812T054824-l2-000084	unclassified	1	0	0	1	p2	16	observed - spe on opp but no branch produces it
+i-084209bdd054ea2b2	b003/g8/20260812T050446-l2-000052	unclassified	2	0	0	2	p1+p2	19	observed item loss (Choice Band) on opp but no branch removes it
+i-08472e297c47a3fb7	b001/g5/20260812T043916-l2-000086	unclassified	4	0	0	4	p1+p2	26	observed - def on opp but no branch produces it
+i-08a8cdc31c0c99872	b004/g7/20260812T051813-l5-000053	unclassified	0	2	0	2	p2	2	observed - def on user but no branch produces it [ko-margin]
+i-08f1bea77af54fa4e	b002/g2/20260812T045146-l4-000033	unclassified	1	0	0	1	p2	15	observed par on opp but no branch applies it [membership 0/8 legal actions reproduce]
+i-09034a94d4a578ef8	b003/g2/20260812T050630-l2-000082	unclassified	1	0	0	1	p1	4	observed par on opp but no branch applies it [membership 0/10 legal actions reproduce]
+i-098a6d5ae9c2f5ef9	b002/g4/20260812T045216-l3-000033	unclassified	2	0	0	2	p1+p2	23	observed + spa on opp but no branch produces it
+i-0a598c0100d4cadc1	b000/g6/20260812T065016-l3-000003	unclassified	0	2	0	2	p1+p2	20	observed + spe on user but no branch produces it [ko-margin]
+i-0b74e493efe59e1ec	b005/g12/20260812T053650-l6-000074	beat_up_substitute	1	0	0	1	p1	8	observed tox on user but no branch applies it
+i-0bd7329a3180ca64d	b008/g4/20260812T061647-l3-000003	unclassified	4	0	0	4	p1+p2	37	observed - def on user but no branch produces it
+i-0c4660c30a9917614	b004/g6/20260812T051739-l5-000083	unclassified	1	0	0	1	p1	9	observed brn on user but no branch applies it
+i-0c795a07ea08ec930	b002/g12/20260812T045249-l3-000034	beat_up_substitute	2	0	0	2	p1+p2	31	observed par on opp but no branch applies it
+i-0cc7d43b357302299	b001/g10/20260812T043837-l6-000068	cursed_body_sleep_talk	1	0	0	1	p2	64	observed volatile Disable start on user but no branch applies it
+i-0cc7d43b357302299	b004/g6/20260812T051859-l6-000006	unclassified	0	4	0	4	p1+p2	42	observed heal on opp but no branch heals it
+i-0db500286d1272771	b003/g4/20260812T033903-l2-000067	cursed_body_sleep_talk	1	0	0	1	p1	63	observed volatile Disable start on user but no branch applies it
+i-0dc172ad87fd30d1a	b001/g15/20260812T043819-l3-000009	booster_energy_cloud_nine	2	0	0	2	p1+p2	8	observed item loss (Booster Energy) on user but no branch removes it
+i-0dcec37c240ba5671	b003/g6/20260812T050939-l5-000075	booster_energy_cloud_nine	2	0	0	2	p1+p2	3	observed item loss (Booster Energy) on opp but no branch removes it
+i-0df73ea55b899c9c7	b000/g7/20260812T065011-l6-000035	unclassified	0	2	0	2	p1+p2	113	observed heal on user but no branch heals it
+i-0e592cb05bb9d3a92	b001/g4/20260812T043854-l2-000062	unclassified	2	0	0	2	p1+p2	3	observed + spa on user but no branch produces it
+i-0f1f71586ce8c32ff	b000/g13/20260812T042522-l2-000033	unclassified	0	2	0	2	p1+p2	17	observed volatile confusion end on opp but no branch removes it
+i-0f1f71586ce8c32ff	b004/g11/20260812T052323-l6-000006	booster_energy_cloud_nine	2	0	0	2	p1+p2	18	observed item loss (Booster Energy) on opp but no branch removes it
+i-0f1f71586ce8c32ff	b005/g0/20260812T053744-l1-000024	booster_energy_cloud_nine	2	0	0	2	p1+p2	4	observed item loss (Booster Energy) on opp but no branch removes it
+i-0f43ec34c40e0f83b	b009/g15/20260812T062727-l3-000039	unclassified	1	0	0	1	p2	65	observed item loss (Focus Sash) on opp but no branch removes it [membership 0/8 legal actions reproduce]

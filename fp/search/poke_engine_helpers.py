@@ -472,7 +472,20 @@ def battler_to_poke_engine_side(
                 last_used_move = "move:{}".format(i)
                 break
         else:
-            last_used_move = "move:0"
+            # The active does not OWN its last used move: its moveset was
+            # rewritten under it — in gen9 randbats that is exactly the move
+            # Transform, which replaces all four slots (PS keeps lastMove = the
+            # used move itself: moveUsed at sim/pokemon.ts:916 runs before the
+            # hit step, battle-actions.ts:279-291, and transformInto never
+            # touches lastMove). The old "move:0" fallback lied about the
+            # IDENTITY: the engine read slot 0's copied move, let Encore succeed
+            # where PS emits |-fail| (encore onStart, data/moves.ts:4739-4748 —
+            # transform carries `failencore`, data/moves.ts:19830, and owns no
+            # moveSlot), Encore-locked the wrong slot and swallowed the real
+            # reply (synthu5087295 T19). The unslotted token carries the true
+            # identity; an older wheel degrades it to move:none with a warning,
+            # which still fails Encore.
+            last_used_move = "move:unslotted:{}".format(battler.last_used_move.move)
 
     # The exact remaining substitute HP is not fully knowable (the '[damage]'
     # protocol ping is magnitude-free), but the client tracks a running point

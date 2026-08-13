@@ -10,6 +10,7 @@ and the remaining protocol lines of that chunk follow raw, each starting with
 are dropped.
 """
 
+import gzip
 import re
 
 from fp.replay.comparator import ObservedEvent, _SECONDARY_CAUSE_TAGS
@@ -24,7 +25,13 @@ def iter_chunks(log_path: str):
     `update_battle(battle, chunk)`.  A chunk starts at a `Received message`
     line and runs until the next one."""
     chunk: list[str] = []
-    with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+    # The farm archives its lane logs gzipped (`<gid>.p1.log.gz`), and this is the ONE
+    # place the checker reads a log, so `.gz` support is exactly one opener choice here.
+    # `gzip.open` in "rt" mode takes the same encoding/errors arguments as `open`, and
+    # "rt" is identical to "r" for the plain path, so an uncompressed log is byte-for-byte
+    # unaffected.
+    opener = gzip.open if log_path.endswith(".gz") else open
+    with opener(log_path, "rt", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.rstrip("\n")
             m = _RECV.match(line)

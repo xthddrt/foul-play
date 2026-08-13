@@ -1,0 +1,9 @@
+=== phase 1: generating 4 fresh corpora (40,000 games)
+  corpus 165 (seed 1690001): i-024f0f73fcea06647
+  corpus 166 (seed 1700001): i-0ba5e8eb53c41414f
+=== waiting for corpora (up to 90 min)
+all 4 corpora ready (03:55:57Z)
+=== phase 2: sweeping all four in parallel
+  sweep g165: i-07a34b6b700665e5a
+  sweep g166: i-058d7c33da2086a5f
+=== waiting for sweeps (up to 90 min)

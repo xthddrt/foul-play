@@ -1,0 +1,151 @@
+family	box	game_id	family_findings	n_hard	n_soft	perspectives	sample_turn	sample_message
+struggle_damage	i-08472e297c47a3fb7	b005/g13/20260812T053414-l2-000032	23	23	0	p2	11	observed damage 24 on suicune from lapras struggle (crit=False) not in the PS-exact roll set (nearest delta -3; max_roll 32)
+struggle_damage	i-098a6d5ae9c2f5ef9	b003/g7/20260812T050645-l5-000083	20	20	0	p2	112	observed damage 27 on alomomola from lapras struggle (crit=False) not in the PS-exact roll set (nearest delta -6; max_roll 39)
+struggle_damage	i-0d0937c3e06d97498	b008/g1/20260812T061759-l5-000043	19	19	0	p1	12	observed damage 36 on suicune from lapras struggle (crit=True) not in the PS-exact roll set (nearest delta -4; max_roll 48)
+struggle_damage	i-0dc172ad87fd30d1a	b007/g3/20260812T055809-l4-000044	18	18	0	p2	33	observed damage 27 on vaporeon from gardevoir struggle (crit=False) not in the PS-exact roll set (nearest delta -4; max_roll 37)
+struggle_damage	i-07457ae77f367bf5e	b005/g0/20260812T054025-l2-000028	17	17	0	p2	11	observed damage 29 on phione from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -3; max_roll 38)
+struggle_damage	i-08a8cdc31c0c99872	b005/g2/20260812T053433-l5-000021	17	17	0	p1	29	observed damage 25 on vaporeon from gardevoir struggle (crit=False) not in the PS-exact roll set (nearest delta -6; max_roll 37)
+struggle_damage	i-0b317a80d4911132b	b009/g1/20260812T063007-l1-000070	17	17	0	p1	20	observed damage 22 on suicune from lapras struggle (crit=False) not in the PS-exact roll set (nearest delta -5; max_roll 32)
+struggle_damage	i-05b586360961cef63	b001/g2/20260812T043839-l5-000081	16	16	0	p1	73	observed damage 24 on suicune from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -3; max_roll 32)
+struggle_damage	i-071a80d298ad227a8	b000/g15/20260812T064114-l1-000061	16	16	0	p2	22	observed damage 31 on phione from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -1; max_roll 38)
+struggle_damage	i-0f1f71586ce8c32ff	b005/g12/20260812T053744-l2-000026	16	16	0	p1	20	observed damage 26 on vaporeon from gardevoir struggle (crit=False) not in the PS-exact roll set (nearest delta -5; max_roll 37)
+struggle_damage	i-01bf39e3c9478af89	b003/g0/20260812T050507-l2-000021	15	15	0	p2	36	observed damage 24 on suicune from lapras struggle (crit=False) not in the PS-exact roll set (nearest delta -3; max_roll 32)
+struggle_damage	i-098a6d5ae9c2f5ef9	b000/g15/20260812T042513-l4-000036	15	15	0	p2	17	observed damage 25 on phione from lapras struggle (crit=False) not in the PS-exact roll set (nearest delta -7; max_roll 38)
+struggle_damage	i-0d0937c3e06d97498	b003/g0/20260812T050757-l1-000069	15	15	0	p1	18	observed damage 23 on suicune from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -4; max_roll 32)
+struggle_damage	i-075e0398b7210ae1c	b005/g5/20260812T054308-l2-000061	14	14	0	p1	18	observed damage 27 on phione from lapras struggle (crit=False) not in the PS-exact roll set (nearest delta -5; max_roll 38)
+struggle_damage	i-0c795a07ea08ec930	b008/g8/20260812T061209-l5-000066	14	14	0	p2	18	observed damage 22 on phione from vaporeon struggle (crit=False) not in the PS-exact roll set (nearest delta -4; max_roll 31)
+struggle_damage	i-0228028815f804974	b006/g0/20260812T054942-l4-000009	13	13	0	p2	158	observed damage 12 on sandaconda from arboliva struggle (crit=False) not in the PS-exact roll set (nearest delta -4; max_roll 19)
+struggle_damage	i-0a346dac9e029d262	b007/g8/20260812T055930-l1-000012	13	13	0	p1	118	observed damage 16 on suicune from vaporeon struggle (crit=False) not in the PS-exact roll set (nearest delta -6; max_roll 26)
+struggle_damage	i-0a0c04a71b387d5eb	b005/g9/20260812T053234-l2-000043	12	12	0	p2	16	observed damage 28 on phione from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -4; max_roll 38)
+struggle_damage	i-0d1f145bc856322e3	b000/g11/20260812T065017-l1-000001	12	12	0	p1	17	observed damage 36 on vaporeon from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -5; max_roll 49)
+struggle_damage	i-05c3503b2c9659367	b003/g9/20260812T050813-l5-000009	11	11	0	p1	65	observed damage 22 on suicune from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -5; max_roll 32)
+struggle_damage	i-09034a94d4a578ef8	b000/g14/20260812T042513-l5-000007	11	11	0	p1	119	observed damage 19 on phione from vaporeon struggle (crit=False) not in the PS-exact roll set (nearest delta -7; max_roll 31)
+struggle_damage	i-0138941a2e750e9b2	b003/g15/20260812T050913-l5-000038	10	10	0	p2	24	observed damage 23 on suicune from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -4; max_roll 32)
+struggle_damage	i-01985411e051508a0	b001/g8/20260812T043832-l1-000029	10	10	0	p2	102	observed damage 25 on suicune from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -2; max_roll 32)
+struggle_damage	i-01985411e051508a0	b003/g9/20260812T050459-l5-000083	10	10	0	p1+p2	125	observed damage 12 on dipplin from sylveon struggle (crit=False) not in the PS-exact roll set (nearest delta -2; max_roll 17)
+struggle_damage	i-05b586360961cef63	b001/g3/20260812T043839-l6-000010	10	10	0	p1	35	observed damage 24 on suicune from volcanion struggle (crit=False) not in the PS-exact roll set (nearest delta -3; max_roll 32)
+bellydrum_sitrus	i-08472e297c47a3fb7	b005/g10/20260812T053414-l3-000022	3	2	1	p2	10	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-0f608689a07e1846b	b005/g15/20260812T053438-l4-000052	3	2	1	p1	37	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-005adc19f61405de9	b002/g13/20260812T045533-l2-000053	2	0	2	p2	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-005adc19f61405de9	b008/g14/20260812T062037-l2-000085	2	0	2	p1	2	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-005adc19f61405de9	b009/g10/20260812T063826-l5-000022	2	0	2	p1	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-00708246f812c0788	b000/g0/20260812T065012-l2-000027	2	0	2	p1	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-00708246f812c0788	b000/g6/20260812T065012-l2-000002	2	0	2	p1	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-00cabc96530ceb0d2	b000/g10/20260812T042524-l4-000010	2	1	1	p2	5	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-00cabc96530ceb0d2	b003/g1/20260812T050905-l5-000040	2	0	2	p2	6	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-00d65f5d61b77de3c	b000/g15/20260812T065013-l4-000004	2	0	2	p2	2	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-00f63414a0830044a	b008/g10/20260812T061420-l2-000058	2	0	2	p2	9	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01216fbca5c642e1a	b003/g13/20260812T050517-l6-000018	2	0	2	p1	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01216fbca5c642e1a	b006/g7/20260812T054929-l1-000037	2	0	2	p2	4	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-013a2ebf248bd7e38	b000/g15/20260812T042522-l1-000079	2	1	1	p2	10	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-013a2ebf248bd7e38	b003/g10/20260812T050700-l5-000009	2	0	2	p1	9	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-013a79b850c8be090	b006/g8/20260812T055130-l1-000001	2	0	2	p2	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01985411e051508a0	b000/g3/20260812T042522-l2-000070	2	0	2	p2	8	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01985411e051508a0	b000/g3/20260812T042522-l6-000006	2	0	2	p2	4	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01985411e051508a0	b005/g10/20260812T053504-l5-000079	2	0	2	p1	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01bf39e3c9478af89	b001/g0/20260812T043817-l1-000019	2	0	2	p2	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01bf39e3c9478af89	b005/g3/20260812T053120-l2-000059	2	0	2	p2	32	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01bf39e3c9478af89	b007/g5/20260812T055738-l6-000088	2	0	2	p1	9	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01c0cbf75c89ba9a8	b003/g5/20260812T050456-l3-000033	2	0	2	p1	3	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01c0cbf75c89ba9a8	b004/g15/20260812T051818-l4-000080	2	0	2	p1	1	observed item loss (Sitrus Berry) on opp but no branch removes it
+bellydrum_sitrus	i-01c0cbf75c89ba9a8	b004/g6/20260812T051818-l3-000084	2	1	1	p2	2	observed item loss (Sitrus Berry) on opp but no branch removes it
+ko_margin_soft	i-0649cc4359c805377	b007/g14/20260812T060754-l3-000056	6	0	7	p2	32	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-06b076f9a8c5b389e	b000/g15/20260812T065019-l6-000021	6	0	6	p1	62	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-01985411e051508a0	b008/g11/20260812T061906-l4-000057	5	0	5	p1	24	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-02f01ed666ca9089c	b007/g2/20260812T055732-l4-000032	5	0	5	p2	2	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-05c3503b2c9659367	b009/g8/20260812T063048-l2-000087	5	0	5	p1	6	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-078a8a19023e45da1	b001/g14/20260812T043921-l1-000067	5	0	5	p2	9	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-079ea87d66f325fdc	b001/g15/20260812T043813-l3-000091	5	0	5	p2	20	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-098a6d5ae9c2f5ef9	b001/g2/20260812T043832-l5-000036	5	0	5	p1	89	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0a0c04a71b387d5eb	b003/g7/20260812T050439-l5-000081	5	0	5	p1	6	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0a0c04a71b387d5eb	b008/g5/20260812T061232-l6-000084	5	0	5	p1	4	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0c795a07ea08ec930	b008/g2/20260812T061209-l4-000034	5	0	5	p1	5	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0db500286d1272771	b003/g14/20260812T033903-l1-000009	5	0	5	p1	10	observed - def on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-005adc19f61405de9	b000/g7/20260812T042531-l2-000002	3	0	3	p2	10	observed - atk on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-00f63414a0830044a	b007/g13/20260812T060004-l2-000047	3	0	3	p1	22	observed brn on opp but no branch applies it [ko-margin]
+ko_margin_soft	i-03b2652e9e4861e93	b008/g3/20260812T062107-l5-000016	3	0	3	p1	22	observed slp on opp but no branch applies it [ko-margin]
+ko_margin_soft	i-0b524cf2ff40edfc4	b006/g5/20260812T055219-l4-000072	3	0	3	p1	19	observed + spa on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0bd7329a3180ca64d	b007/g11/20260812T060143-l3-000052	3	0	3	p1	15	observed - spd on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0c8bed7a9591287bf	b000/g10/20260812T065018-l3-000047	3	0	3	p2	39	observed - spa on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0d4ac7b8e59289742	b004/g12/20260812T052130-l1-000059	3	0	3	p1	19	observed + spa on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-0dcec37c240ba5671	b004/g4/20260812T052301-l4-000037	3	0	3	p2	39	observed slp on opp but no branch applies it [ko-margin]
+ko_margin_soft	i-0f1f71586ce8c32ff	b007/g2/20260812T060355-l6-000087	3	0	3	p1	5	observed slp on user but no branch applies it [ko-margin]
+ko_margin_soft	i-0f1f71586ce8c32ff	b008/g12/20260812T061654-l1-000043	3	0	3	p2	13	observed + spe on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-005adc19f61405de9	b006/g15/20260812T055341-l5-000092	2	0	2	p1	59	observed + spe on opp but no branch produces it [ko-margin]
+ko_margin_soft	i-005adc19f61405de9	b007/g7/20260812T060658-l4-000094	2	0	2	p2	22	observed - atk on user but no branch produces it [ko-margin]
+ko_margin_soft	i-00cabc96530ceb0d2	b003/g13/20260812T050905-l3-000027	2	0	2	p1+p2	41	observed + atk on user but no branch produces it [ko-margin]
+revival_blessing	i-01c0cbf75c89ba9a8	b004/g13/20260812T051818-l1-000001	5	5	0	p1	17	observed - def on user but no branch produces it
+revival_blessing	i-06907ed6ea89577f1	b002/g3/20260812T045628-l6-000028	5	5	0	p2	14	observed - def on user but no branch produces it
+revival_blessing	i-01216fbca5c642e1a	b006/g14/20260812T054929-l4-000004	3	3	0	p1	21	observed + spa on user but no branch produces it
+revival_blessing	i-013a79b850c8be090	b000/g13/20260812T042529-l5-000093	3	1	2	p2	17	observed slp on user but no branch applies it
+revival_blessing	i-01bf39e3c9478af89	b002/g10/20260812T045148-l3-000050	3	1	2	p1	19	observed slp on user but no branch applies it
+revival_blessing	i-03b2652e9e4861e93	b001/g11/20260812T043840-l1-000009	3	3	0	p2	18	observed - spe on user but no branch produces it
+revival_blessing	i-04845ae510c0280d3	b007/g5/20260812T060324-l3-000012	3	3	0	p2	14	observed + atk on user but no branch produces it
+revival_blessing	i-0488cbaa6d228795a	b005/g6/20260812T040704-l6-000006	3	3	0	p1	25	observed + spa on user but no branch produces it
+revival_blessing	i-04900aca72552de12	b009/g4/20260812T063017-l1-000034	3	3	0	p2	14	observed + atk on user but no branch produces it
+revival_blessing	i-05b586360961cef63	b006/g5/20260812T055107-l3-000081	3	3	0	p2	14	observed + atk on user but no branch produces it
+revival_blessing	i-05c3503b2c9659367	b007/g9/20260812T060033-l1-000020	3	3	0	p1	25	observed - spe on user but no branch produces it
+revival_blessing	i-05c3503b2c9659367	b008/g7/20260812T061338-l6-000066	3	1	2	p1	32	observed slp on user but no branch applies it
+revival_blessing	i-075e0398b7210ae1c	b006/g11/20260812T055609-l5-000035	3	3	0	p1	25	observed + atk on user but no branch produces it
+revival_blessing	i-084209bdd054ea2b2	b003/g8/20260812T050446-l1-000078	3	3	0	p2	13	observed + atk on user but no branch produces it
+revival_blessing	i-08f58af9c9788b932	b002/g3/20260812T045441-l3-000003	3	3	0	p2	9	observed + spa on user but no branch produces it
+revival_blessing	i-0b74e493efe59e1ec	b007/g6/20260812T061027-l2-000083	3	1	2	p1	21	observed slp on user but no branch applies it
+revival_blessing	i-0bd7329a3180ca64d	b002/g5/20260812T045242-l3-000065	3	3	0	p2	14	observed + spe on user but no branch produces it
+revival_blessing	i-0cc7d43b357302299	b004/g9/20260812T051859-l2-000048	3	1	2	p2	13	observed slp on user but no branch applies it
+revival_blessing	i-0dcec37c240ba5671	b004/g13/20260812T052301-l1-000088	3	3	0	p1	11	observed + atk on user but no branch produces it
+revival_blessing	i-0e4e9ba07cc3ad827	b003/g15/20260812T051303-l2-000025	3	3	1	p1	17	observed + atk on user but no branch produces it
+revival_blessing	i-0e592cb05bb9d3a92	b001/g7/20260812T043854-l4-000074	3	3	0	p2	32	observed + atk on user but no branch produces it
+revival_blessing	i-0e592cb05bb9d3a92	b008/g9/20260812T061618-l3-000068	3	3	0	p2	5	observed + spa on user but no branch produces it
+revival_blessing	i-0f488b1f3ccce74cd	b003/g6/20260812T050927-l5-000033	3	3	0	p2	37	observed + spa on user but no branch produces it
+revival_blessing	i-0f488b1f3ccce74cd	b009/g2/20260812T063343-l4-000004	3	3	0	p2	12	observed + atk on user but no branch produces it
+revival_blessing	i-005adc19f61405de9	b009/g1/20260812T063826-l2-000054	2	2	0	p2	19	observed + spa on user but no branch produces it
+other_categorical	i-03dd65492a5903d87	b001/g14/20260812T043810-l4-000058	4	4	0	p2	21	observed - def on opp but no branch produces it
+other_categorical	i-041d165646def21ce	b000/g1/20260812T065019-l5-000017	4	4	0	p1+p2	18	observed - def on opp but no branch produces it
+other_categorical	i-05c3503b2c9659367	b007/g1/20260812T060033-l3-000022	4	0	4	p1+p2	11	observed item loss (Sitrus Berry) on opp but no branch removes it
+other_categorical	i-0649cc4359c805377	b001/g4/20260812T044206-l2-000060	4	0	4	p1+p2	15	observed item loss (Sitrus Berry) on opp but no branch removes it
+other_categorical	i-08472e297c47a3fb7	b001/g5/20260812T043916-l2-000086	4	4	0	p1+p2	26	observed - def on opp but no branch produces it
+other_categorical	i-0bd7329a3180ca64d	b008/g4/20260812T061647-l3-000003	4	4	0	p1+p2	37	observed - def on user but no branch produces it
+other_categorical	i-0cc7d43b357302299	b004/g6/20260812T051859-l6-000006	4	0	4	p1+p2	42	observed heal on opp but no branch heals it
+other_categorical	i-0dcec37c240ba5671	b000/g5/20260812T042524-l5-000084	4	1	4	p2	35	observed volatile Substitute end on user but no branch removes it
+other_categorical	i-0f1f71586ce8c32ff	b001/g7/20260812T043940-l1-000055	4	4	0	p1	15	observed - def on opp but no branch produces it
+other_categorical	i-0f6153a368f619205	b007/g8/20260812T055927-l5-000086	4	2	3	p1	19	observed volatile Leech Seed start on opp but no branch applies it
+other_categorical	i-04f8323b9862da605	b000/g11/20260812T064352-l1-000064	3	3	0	p2	10	observed - evasion on opp but no branch produces it
+other_categorical	i-075e0398b7210ae1c	b004/g6/20260812T052952-l5-000045	3	3	0	p1	21	observed + spa on user but no branch produces it
+other_categorical	i-09034a94d4a578ef8	b006/g1/20260812T054920-l3-000090	3	3	0	p2	3	observed - def on user but no branch produces it
+other_categorical	i-0a346dac9e029d262	b007/g3/20260812T055930-l3-000034	3	3	0	p2	25	observed - def on opp but no branch produces it
+other_categorical	i-0bd7329a3180ca64d	b007/g11/20260812T060143-l2-000062	3	3	0	p1	21	observed - spe on user but no branch produces it
+other_categorical	i-01216fbca5c642e1a	b007/g6/20260812T060414-l6-000006	2	0	2	p1	5	observed volatile Substitute end on user but no branch removes it
+other_categorical	i-01985411e051508a0	b002/g5/20260812T045158-l5-000025	2	0	3	p2	13	observed + spe on opp but no branch produces it [ko-margin]
+other_categorical	i-01985411e051508a0	b004/g14/20260812T051740-l2-000045	2	2	0	p1	21	observed - def on opp but no branch produces it
+other_categorical	i-01985411e051508a0	b009/g3/20260812T063220-l4-000025	2	2	0	p1	23	observed - def on opp but no branch produces it
+other_categorical	i-04845ae510c0280d3	b007/g0/20260812T060324-l3-000031	2	2	0	p1	22	observed - def on opp but no branch produces it
+other_categorical	i-059714674885bf5ed	b001/g15/20260812T043835-l2-000086	2	2	0	p1+p2	21	observed volatile Disable start on user but no branch applies it
+other_categorical	i-059714674885bf5ed	b003/g9/20260812T050537-l5-000092	2	0	2	p2	19	observed volatile Substitute end on user but no branch removes it
+other_categorical	i-05c3503b2c9659367	b000/g12/20260812T042527-l4-000011	2	0	2	p1	13	observed heal on user but no branch heals it
+other_categorical	i-05c3503b2c9659367	b006/g5/20260812T054732-l6-000030	2	2	0	p2	21	observed psn on opp but no branch applies it
+other_categorical	i-0649cc4359c805377	b000/g8/20260812T042515-l2-000002	2	2	0	p1+p2	10	observed volatile Heal Block start on user but no branch applies it
+other_damage_rollset	i-084209bdd054ea2b2	b008/g3/20260812T061342-l6-000055	12	12	0	p1	25	observed damage 72 on lunala from bellossom terablast (crit=False) not in the PS-exact roll set (nearest delta -7; max_roll 94)
+other_damage_rollset	i-05c3503b2c9659367	b009/g9/20260812T063048-l6-000081	5	5	0	p2	14	observed damage 38 on hatterene from necrozma photongeyser (crit=False) not in the PS-exact roll set (nearest delta -7; max_roll 54)
+other_damage_rollset	i-0649cc4359c805377	b008/g4/20260812T062112-l1-000027	5	5	0	p2	23	observed damage 39 on hatterene from necrozma photongeyser (crit=False) not in the PS-exact roll set (nearest delta -6; max_roll 54)
+other_damage_rollset	i-0dc172ad87fd30d1a	b003/g14/20260812T050439-l4-000033	5	5	0	p1	31	observed damage 104 on fezandipiti from alcremiesaltedcream terablast (crit=False) not in the PS-exact roll set (nearest delta -34; max_roll 164)
+other_damage_rollset	i-025f6a209c33d9371	b003/g5/20260812T050611-l3-000014	4	4	0	p1	33	observed damage 30 on hatterene from alcremie terablast (crit=False) not in the PS-exact roll set (nearest delta -30; max_roll 72)
+other_damage_rollset	i-0aa0503c318c143aa	b003/g10/20260812T050509-l2-000046	4	4	0	p2	37	observed damage 40 on hatterene from necrozmadawnwings photongeyser (crit=False) not in the PS-exact roll set (nearest delta -2; max_roll 50)
+other_damage_rollset	i-01b1acfae12a2458f	b000/g15/20260812T065020-l2-000010	3	3	0	p1	24	observed damage 99 on clefable from necrozma photongeyser (crit=False) not in the PS-exact roll set (nearest delta -13; max_roll 133)
+other_damage_rollset	i-04845ae510c0280d3	b004/g15/20260812T051822-l6-000061	3	3	0	p2	37	observed damage 110 on sandyshocks from alcremierubycream terablast (crit=False) not in the PS-exact roll set (nearest delta +35; max_roll 75)
+other_damage_rollset	i-05c3503b2c9659367	b009/g4/20260812T063048-l3-000016	3	3	0	p2	28	observed damage 172 on clefable from alcremie terablast (crit=True) not in the PS-exact roll set (nearest delta +40; max_roll 132)
+other_damage_rollset	i-0649cc4359c805377	b000/g5/20260812T042515-l3-000064	3	3	0	p2	15	observed damage 72 on electrode from comfey terablast (crit=False) not in the PS-exact roll set (nearest delta -42; max_roll 134)
+other_damage_rollset	i-08b6e4147d0066585	b004/g9/20260812T035359-l5-000009	3	3	0	p2	50	observed damage 138 on avalugghisui from necrozmadawnwings photongeyser (crit=False) not in the PS-exact roll set (nearest delta +83; max_roll 55)
+other_damage_rollset	i-02f01ed666ca9089c	b000/g3/20260812T042518-l4-000025	2	2	0	p2	31	observed damage 42 on florgesorange from alcremielemoncream terablast (crit=False) not in the PS-exact roll set (nearest delta -34; max_roll 90)
+other_damage_rollset	i-05c3503b2c9659367	b003/g7/20260812T050813-l3-000007	2	2	0	p1	28	observed damage 144 on fezandipiti from necrozmadawnwings photongeyser (crit=False) not in the PS-exact roll set (nearest delta -50; max_roll 230)
+other_damage_rollset	i-05c3503b2c9659367	b008/g0/20260812T061338-l4-000078	2	2	0	p2	14	observed damage 114 on enamorustherian from necrozma photongeyser (crit=True) not in the PS-exact roll set (nearest delta -12; max_roll 148)
+other_damage_rollset	i-075e0398b7210ae1c	b004/g10/20260812T052952-l2-000089	2	2	0	p1	26	observed damage 21 on florgesblue from necrozmadawnwings photongeyser (crit=False) not in the PS-exact roll set (nearest delta -88; max_roll 129)
+other_damage_rollset	i-084209bdd054ea2b2	b000/g0/20260812T042527-l1-000076	2	2	1	p2	31	observed damage 128 on houndoom from frosmoth terablast (crit=False) not in the PS-exact roll set (nearest delta -30; max_roll 188)
+other_damage_rollset	i-0dc172ad87fd30d1a	b008/g10/20260812T061125-l6-000051	2	2	0	p1	7	observed damage 162 on dragalge from necrozmadawnwings photongeyser (crit=False) not in the PS-exact roll set (nearest delta -8; max_roll 204)
+other_damage_rollset	i-0e4e9ba07cc3ad827	b003/g15/20260812T051303-l6-000093	2	2	0	p2	31	observed damage 42 on hatterene from necrozma photongeyser (crit=False) not in the PS-exact roll set (nearest delta -3; max_roll 54)
+other_damage_rollset	i-0f057c2c5cad803e1	b006/g4/20260812T055334-l5-000087	2	2	0	p1	28	observed damage 114 on darkrai from alcremiesaltedcream terablast (crit=False) not in the PS-exact roll set (nearest delta -20; max_roll 162)
+other_damage_rollset	i-00708246f812c0788	b000/g7/20260812T065012-l1-000001	1	1	0	p2	11	observed damage 100 on volcarona from bellossom terablast (crit=False) not in the PS-exact roll set (nearest delta -144; max_roll 292)
+other_damage_rollset	i-00f63414a0830044a	b008/g1/20260812T061420-l2-000080	1	1	0	p2	21	observed damage 152 on gengar from yanmega terablast (crit=False) not in the PS-exact roll set (nearest delta -16; max_roll 198)
+other_damage_rollset	i-013a2ebf248bd7e38	b000/g11/20260812T042522-l6-000026	1	1	0	p1	20	observed damage 135 on espeon from blastoise terablast (crit=False) not in the PS-exact roll set (nearest delta -33; max_roll 198)
+other_damage_rollset	i-013a2ebf248bd7e38	b005/g7/20260812T053455-l1-000072	1	1	0	p2	19	observed damage 55 on enamorustherian from necrozmadawnwings photongeyser (crit=False) not in the PS-exact roll set (nearest delta -23; max_roll 93)
+other_damage_rollset	i-01c0cbf75c89ba9a8	b007/g4/20260812T060253-l3-000093	1	1	0	p2	12	observed damage 168 on irontreads from yanmega terablast (crit=False) not in the PS-exact roll set (nearest delta +42; max_roll 126)
+other_damage_rollset	i-0228028815f804974	b005/g13/20260812T053700-l3-000047	1	1	0	p2	12	observed damage 42 on hatterene from necrozma photongeyser (crit=False) not in the PS-exact roll set (nearest delta -3; max_roll 54)

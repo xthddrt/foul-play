@@ -44,6 +44,26 @@ def _aggregate_results(mcts_results):
                 round(sample_chance, 3),
             )
         )
+        # The MCTS ROOT VALUE, exactly. Teacher-data runs need a per-decision
+        # value target (lambda-mixed against the game outcome), and nothing else
+        # logged carries it: `Policy` prints only the argmax arm's Q, and the
+        # `WorldStats` line -- the one place it is derivable -- is rounded to
+        # 0.1pp/3dp (~+-0.005 on a 9-arm root) AND is skipped entirely when the
+        # wheel has no total_score_sq. Rust has no root score field at all
+        # (mcts.rs Node carries times_visited only), so the root value exists
+        # solely as the sum over root arms -- which is what this computes.
+        # Verified identity on the installed wheel: sum(visits) == total_visits,
+        # and s1-derived == root_pairs-derived to f32 noise.
+        # .format(), not %-args: CustomFormatter renders record.msg directly.
+        logger.info(
+            "RootValueWorld {}: {:.6f} visits={} chance={:.4f}".format(
+                index,
+                sum(o.total_score for o in mcts_result.side_one)
+                / max(mcts_result.total_visits, 1),
+                mcts_result.total_visits,
+                sample_chance,
+            )
+        )
         world_stats = []
         for s1_option in mcts_result.side_one:
             choice = s1_option.move_choice
@@ -168,6 +188,39 @@ def _aggregate_results(mcts_results):
         score_min[choice] = (
             min(trusted) if trusted else min(a for _, _, a, _ in entries)
         )
+
+    # THE POOLED ROOT VALUE -- the v7 value target, emitted exactly ONCE per
+    # decision regardless of world count.
+    #
+    # Why this expression: a single world's root value is
+    #     V_w = sum_c share_w(c) * avg_w(c)
+    # and the aggregation above accumulates, over all worlds,
+    #     blend_sum[c]    = sum_w chance_w * share_w(c) * avg_w(c)
+    #     pooled_share[c] = sum_w chance_w * share_w(c)
+    # so sum(blend_sum) / sum(pooled_share) == sum_w chance_w * V_w / sum_w chance_w,
+    # i.e. the sample_chance-weighted mean of the per-world root values -- the
+    # same weighting the policy itself is pooled under, which is what makes this
+    # the value of the position the bot actually acted on.
+    #
+    # sum(pooled_share) is the sample_chance normaliser and is 1.0 by the batch
+    # invariant (random_battles.py:359); it is divided out anyway so a partial or
+    # renormalised batch cannot silently rescale the target.
+    #
+    # Arms with 0 visits contribute 0 to both sums (share == 0), so the guard on
+    # `visits > 0` above introduces no asymmetry between numerator and denominator.
+    #
+    # Emitted HERE, after the per-world loop, not inside it: at 2 worlds the
+    # per-world line fires twice per decision, which is both ambiguous as a
+    # target and fatal to the 1:1 decision<->row alignment the harvest join needs.
+    _ps = sum(pooled_share.values())
+    logger.info(
+        "RootValuePooled: {:.6f} worlds={} chance_sum={:.4f}".format(
+            (sum(blend_sum.values()) / _ps) if _ps > 0 else 0.0,
+            len(world_scores) and len(set(
+                i for entries in world_scores.values() for i, _, _, _ in entries)),
+            _ps,
+        )
+    )
 
     return (
         pooled_share,

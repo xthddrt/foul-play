@@ -89,6 +89,7 @@ class _FoulPlayConfig:
     dump_team_dir: str = None
     emit_infostate_rows: str = None
     truestate_net: str = None
+    truestate_temperature: float = 0.0
     switch_weight_multiplier: float = 1.0
     losing_attack_fallback_threshold: float = 0.05
     variance_penalty_lambda: float = 0.0
@@ -394,6 +395,15 @@ class _FoulPlayConfig:
             "illegal command.",
         )
         parser.add_argument(
+            "--truestate-temperature",
+            type=float,
+            default=0.0,
+            help="Sampling temperature over the masked policy logits when "
+            "--truestate-net is set. 0 (default) is argmax, i.e. exactly the "
+            "deploy-time behaviour; RL data generation uses 1.0 so the corpus "
+            "contains the exploration the policy gradient needs.",
+        )
+        parser.add_argument(
             "--emit-infostate-rows",
             default=None,
             help="If set, one info-state JSON row per decision (normal move pick, "
@@ -541,6 +551,7 @@ class _FoulPlayConfig:
         self.dump_team_dir = args.dump_team_dir
         self.emit_infostate_rows = args.emit_infostate_rows
         self.truestate_net = args.truestate_net
+        self.truestate_temperature = args.truestate_temperature
         self.switch_weight_multiplier = args.switch_weight_multiplier
         self.losing_attack_fallback_threshold = args.losing_attack_fallback_threshold
         self.variance_penalty_lambda = args.variance_penalty_lambda

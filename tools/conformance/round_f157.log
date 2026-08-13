@@ -1,14 +1,83 @@
 packing current tree -> s3://pokebot-valuenet-389825051723/code.tar.gz ...
-packed at 02:08:58Z
+packed at 03:43:25Z
 === phase 1: generating 4 fresh corpora (40,000 games)
-  corpus 157 (seed 1610001): i-09c93b0f74df5d236
-  corpus 158 (seed 1620001): i-06fad737f143783e4
-  corpus 159 (seed 1630001): i-0de45f6560a4d18a9
-  corpus 160 (seed 1640001): i-04492a2f52c7449fb
-  corpus 161 (seed 1650001): i-0762e3847bb2649c5
-  corpus 162 (seed 1660001): i-06224b836862fa6a9
-  corpus 163 (seed 1670001): i-06faee4399ea201ec
-  corpus 164 (seed 1680001): i-0d13a53580e434429
-  corpus 165 (seed 1690001): i-04e7fb4f3492cc0fc
-  corpus 166 (seed 1700001): i-06556048b28c99abf
+  corpus 157 (seed 1610001): i-0c65532f1855e51e8
+  corpus 158 (seed 1620001): i-0b4c6d01f070c27dc
+  corpus 159 (seed 1630001): i-068c72b58f7bb308b
+  corpus 160 (seed 1640001): i-0ef214707c71ccb0d
+  corpus 161 (seed 1650001): i-0923344afd42a8b05
+  corpus 162 (seed 1660001): i-0525e4eec6a2fbd3a
+  corpus 163 (seed 1670001): i-09bb7b8d1aba94bda
+  corpus 164 (seed 1680001): i-0ce0daaf53f448ad7
+  corpus 165 (seed 1690001): i-02b93d21f6fd48fd3
+  corpus 166 (seed 1700001): i-03ef6b7bb2e7ed679
 === waiting for corpora (up to 90 min)
+all 4 corpora ready (03:48:25Z)
+=== phase 2: sweeping all four in parallel
+  sweep g157: i-0702aea0ec85509c5
+  sweep g158: i-0271e1ef39dbe9163
+  sweep g159: i-01bb2575d6e310838
+  sweep g160: i-0b973e1370d8b4814
+  sweep g161: i-08c19f9449f15d6d7
+  sweep g162: i-08ce80885cb7cd7aa
+  sweep g163: i-059eb576cde459ad7
+  sweep g164: i-04797fd2447aa96a4
+  sweep g165: i-09f81df345cf10ae8
+  sweep g166: i-06a3cf1ec8703c660
+=== waiting for sweeps (up to 90 min)
+all 4 sweeps done (03:57:07Z)
+
+================ GATE 5 VERDICTS ================
+--- g157
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g158
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  status: 1
+rows:
+  [status] battle-gen9randombattle-synth1626888_synthopp.log t18: observed brn on user but no branch applies it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g159
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g160
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g161
+ENGINE FINDINGS: 3 hard, 0 soft  (total 3)
+  boost: 2
+  item: 1
+rows:
+  [item] battle-gen9randombattle-synth1655904_synthopp.log t9: observed item loss (Weakness Policy) on opp but no branch removes it [membership 0/9 legal actions reproduce]
+  [boost] battle-gen9randombattle-synth1655904_synthopp.log t9: observed + atk on opp but no branch produces it [membership 0/9 legal actions reproduce]
+  [boost] battle-gen9randombattle-synth1655904_synthopp.log t9: observed + spa on opp but no branch produces it [membership 0/9 legal actions reproduce]
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g162
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g163
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g164
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g165
+ENGINE FINDINGS: 0 hard, 0 soft  (total 0)
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+--- g166
+ENGINE FINDINGS: 1 hard, 0 soft  (total 1)
+  boost: 1
+rows:
+  [boost] battle-gen9randombattle-synth1705356_synthopp.log t25: observed - spe on user but no branch produces it
+  diverged: 0
+TRACKER WARNINGS (stderr): 0 lines, 0 classes
+=================================================

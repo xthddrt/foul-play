@@ -2160,3 +2160,634 @@ class TestEventTimeVolatiles(unittest.TestCase):
         ev = [e for e in events if e.defender_slot == "p1a"][0]
         self.assertIsNone(ev.exclusion)
         self.assertEqual(ev.attacker_gained_volatiles, frozenset())
+
+
+# ---------------------------------------------------------------------------
+# Round 11 / fix agent D: PS's gen9 randbats "no Attack-stat move" spread rule
+# ---------------------------------------------------------------------------
+from fp.replay.damage_membership import _randbats_zeroes_attack  # noqa: E402
+
+
+class TestRandbatsAttackZeroing(unittest.TestCase):
+    """data/random-battles/gen9/teams.ts:1565-1584.
+
+    The v7 farm2 `<game>.teams.json` sidecar records the nominal 85-EV spread
+    and carries no `ivs`, so the rule has to be re-derived from the (exact)
+    sidecar moveset or the opponent is reconstructed with an Attack stat PS
+    never had -- which inflated every Struggle roll set and flipped Photon
+    Geyser / Tera Blast to Physical off the inflated stat.
+    """
+
+    BLISSEY_MOVES = ["Heal Bell", "Thunder Wave", "Soft-Boiled", "Seismic Toss"]
+
+    def _v7_rec(self, species, moves, ability=None, item="Leftovers"):
+        """A v7-shaped sidecar record: evs present, no `ivs`, no `stats`."""
+        return {
+            "species": species,
+            "ability": ability,
+            "item": item,
+            "moves": moves,
+            "evs": {"hp": 85, "atk": 85, "def": 85, "spa": 85, "spd": 85, "spe": 85},
+        }
+
+    def _battler(self, name, level):
+        b = Battler()
+        b.active = Pokemon(name, level)
+        b.reserve = []
+        return b
+
+    def test_d_attack_blind_set_gets_ps_zeroed_attack(self):
+        # Blissey L85: Seismic Toss is `damage: 'level'` (returns true in PS's
+        # `every`), the rest are Status/Special -> evs.atk = ivs.atk = 0.
+        b = self._battler("blissey", 85)
+        pkmn = b.active
+        self.assertEqual(pkmn.stats[constants.ATTACK], 66)  # 85 EV / 31 IV
+        max_hp, hp = pkmn.max_hp, pkmn.hp
+        apply_exact_team(
+            b, {"blissey": self._v7_rec("Blissey", self.BLISSEY_MOVES)}, is_user=False
+        )
+        self.assertEqual(pkmn.stats[constants.ATTACK], 22)
+        self.assertEqual(pkmn.evs[1], 0)
+        self.assertEqual(pkmn.ivs[1], 0)
+        # only Attack moves: HP is protocol-tracked and must not be re-derived
+        self.assertEqual(pkmn.max_hp, max_hp)
+        self.assertEqual(pkmn.hp, hp)
+        self.assertEqual(pkmn.stats[constants.SPECIAL_ATTACK], 176)
+
+    def test_d_one_attacking_physical_move_keeps_the_default_spread(self):
+        b = self._battler("blissey", 85)
+        moves = ["Heal Bell", "Thunder Wave", "Soft-Boiled", "Body Slam"]
+        apply_exact_team(
+            b, {"blissey": self._v7_rec("Blissey", moves)}, is_user=False
+        )
+        self.assertEqual(b.active.stats[constants.ATTACK], 66)
+        self.assertEqual(b.active.evs[1], 85)
+
+    def test_d_body_press_and_foul_play_are_exempt(self):
+        # PS: `move.category !== 'Physical' || move.id === 'bodypress' ||
+        # move.id === 'foulplay'` -- neither reads the user's Attack.
+        for physical in ("Body Press", "Foul Play"):
+            b = self._battler("blissey", 85)
+            moves = ["Heal Bell", "Thunder Wave", "Soft-Boiled", physical]
+            apply_exact_team(
+                b, {"blissey": self._v7_rec("Blissey", moves)}, is_user=False
+            )
+            self.assertEqual(b.active.stats[constants.ATTACK], 22, physical)
+
+    def test_d_tera_blast_zeroes_only_when_base_atk_is_not_higher(self):
+        # Electrode (atk 50 < spa 80): zeroed -- this exact set appears in the
+        # synthetic corpus with ivs.atk == evs.atk == 0.
+        b = self._battler("electrode", 80)
+        moves = ["Taunt", "Thunderbolt", "Volt Switch", "Tera Blast"]
+        apply_exact_team(
+            b, {"electrode": self._v7_rec("Electrode", moves)}, is_user=False
+        )
+        self.assertEqual(b.active.stats[constants.ATTACK], 85)
+        # Cinderace (atk 116 > spa 65): PS's "Physical Tera Blast" carve-out
+        # keeps the spread, because that Tera Blast really does read Attack.
+        b = self._battler("cinderace", 82)
+        before = b.active.stats[constants.ATTACK]
+        apply_exact_team(
+            b,
+            {"cinderace": self._v7_rec("Cinderace", ["Protect", "Tera Blast"])},
+            is_user=False,
+        )
+        self.assertEqual(b.active.stats[constants.ATTACK], before)
+
+    def test_d_sidecar_that_carries_ivs_stays_authoritative(self):
+        # The older synthetic corpus dumps ivs/evs/stats verbatim; the
+        # derivation must not run at all there.
+        b = self._battler("blissey", 85)
+        rec = self._v7_rec("Blissey", ["Heal Bell", "Body Slam"])
+        rec["ivs"] = {"hp": 31, "atk": 31, "def": 31, "spa": 31, "spd": 31, "spe": 31}
+        apply_exact_team(b, {"blissey": rec}, is_user=False)
+        self.assertEqual(b.active.ivs, (31,) * 6)
+        self.assertEqual(b.active.stats[constants.ATTACK], 66)
+
+    def test_d_unknown_move_refuses_to_certify(self):
+        # An unrecognised move cannot be proven Attack-blind: leave the default.
+        self.assertFalse(
+            _randbats_zeroes_attack(
+                ["Soft-Boiled", "not-a-real-move"],
+                "blissey",
+                None,
+                Pokemon("blissey", 85).base_stats,
+            )
+        )
+        self.assertFalse(
+            _randbats_zeroes_attack(
+                ["Transform"], "ditto", None, Pokemon("ditto", 90).base_stats
+            )
+        )
+
+
+from fp.replay.damage_membership import (  # noqa: E402
+    _randbats_set_species_key,
+    _randbats_shaved_hp_ev,
+    _randbats_zeroes_speed,
+)
+
+
+class TestRandbatsSpeedZeroing(unittest.TestCase):
+    """data/random-battles/gen9/teams.ts:1586-1589.
+
+    Sitting on the same sidecar gap as the Attack rule (nominal 85 EVs, no
+    `ivs`), but what it corrupts is turn ORDER: gen9 randbats' main Revival
+    Blessing user is Rabsca, whose set always carries Trick Room, so the
+    reconstruction stood every opposing Rabsca up at 134 Spe against PS's true
+    86 and the engine ordered Revival Blessing first on turns PS resolved it
+    last -- parking the foe's whole move in the deferred half of the turn.
+    """
+
+    RABSCA_MOVES = ["Psychic", "Bug Buzz", "Revival Blessing", "Trick Room"]
+
+    def _v7_rec(self, species, moves, ability=None, item="Leftovers"):
+        return {
+            "species": species,
+            "ability": ability,
+            "item": item,
+            "moves": moves,
+            "evs": {"hp": 85, "atk": 85, "def": 85, "spa": 85, "spd": 85, "spe": 85},
+        }
+
+    def _battler(self, name, level):
+        b = Battler()
+        b.active = Pokemon(name, level)
+        b.reserve = []
+        return b
+
+    def test_f_trick_room_set_gets_ps_zeroed_speed(self):
+        b = self._battler("rabsca", 91)
+        pkmn = b.active
+        self.assertEqual(pkmn.stats[constants.SPEED], 134)  # 85 EV / 31 IV
+        apply_exact_team(
+            b,
+            {"rabsca": self._v7_rec("Rabsca", self.RABSCA_MOVES, item="Heavy-Duty Boots")},
+            is_user=False,
+        )
+        # the exact Speed PS states in this set's own |request| block
+        self.assertEqual(pkmn.stats[constants.SPEED], 86)
+        self.assertEqual(pkmn.evs[5], 0)
+        self.assertEqual(pkmn.ivs[5], 0)
+
+    def test_f_gyro_ball_set_gets_ps_zeroed_speed(self):
+        b = self._battler("ferrothorn", 84)
+        before = b.active.stats[constants.SPEED]
+        apply_exact_team(
+            b,
+            {
+                "ferrothorn": self._v7_rec(
+                    "Ferrothorn", ["Gyro Ball", "Knock Off", "Spikes", "Leech Seed"]
+                )
+            },
+            is_user=False,
+        )
+        self.assertLess(b.active.stats[constants.SPEED], before)
+        self.assertEqual(b.active.evs[5], 0)
+        self.assertEqual(b.active.ivs[5], 0)
+
+    def test_f_ordinary_set_keeps_its_speed(self):
+        b = self._battler("rabsca", 91)
+        apply_exact_team(
+            b,
+            {"rabsca": self._v7_rec("Rabsca", ["Psychic", "Bug Buzz", "Recover", "Roost"])},
+            is_user=False,
+        )
+        self.assertEqual(b.active.stats[constants.SPEED], 134)
+        self.assertEqual(b.active.evs[5], 85)
+
+    def test_f_attack_and_speed_rules_compose_on_one_set(self):
+        # Rabsca's real set hits BOTH: no move reads Attack, and Trick Room
+        # zeroes Speed.  The arms are independent and must not shadow each other.
+        b = self._battler("rabsca", 91)
+        apply_exact_team(
+            b,
+            {"rabsca": self._v7_rec("Rabsca", self.RABSCA_MOVES, item="Heavy-Duty Boots")},
+            is_user=False,
+        )
+        self.assertEqual(b.active.stats[constants.SPEED], 86)
+        self.assertEqual(b.active.stats[constants.ATTACK], 96)
+        self.assertEqual(b.active.evs[1], 0)
+        self.assertEqual(b.active.ivs[1], 0)
+        self.assertEqual(b.active.evs[5], 0)
+        self.assertEqual(b.active.ivs[5], 0)
+        # the two stats the rules do not touch stay on the flat spread
+        self.assertEqual(b.active.stats[constants.SPECIAL_ATTACK], 261)
+        self.assertEqual(b.active.stats[constants.DEFENSE], 207)
+
+    def test_f_sidecar_that_carries_ivs_stays_authoritative(self):
+        b = self._battler("rabsca", 91)
+        rec = self._v7_rec("Rabsca", self.RABSCA_MOVES)
+        rec["ivs"] = {"hp": 31, "atk": 31, "def": 31, "spa": 31, "spd": 31, "spe": 31}
+        apply_exact_team(b, {"rabsca": rec}, is_user=False)
+        self.assertEqual(b.active.stats[constants.SPEED], 134)
+        self.assertEqual(b.active.ivs, (31,) * 6)
+
+    def test_f_control_env_var_disables_the_speed_arm(self):
+        import os
+
+        os.environ["FP_CONTROL_NO_RANDBATS_SPE_ZERO"] = "1"
+        try:
+            b = self._battler("rabsca", 91)
+            apply_exact_team(
+                b, {"rabsca": self._v7_rec("Rabsca", self.RABSCA_MOVES)}, is_user=False
+            )
+            self.assertEqual(b.active.stats[constants.SPEED], 134)
+        finally:
+            del os.environ["FP_CONTROL_NO_RANDBATS_SPE_ZERO"]
+
+    def test_f_user_side_is_never_respread(self):
+        # the user's stats come exact from |request|; only tera type is filled
+        b = self._battler("rabsca", 91)
+        apply_exact_team(
+            b, {"rabsca": self._v7_rec("Rabsca", self.RABSCA_MOVES)}, is_user=True
+        )
+        self.assertEqual(b.active.stats[constants.SPEED], 134)
+        self.assertEqual(b.active.evs, (85,) * 6)
+
+    def test_f_zeroes_speed_predicate_is_ps_verbatim(self):
+        self.assertTrue(_randbats_zeroes_speed(["Trick Room", "Psychic"]))
+        self.assertTrue(_randbats_zeroes_speed(["gyroball"]))
+        self.assertFalse(_randbats_zeroes_speed(["Psychic", "Recover"]))
+        self.assertFalse(_randbats_zeroes_speed([]))
+
+
+class TestRandbatsHpShave(unittest.TestCase):
+    """data/random-battles/gen9/teams.ts:1536-1564.
+
+    `while (evs.hp > 1)` walks the flat 85 HP EVs down 4 at a time until the
+    resulting HP hits the set's breakpoint.  Missing it left the reconstruction
+    one HP off on exactly the sets whose breakpoint decides an outcome -- an
+    EVEN max HP is what makes Belly Drum's halving land on Sitrus Berry.
+    """
+
+    def _v7_rec(self, species, moves, ability=None, item="Leftovers"):
+        return {
+            "species": species,
+            "ability": ability,
+            "item": item,
+            "moves": moves,
+            "evs": {"hp": 85, "atk": 85, "def": 85, "spa": 85, "spd": 85, "spe": 85},
+        }
+
+    def _battler(self, name, level):
+        b = Battler()
+        b.active = Pokemon(name, level)
+        b.reserve = []
+        return b
+
+    def test_f_belly_drum_sitrus_set_is_shaved_to_an_even_max_hp(self):
+        # Eiscue L88 Belly Drum + Sitrus Berry: PS shaves 85 -> an even 274.
+        b = self._battler("eiscue", 88)
+        pkmn = b.active
+        self.assertEqual(pkmn.max_hp, 275)  # 85 EV, and ODD -> Sitrus misses
+        apply_exact_team(
+            b,
+            {
+                "eiscue": self._v7_rec(
+                    "Eiscue",
+                    ["Belly Drum", "Ice Spinner", "Liquidation", "Iron Head"],
+                    ability="Ice Face",
+                    item="Sitrus Berry",
+                )
+            },
+            is_user=False,
+        )
+        self.assertEqual(pkmn.max_hp, 274)
+        self.assertEqual(pkmn.max_hp % 2, 0)
+        self.assertTrue(pkmn.max_hp_exact)
+
+    def test_f_boots_set_is_never_shaved(self):
+        # srImmunity -> srWeakness 0 -> PS breaks out of the loop immediately.
+        b = self._battler("rabsca", 91)
+        before = b.active.max_hp
+        apply_exact_team(
+            b,
+            {
+                "rabsca": self._v7_rec(
+                    "Rabsca",
+                    ["Psychic", "Bug Buzz", "Revival Blessing", "Trick Room"],
+                    item="Heavy-Duty Boots",
+                )
+            },
+            is_user=False,
+        )
+        self.assertEqual(b.active.max_hp, before)
+        self.assertEqual(b.active.evs[0], 85)
+
+    def test_f_hp_is_carried_across_the_correction_not_recomputed(self):
+        b = self._battler("eiscue", 88)
+        pkmn = b.active
+        pkmn.hp = 138  # ~50%, as the protocol's percent display left it
+        pkmn.hp_display_pct = 50
+        pkmn.hp_display_hp = 138
+        apply_exact_team(
+            b,
+            {
+                "eiscue": self._v7_rec(
+                    "Eiscue",
+                    ["Belly Drum", "Ice Spinner", "Liquidation", "Iron Head"],
+                    ability="Ice Face",
+                    item="Sitrus Berry",
+                )
+            },
+            is_user=False,
+        )
+        self.assertEqual(pkmn.max_hp, 274)
+        # re-derived from the protocol DISPLAY against the corrected max (the
+        # low end of the band a ceil-rounded 50% covers), NOT the fraction
+        # rescale of the old estimate, which would have said 138.
+        self.assertEqual(pkmn.hp, 136)
+
+    def test_f_control_env_var_disables_the_hp_arm(self):
+        import os
+
+        os.environ["FP_CONTROL_NO_RANDBATS_HP_SHAVE"] = "1"
+        try:
+            b = self._battler("eiscue", 88)
+            apply_exact_team(
+                b,
+                {
+                    "eiscue": self._v7_rec(
+                        "Eiscue",
+                        ["Belly Drum", "Ice Spinner", "Liquidation", "Iron Head"],
+                        ability="Ice Face",
+                        item="Sitrus Berry",
+                    )
+                },
+                is_user=False,
+            )
+            self.assertEqual(b.active.max_hp, 275)
+        finally:
+            del os.environ["FP_CONTROL_NO_RANDBATS_HP_SHAVE"]
+
+    def test_f_set_species_key_folds_only_battle_and_cosmetic_formes(self):
+        # cosmetic forme (no baseSpecies, no battleOnly in fp's pokedex)
+        self.assertEqual(_randbats_set_species_key("Minior-Yellow"), "minior")
+        # battle-only forme names its set species in `battleOnly`
+        self.assertEqual(_randbats_set_species_key("Terapagos-Terastal"), "terapagos")
+        self.assertEqual(_randbats_set_species_key("Minior-Meteor"), "minior")
+        # generator-chosen formes are randbats species in their own right: their
+        # OWN types decide the Stealth Rock weakness the shave keys on
+        self.assertEqual(
+            _randbats_set_species_key("Ogerpon-Hearthflame"), "ogerponhearthflame"
+        )
+        self.assertEqual(_randbats_set_species_key("Arceus-Fire"), "arceusfire")
+        self.assertEqual(_randbats_set_species_key("Rabsca"), "rabsca")
+
+    def test_f_generator_chosen_forme_is_shaved_off_its_own_typing(self):
+        # Ogerpon-Hearthflame is Grass/Fire (Rock 2x) -> shaved to 239; folding
+        # it onto Teal's pure Grass (Rock 1x) would have left it at 240.
+        rec = self._v7_rec(
+            "Ogerpon-Hearthflame",
+            ["Ivy Cudgel", "Power Whip", "Swords Dance", "Stomping Tantrum"],
+            ability="Mold Breaker",
+            item="hearthflamemask",
+        )
+        self.assertEqual(_randbats_shaved_hp_ev(rec, 74), 77)
+        b = self._battler("ogerponhearthflame", 74)
+        apply_exact_team(b, {"ogerponhearthflame": rec}, is_user=False)
+        self.assertEqual(b.active.max_hp, 239)
+
+    def test_f_unknown_species_leaves_the_spread_alone(self):
+        self.assertIsNone(
+            _randbats_shaved_hp_ev({"species": "not-a-real-pokemon", "moves": []}, 80)
+        )
+
+
+from fp.replay.damage_membership import _fill_unrevealed_reserves  # noqa: E402
+
+
+class TestUnrevealedRosterFill(unittest.TestCase):
+    """The replay tracks only what the protocol REVEALED, so a reserve that
+    never switched in was absent from the reconstructed side and the engine
+    party was padded with maxhp-0 placeholders (poke_engine_helpers.py:349-353,
+    :437-439).  Anything that COUNTS party members then read the wrong number:
+    Beat Up throws one hit per unfainted, unstatused party member, so a side
+    holding two unrevealed mons threw 4 hits where PS threw 6.
+    """
+
+    def _rec(self, species, level, moves, ability=None, item="Leftovers"):
+        return {
+            "species": species,
+            "level": level,
+            "ability": ability,
+            "item": item,
+            "moves": moves,
+            "evs": {"hp": 85, "atk": 85, "def": 85, "spa": 85, "spd": 85, "spe": 85},
+        }
+
+    def _team(self):
+        """A v7-shaped six-mon sidecar side, keyed as `load_teams_sidecar` keys it."""
+        return {
+            "mabosstiff": self._rec("Mabosstiff", 84, ["Crunch", "Play Rough"]),
+            "exeggutor": self._rec("Exeggutor", 89, ["Giga Drain", "Psychic"]),
+            "rabsca": self._rec(
+                "Rabsca",
+                91,
+                ["Psychic", "Bug Buzz", "Revival Blessing", "Trick Room"],
+                ability="Synchronize",
+                item="Heavy-Duty Boots",
+            ),
+            "golduck": self._rec("Golduck", 88, ["Surf", "Ice Beam"]),
+            "passimian": self._rec("Passimian", 86, ["Close Combat", "U-turn"]),
+            "greattusk": self._rec("Great Tusk", 79, ["Headlong Rush", "Bulk Up"]),
+        }
+
+    def _battler(self, tracked):
+        b = Battler()
+        b.active = Pokemon(tracked[0][0], tracked[0][1])
+        b.reserve = [Pokemon(n, lv) for n, lv in tracked[1:]]
+        return b
+
+    def test_f2_unrevealed_reserves_are_materialised_to_a_full_six(self):
+        b = self._battler([("mabosstiff", 84), ("exeggutor", 89)])
+        self.assertEqual(len(b.reserve) + 1, 2)
+        apply_exact_team(b, self._team(), is_user=False)
+        party = [b.active] + b.reserve
+        self.assertEqual(len(party), 6)
+        self.assertEqual(
+            sorted(p.name for p in party),
+            ["exeggutor", "golduck", "greattusk", "mabosstiff", "passimian", "rabsca"],
+        )
+
+    def test_f2_filled_slot_is_alive_unstatused_and_full_hp(self):
+        # exactly what Beat Up's `!ally.fainted && !ally.status` filter reads --
+        # a mon that never entered the battle cannot be damaged or statused
+        b = self._battler([("mabosstiff", 84)])
+        apply_exact_team(b, self._team(), is_user=False)
+        for p in b.reserve:
+            self.assertGreater(p.max_hp, 0, p.name)
+            self.assertEqual(p.hp, p.max_hp, p.name)
+            self.assertFalse(p.fainted, p.name)
+            self.assertIsNone(p.status, p.name)
+
+    def test_f2_filled_slot_gets_the_sidecar_set_and_the_spread_arms(self):
+        b = self._battler([("mabosstiff", 84)])
+        apply_exact_team(b, self._team(), is_user=False)
+        rabsca = next(p for p in b.reserve if p.name == "rabsca")
+        self.assertEqual(rabsca.level, 91)
+        self.assertEqual(rabsca.ability, "synchronize")
+        self.assertEqual(rabsca.item, "heavydutyboots")
+        self.assertIn("revivalblessing", [m.name for m in rabsca.moves])
+        # the Trick Room / no-physical-move arms ran on the FILLED mon too
+        self.assertEqual(rabsca.stats[constants.SPEED], 86)
+        self.assertEqual(rabsca.evs[5], 0)
+        self.assertEqual(rabsca.evs[1], 0)
+
+    def test_f2_already_tracked_mons_are_never_duplicated(self):
+        b = self._battler([("mabosstiff", 84), ("rabsca", 91), ("golduck", 88)])
+        apply_exact_team(b, self._team(), is_user=False)
+        names = [p.name for p in [b.active] + b.reserve]
+        self.assertEqual(len(names), 6)
+        self.assertEqual(len(set(names)), 6)
+
+    def test_f2_a_forme_claims_its_sidecar_slot_instead_of_being_refilled(self):
+        # fp tracks the battle forme; `_match_exact_mon` resolves it onto the
+        # sidecar's set species, so that slot must not be filled a second time
+        team = {
+            "terapagos": self._rec("Terapagos", 75, ["Tera Starstorm", "Calm Mind"]),
+            "golduck": self._rec("Golduck", 88, ["Surf", "Ice Beam"]),
+        }
+        b = self._battler([("terapagosterastal", 75)])
+        apply_exact_team(b, team, is_user=False)
+        names = [p.name for p in [b.active] + b.reserve]
+        self.assertEqual(sorted(names), ["golduck", "terapagosterastal"])
+
+    def test_f2_party_is_never_grown_past_ps_six(self):
+        tracked = [
+            ("mabosstiff", 84), ("exeggutor", 89), ("rabsca", 91),
+            ("golduck", 88), ("passimian", 86), ("greattusk", 79),
+        ]
+        b = self._battler(tracked)
+        team = dict(self._team())
+        team["blissey"] = self._rec("Blissey", 85, ["Soft-Boiled", "Seismic Toss"])
+        apply_exact_team(b, team, is_user=False)
+        self.assertEqual(len(b.reserve) + 1, 6)
+        self.assertNotIn("blissey", [p.name for p in b.reserve])
+
+    def test_f2_user_side_is_never_filled(self):
+        # the user's six are in every |request|; nothing to reconstruct
+        b = self._battler([("mabosstiff", 84)])
+        apply_exact_team(b, self._team(), is_user=True)
+        self.assertEqual(b.reserve, [])
+
+    def test_f2_control_env_var_disables_the_fill(self):
+        import os
+
+        os.environ["FP_CONTROL_NO_ROSTER_FILL"] = "1"
+        try:
+            b = self._battler([("mabosstiff", 84)])
+            apply_exact_team(b, self._team(), is_user=False)
+            self.assertEqual(b.reserve, [])
+        finally:
+            del os.environ["FP_CONTROL_NO_ROSTER_FILL"]
+
+    def test_f2_a_slot_the_sidecar_does_not_fully_state_is_not_guessed(self):
+        b = self._battler([("mabosstiff", 84)])
+        team = {
+            "golduck": {"species": "Golduck", "moves": []},          # no level
+            "nosuchmon": self._rec("Not-A-Real-Pokemon", 80, []),    # unknown species
+        }
+        _fill_unrevealed_reserves(b, team)
+        self.assertEqual(b.reserve, [])
+
+
+from fp.replay.damage_membership import _fold_forme_duplicate_rows  # noqa: E402
+
+
+class TestFormeDuplicateSlotFold(unittest.TestCase):
+    """One sidecar record == one PS roster slot.
+
+    `battleOnly` marks every forme a battle can produce, TERA formes included
+    (`ogerpontealtera -> Ogerpon`, `terapagosstellar -> Terapagos`), so a
+    terastallized mon tracked under both names held two of the six slots and
+    crowded a real party member out of the reconstruction -- fresh100k arbiter
+    #1's single hard finding: Ogerpon twice, Masquerain evicted, and the
+    Intimidate of a Roar-dragged Masquerain reproducible by no branch.
+    """
+
+    def _rec(self, species, level, moves, ability=None, item="Leftovers"):
+        return {
+            "species": species,
+            "level": level,
+            "ability": ability,
+            "item": item,
+            "moves": moves,
+            "evs": {"hp": 85, "atk": 85, "def": 85, "spa": 85, "spd": 85, "spe": 85},
+        }
+
+    def _verdict_team(self):
+        return {
+            "bisharp": self._rec("Bisharp", 83, ["Sucker Punch", "Iron Head"]),
+            "ogerpon": self._rec("Ogerpon", 79, ["Ivy Cudgel", "Horn Leech"]),
+            "masquerain": self._rec("Masquerain", 87, ["Hydro Pump", "Bug Buzz"]),
+            "comfey": self._rec("Comfey", 82, ["Draining Kiss", "Calm Mind"]),
+            "hawlucha": self._rec("Hawlucha", 80, ["Close Combat", "Acrobatics"]),
+            "uxie": self._rec("Uxie", 88, ["Psychic", "Stealth Rock"]),
+        }
+
+    def _battler(self, active, bench):
+        b = Battler()
+        b.active = Pokemon(active[0], active[1])
+        b.reserve = [Pokemon(n, lv) for n, lv in bench]
+        return b
+
+    def test_f4_tera_forme_duplicate_frees_the_slot_its_twin_stole(self):
+        # the verdict's exact roster: Ogerpon under two names, Masquerain unseen
+        b = self._battler(
+            ("hawlucha", 80),
+            [("bisharp", 83), ("uxie", 88), ("ogerpon", 79),
+             ("ogerpontealtera", 79), ("comfey", 82)],
+        )
+        apply_exact_team(b, self._verdict_team(), is_user=False)
+        names = [p.name for p in [b.active] + b.reserve]
+        self.assertEqual(len(names), 6)
+        self.assertEqual(names.count("ogerpon") + names.count("ogerpontealtera"), 1)
+        self.assertIn("masquerain", names)
+
+    def test_f4_inert_duplicates_collapse_onto_the_set_species(self):
+        b = self._battler(("hawlucha", 80), [("ogerpon", 79), ("ogerpontealtera", 79)])
+        _fold_forme_duplicate_rows(b, self._verdict_team())
+        self.assertEqual([p.name for p in b.reserve], ["ogerpon"])
+
+    def test_f4_the_row_that_has_seen_the_battle_is_the_one_kept(self):
+        # a Terapagos that detailschanged while ACTIVE carries that forme's real
+        # max HP; folding must not throw it away for the canonical base row
+        team = {"terapagos": self._rec("Terapagos", 77, ["Tera Starstorm", "Calm Mind"])}
+        b = self._battler(("hawlucha", 80), [("terapagos", 77), ("terapagosterastal", 77)])
+        b.reserve[1].active_turns = 4
+        _fold_forme_duplicate_rows(b, team)
+        self.assertEqual([p.name for p in b.reserve], ["terapagosterastal"])
+
+    def test_f4_a_bench_row_for_the_active_s_own_slot_is_dropped(self):
+        team = {"terapagos": self._rec("Terapagos", 77, ["Tera Starstorm"])}
+        b = self._battler(("terapagosterastal", 77), [("terapagos", 77)])
+        _fold_forme_duplicate_rows(b, team)
+        self.assertEqual(b.reserve, [])
+        self.assertEqual(b.active.name, "terapagosterastal")
+
+    def test_f4_distinct_pokemon_are_never_folded(self):
+        b = self._battler(
+            ("hawlucha", 80),
+            [("bisharp", 83), ("uxie", 88), ("ogerpon", 79), ("comfey", 82)],
+        )
+        _fold_forme_duplicate_rows(b, self._verdict_team())
+        self.assertEqual(len(b.reserve), 4)
+
+    def test_f4_control_env_var_restores_the_duplicate(self):
+        import os
+
+        os.environ["FP_CONTROL_KEEP_FORME_DUPLICATES"] = "1"
+        try:
+            b = self._battler(
+                ("hawlucha", 80),
+                [("bisharp", 83), ("uxie", 88), ("ogerpon", 79),
+                 ("ogerpontealtera", 79), ("comfey", 82)],
+            )
+            apply_exact_team(b, self._verdict_team(), is_user=False)
+            names = [p.name for p in [b.active] + b.reserve]
+            self.assertIn("ogerpontealtera", names)
+            self.assertNotIn("masquerain", names)
+        finally:
+            del os.environ["FP_CONTROL_KEEP_FORME_DUPLICATES"]

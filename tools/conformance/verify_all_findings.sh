@@ -42,7 +42,14 @@ SPEC=(
   # incoming move; Disguise busting on a MISS)
   "147:1514558" "136:1409286" "145:1495189"
   "151:1551151" "151:1553454" "151:1555658" "152:1568570" "154:1584639" "155:1597318"
-
+  # wave J — round 9 (Beak Blast contact burn vs a fainting Cheek Pouch attacker,
+  # multi-hit hit-1 KO boundary / Weakness Policy mid-move, Endeavor onTryImmunity
+  # decision threshold / Gooey)
+  "158:1626888" "161:1655904" "166:1705356"
+  # wave K — round 10 (Disguise bust chip swallowing a boost secondary; Illusion HP
+  # transfer re-scaling an ABSOLUTE-exact certificate through the impersonated
+  # species' max HP)
+  "170:1741197" "171:1754819"
 )
 
 # DEFERRED, expected 1 soft each — kept out of SPEC so the verdict tracks what

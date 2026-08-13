@@ -5181,6 +5181,27 @@ def illusion_end(battle, split_msg):
     ):
         logger.info("Illusion ending for {}".format(side.name))
         hp_percent = float(side.active.hp) / side.active.max_hp
+        # ...but a percentage is the ONLY reading that may be re-scaled. PS renders a
+        # disguised slot's DETAILS from the illusion and its HEALTH from the REAL bearer
+        # (sim/pokemon.ts:545-553: `const health = this.getHealth()` is taken from `this`,
+        # while `details` is replaced by `this.illusion.getUpdatedDetails(...)`), so every
+        # HP statement the protocol made about this slot was a statement about the
+        # ZOROARK. A percent display survives the fraction transfer because it was
+        # converted against the impersonated species' max HP on the way IN, so dividing it
+        # back out round-trips exactly. An ABSOLUTE-exact certificate does not: its integer
+        # already IS the zoroark's HP, and re-scaling it by the impersonated species' max
+        # corrupts it whenever the two maxima differ.
+        # synth1741197 T22: Luvdisc's Endeavor certifies the slot to the attacker's exact
+        # 186 (`target.hp := attacker.hp`, fp/hp_certificate.py:688-692) while the slot
+        # wears L78 Ting-Lu's 370 max HP. The fraction transfer turned 186 into
+        # 186/370 * 235 = 118, so the revealed Zoroark entered T23 at half its true HP,
+        # Surf's 136..162 kernel killed it on every roll, Psychic never executed, and the
+        # `|-end|p1a: Luvdisc|Substitute` it really caused was in no branch.
+        hp_absolute = (
+            float(side.active.hp)
+            if hp_certificate.is_absolute_exact(side.active)
+            else None
+        )
         previous_boosts = side.active.boosts
         previous_status = side.active.status
         previous_item = side.active.item
@@ -5350,7 +5371,13 @@ def illusion_end(battle, split_msg):
         # `par` becomes unreachable).  The zoroark gets a COPY below; nothing is
         # taken away from the mon going back to reserve.
 
-        side.active.hp = hp_percent * side.active.max_hp
+        # Clamped exactly as `hp_certificate.certify` clamps its own pin
+        # (`hp = max(0, min(int(hp), max_hp))`): an absolute above the bearer's real max
+        # would mean something upstream is wrong, and clamping refuses rather than invents.
+        if hp_absolute is not None:
+            side.active.hp = max(0.0, min(hp_absolute, float(side.active.max_hp)))
+        else:
+            side.active.hp = hp_percent * side.active.max_hp
         hp_certificate.clear(side.active, "illusion HP transfer")
         side.active.boosts = previous_boosts
         side.active.status = previous_status
@@ -5929,12 +5956,15 @@ def cant(battle, split_msg):
                 )
             )
         elif side.active.rest_turns == 1:
+            # Unreachable from a correctly tracked game, but a desynced tracker
+            # must not take down the host process (b004/g3/20260812T034638 and
+            # b000/g13/20260812T065006 wedged the whole mask fleet through an
+            # exit(1) here).  Stay asleep at 1; |-curestatus| resolves it.
             logger.critical(
                 "{} has rest_turns==1 and got 'cant' from sleep".format(
                     side.active.name
                 )
             )
-            exit(1)
         else:
             side.active.sleep_turns += 1
             logger.info(
@@ -6530,6 +6560,22 @@ def transform(battle, split_msg):
     # Ditto and Heavy Slam/Low Kick BP + any stat recalc are wrong).
     side.active.transformed_into = transformed_into_name
 
+    # Rage Fist reads `pokemon.timesAttacked` off the USER (data/moves.ts:14582-14584
+    # `basePowerCallback` -> `Math.min(350, 50 + 50 * pokemon.timesAttacked)`), and
+    # transformInto OVERWRITES the transformer's own counter with the target's
+    # (sim/pokemon.ts:1314 `this.timesAttacked = pokemon.timesAttacked;`) -- it is a copy,
+    # not a merge, so whatever the transformer had accumulated is discarded. The counter
+    # itself is only ever zeroed in the Pokemon constructor (sim/pokemon.ts:471), so it
+    # survives switches on both mons and the copy is of the target's whole-battle count.
+    # MEASURED (i-00cabc96530ceb0d2 b003/g13 T41): an Imposter Ditto had been hit 4 times
+    # itself and copied an Annihilape that had been hit 2 times (Body Press / Close Combat
+    # into a Ghost print `-immune`, and PS increments only for a numeric moveDamage,
+    # sim/battle-actions.ts:990-996). PS's Rage Fist was BP 150 and dealt 186 to a 244-hp
+    # Haxorus; without this copy the engine saw times_attacked 4, BP 250, and a 276..325
+    # roll set whose MINIMUM already killed -- every branch a KO, the observed
+    # `|-boost|p1a: Haxorus|atk|2` in none of them.
+    side.active.times_attacked = transformed_into.times_attacked
+
     for mv in side.active.moves:
         mv.current_pp = 5
 
@@ -6674,6 +6720,18 @@ def update_battle(battle: Battle, msg: str):
 
 
 def process_battle_updates(battle: Battle):
+    # A block must be applied AT MOST ONCE.  If a handler raises mid-block and
+    # the caller survives (the replay/mask harnesses swallow per-chunk errors),
+    # an uncleared msg_list would be re-applied wholesale on the next |request|
+    # -- double cant/damage/PP is how the "impossible" rest_turns==1 state was
+    # actually manufactured.  Discard a partially applied block, never replay.
+    try:
+        _process_battle_updates(battle)
+    finally:
+        battle.msg_list.clear()
+
+
+def _process_battle_updates(battle: Battle):
     msg_lines = battle.msg_list
     check_speed_ranges(battle, msg_lines)
     for i, line in enumerate(msg_lines):
@@ -6781,8 +6839,6 @@ def process_battle_updates(battle: Battle):
 
         elif action == "switch" and is_opponent(battle, split_msg):
             check_heavydutyboots(battle, msg_lines[i + 1 :])
-
-    battle.msg_list.clear()
 
 
 async def async_update_battle(battle, msg):
