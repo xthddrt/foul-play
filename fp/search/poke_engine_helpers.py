@@ -3,6 +3,7 @@ import os
 
 import constants
 from data import pokedex
+from data.pkmn_sets import RandomBattleTeamDatasets
 from fp.battle import Battle, Pokemon, Battler, LastUsedMove
 
 from poke_engine import (
@@ -139,6 +140,26 @@ POKE_ENGINE_SUPPORTS_STATS_RAISED = hasattr(PokeEngineSide, "stats_raised")
 POKE_ENGINE_SUPPORTS_LAST_CONSUMED_ITEM = hasattr(
     PokeEnginePokemon, "last_consumed_item"
 )
+
+# same wheel-compat detection for the `reveal_mask` field (PKNN v7). The engine
+# derives the 14 R_* reveal features per mon from this byte plus leaf state
+# (genx/evaluate_nn.rs::encode_reveal); without it every live eval runs with
+# R_MASK_VALID=0, a regime that appears in 0% of v7 training data
+# (V7_MASK_AUDIT.md: +0.0035 nats value CE, policy top-1 flips on 16-23% of
+# states). Older wheels reject the kwarg, so it is only sent when supported
+# AND nonzero - unannotated paths (replay checker, damage membership) keep
+# constructing byte-identical states.
+POKE_ENGINE_SUPPORTS_REVEAL_MASK = hasattr(PokeEnginePokemon, "reveal_mask")
+
+# PKNN v7 reveal-mask bits - MUST match poke-engine/src/state.rs (Pokemon field
+# 36) and valuenet/reveal_masks.py, the training-data producer. RM_VALID is the
+# "a producer actually derived this mask" bit; an all-zero byte means "mask
+# unavailable", NOT "nothing revealed" (V7_ENCODER_SPEC.md 2.2).
+RM_ITEM = 0x01
+RM_ABILITY = 0x02
+RM_VALID = 0x04
+RM_MOVE0 = 0x08  # << slot i for move slot i (engine slot order)
+RM_TERA = 0x80
 
 # same wheel-compat detection for the `active_move_actions` field (PS
 # pokemon.activeMoveActions, sim/pokemon.ts:245-255: move actions taken since
@@ -317,6 +338,26 @@ def pokemon_to_poke_engine_pkmn(
         # protocol parser mirrors that on the pkmn. getattr so older pickles
         # safely default to a fresh Fake Out window
         extra_kwargs["active_move_actions"] = getattr(pkmn, "active_move_actions", 0)
+    if POKE_ENGINE_SUPPORTS_REVEAL_MASK:
+        # PKNN v7: `reveal_mask` is set by annotate_reveal_masks on the ROOT
+        # battle each decision (before world sampling destroys the
+        # known-vs-sampled distinction) and rides the deepcopy into every
+        # sampled world. Mons never annotated (replay checker, damage paths,
+        # sampler fill-ins on non-annotated battles) default to 0 = "no mask
+        # supplied" and the kwarg is omitted entirely - those paths construct
+        # exactly as before this field existed.
+        reveal_mask = getattr(pkmn, "reveal_mask", 0)
+        if reveal_mask:
+            # The move bits are per ENGINE SLOT, and the slot order is only
+            # final here (populate_pkmn_from_set rebuilds `pkmn.moves` in the
+            # sampled set's order; engine_move_window may drop slots), so map
+            # the observed-move NAMES to slots at conversion time rather than
+            # freezing slot indices at annotation time.
+            observed = getattr(pkmn, "reveal_mask_moves", ())
+            for i, m in enumerate(pkmn_moves[:4]):
+                if m.id in observed:
+                    reveal_mask |= RM_MOVE0 << i
+            extra_kwargs["reveal_mask"] = reveal_mask & 0xFF
 
     return PokeEnginePokemon(
         id=species_id,
@@ -350,6 +391,126 @@ def get_dummy_poke_engine_pkmn():
     # maxhp == 0 marks this as an empty party slot (not a fainted pkmn)
     # so the engine never treats it as a Revival Blessing target
     return PokeEnginePokemon(id="pikachu", level=1, hp=0, maxhp=0)
+
+
+def _reveal_knowledge_bits(pkmn, item_known, abil_known, tera_known):
+    """RM_* byte (move bits excluded) for one mon from announced knowledge plus
+    the deduction-to-certainty channel.
+
+    IDENTICAL rule to valuenet/reveal_masks.py::_knowledge, the v7 training-data
+    producer: an attribute is KNOWN when the candidate set collapsed to exactly
+    one - announced OR deduced (V7_ENCODER_SPEC.md 4.2). The collapse reads
+    `get_all_remaining_sets`, the same object the determinizer samples from, so
+    the mask and the sampler can never disagree about what is a guess.
+    """
+    if not (item_known and abil_known and tera_known):
+        try:
+            rem = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn) or []
+        except Exception:
+            rem = []
+        if rem:
+            item_known = item_known or len({s.pkmn_set.item for s in rem}) == 1
+            abil_known = abil_known or len({s.pkmn_set.ability for s in rem}) == 1
+            tera_known = tera_known or len({s.pkmn_set.tera_type for s in rem}) == 1
+    mask = RM_VALID
+    if item_known:
+        mask |= RM_ITEM
+    if abil_known:
+        mask |= RM_ABILITY
+    if tera_known:
+        mask |= RM_TERA
+    return mask
+
+
+def annotate_reveal_masks(battle: Battle):
+    """Stamp PKNN v7 `reveal_mask` knowledge onto every mon of the ROOT battle.
+
+    Must run BEFORE world sampling: prepare_random_battles deepcopies the battle
+    and fills every unknown, after which "known" and "sampled" are
+    indistinguishable. The attributes ride the deepcopy into every sampled
+    world, and pokemon_to_poke_engine_pkmn turns them into the engine byte
+    (adding the move bits against the final engine slot order there).
+
+    Semantics per V7_ENCODER_SPEC.md: THEIR mask is a direct read of our
+    tracker; OUR mask is what the opponent knows of us, modeled as a rational
+    inferrer running the same candidate-set collapse over our PUBLIC evidence
+    (the mons of ours they have seen, the moves we have used = pp spent,
+    fp/infostate.py:229's own rule). Channels the engine derives from leaf
+    state on its own (consumed item, terastallized, pp-spent move bits) are
+    NOT duplicated here - encode_reveal ORs them in.
+
+    Stated approximation, both one-directional and safe per the spec: our-side
+    item/ability announcements (Leftovers pings, ability activations) are not
+    tracked for our own side (fp/infostate.py gap list), so the mask can only
+    UNDER-state what the opponent was told - never claims knowledge that does
+    not exist. A mon the opponent never saw is exactly RM_VALID: no knowledge,
+    explicitly distinct from "no mask supplied" (= 0).
+    """
+    # marks this battle's sides as mask-carrying so _padded_party can give
+    # later sampler fill-ins RM_VALID instead of "no mask"
+    battle.user.reveal_masks_annotated = True
+    battle.opponent.reveal_masks_annotated = True
+
+    for pkmn in [battle.opponent.active] + list(battle.opponent.reserve):
+        if pkmn is None or not pkmn.name:
+            continue
+        try:
+            if not getattr(pkmn, "revealed", True):
+                pkmn.reveal_mask = RM_VALID
+                pkmn.reveal_mask_moves = frozenset()
+                continue
+            pkmn.reveal_mask = _reveal_knowledge_bits(
+                pkmn,
+                # `item is None` is KNOWLEDGE (consumed / knocked off = known
+                # to hold nothing); only UNKNOWN_ITEM is ignorance
+                pkmn.item != constants.UNKNOWN_ITEM,
+                pkmn.ability is not None,
+                pkmn.tera_type is not None,
+            )
+            # every tracked opponent move was observed on the wire; keep NAMES,
+            # not slot indices - the sampled set reorders the slots
+            pkmn.reveal_mask_moves = frozenset(m.name for m in pkmn.moves)
+        except Exception:
+            logger.warning(
+                "reveal_mask annotation failed for opponent %s", pkmn.name,
+                exc_info=True,
+            )
+            pkmn.reveal_mask = RM_VALID
+            pkmn.reveal_mask_moves = frozenset()
+
+    for pkmn in [battle.user.active] + list(battle.user.reserve):
+        if pkmn is None or not pkmn.name:
+            continue
+        try:
+            if not getattr(pkmn, "revealed", True):
+                # never entered the field: the opponent has no knowledge of it
+                pkmn.reveal_mask = RM_VALID
+                pkmn.reveal_mask_moves = frozenset()
+                continue
+            used = frozenset(
+                m.name for m in pkmn.moves if m.current_pp < m.max_pp
+            )
+            # the opponent's view of our mon: species+level public, attributes
+            # unknown except what our used moves let their candidate set deduce
+            public_view = Pokemon(pkmn.name, pkmn.level)
+            for name in used:
+                public_view.add_move(name)
+            pkmn.reveal_mask = _reveal_knowledge_bits(
+                public_view,
+                # a Knock Off announces our item to the table; a CONSUMED item
+                # is handled by the engine via last_consumed_item
+                bool(getattr(pkmn, "knocked_off", False)),
+                False,
+                False,
+            )
+            pkmn.reveal_mask_moves = used
+        except Exception:
+            logger.warning(
+                "reveal_mask annotation failed for user %s", pkmn.name,
+                exc_info=True,
+            )
+            pkmn.reveal_mask = RM_VALID
+            pkmn.reveal_mask_moves = frozenset()
 
 
 def battler_has_revive_prompt(battler: Battler) -> bool:
@@ -423,6 +584,20 @@ def _padded_party(battler: Battler):
             if p.hp <= 0 and p.max_hp > 0:
                 tera_marked_index = i
                 break
+
+    # PKNN v7: a sampler FILL-IN (a never-seen mon invented by
+    # populate_randombattle_unrevealed_pkmn AFTER annotate_reveal_masks ran on
+    # the root) carries no mask attribute. On an annotated battler that mon
+    # means "we have seen nothing of it" = RM_VALID exactly - NOT 0, which
+    # would claim "no mask was supplied" and put precisely the unseen mons
+    # back in the R_MASK_VALID=0 regime the wiring exists to leave. On a
+    # never-annotated battler (replay checker, damage paths) the flag is
+    # absent and masks stay 0 everywhere, as before.
+    if getattr(battler, "reveal_masks_annotated", False):
+        for p in party:
+            if not hasattr(p, "reveal_mask"):
+                p.reveal_mask = RM_VALID
+                p.reveal_mask_moves = frozenset()
 
     # party[0] is the active: it is the only slot `last_used_move` can name
     pokemon = [

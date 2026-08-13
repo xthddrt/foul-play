@@ -1,13 +1,16 @@
 import unittest
 
 import constants
-from fp.battle import Battler, LastUsedMove, Pokemon
+from fp.battle import Battle, Battler, LastUsedMove, Pokemon
 from fp.search.poke_engine_helpers import (
+    annotate_reveal_masks,
+    battle_to_poke_engine_state,
     POKE_ENGINE_SUPPORTS_DISABLE_DURATION,
     POKE_ENGINE_SUPPORTS_ILLUSION_BROKEN,
     POKE_ENGINE_SUPPORTS_KNOWN,
     POKE_ENGINE_SUPPORTS_LAST_CONSUMED_ITEM,
     POKE_ENGINE_SUPPORTS_REVEALED,
+    POKE_ENGINE_SUPPORTS_REVEAL_MASK,
     POKE_ENGINE_SUPPORTS_REVIVAL_BLESSING,
     POKE_ENGINE_SUPPORTS_TIMES_ATTACKED,
     POKE_ENGINE_SUPPORTS_TIMES_REVIVED,
@@ -695,3 +698,165 @@ class TestBaseAbilitySeeding(unittest.TestCase):
 
         # the engine renders its NONE ability as "None"
         self.assertEqual("None", engine_pkmn.base_ability)
+
+
+class TestRevealMaskAnnotationAndWiring(unittest.TestCase):
+    """PKNN v7 reveal-mask wiring: annotate_reveal_masks on the root battle ->
+    Pokemon.reveal_mask/.reveal_mask_moves attributes -> engine field 36.
+
+    Expected ints are HAND-COMPUTED from the bit table in
+    poke-engine/src/state.rs / valuenet/reveal_masks.py:
+    ITEM=0x01 ABILITY=0x02 VALID=0x04 MOVE_i=0x08<<i TERA=0x80.
+
+    The dataset fixture has exactly two pincurchin sets:
+      S1: terrainextender / electricsurge / tera electric,
+          moves risingvoltage, thunderbolt, surf, recover
+      S2: choicespecs / lightningrod / tera grass,
+          moves thunderbolt, surf, voltswitch, scald
+    so item/ability/tera all stay ambiguous until evidence eliminates a set.
+    """
+
+    def setUp(self):
+        from data.pkmn_sets import RandomBattleTeamDatasets
+
+        RandomBattleTeamDatasets.__init__()
+        RandomBattleTeamDatasets.pkmn_mode = "gen9randombattle"
+        RandomBattleTeamDatasets.raw_pkmn_sets = {
+            "pincurchin": {
+                "82,terrainextender,electricsurge,risingvoltage,thunderbolt,surf,recover,electric": 10,
+                "82,choicespecs,lightningrod,thunderbolt,surf,voltswitch,scald,grass": 5,
+            }
+        }
+        RandomBattleTeamDatasets._initialize_pkmn_sets()
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
+
+        self.battle = Battle("test-reveal-masks")
+        self.opp = Pokemon("pincurchin", 82)
+        self.opp.revealed = True
+        self.battle.opponent.active = self.opp
+        self.me = Pokemon("pincurchin", 82)
+        self.me.revealed = True
+        # our OWN attributes are privately known in full - the mask must not
+        # leak them (it encodes what the OPPONENT knows of us)
+        self.me.item = "terrainextender"
+        self.me.ability = "electricsurge"
+        self.me.tera_type = "electric"
+        for mv in ("risingvoltage", "thunderbolt", "surf", "recover"):
+            self.me.add_move(mv)
+        self.battle.user.active = self.me
+
+    def test_opponent_nothing_known_is_valid_only(self):
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04, self.opp.reveal_mask)
+        self.assertEqual(frozenset(), self.opp.reveal_mask_moves)
+
+    def test_opponent_announced_item_outside_dataset_sets_item_bit_only(self):
+        # announced knowledge is read off the tracker sentinels even when the
+        # dataset knows nothing (no set carries leftovers -> no collapse)
+        self.opp.item = "leftovers"
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04 | 0x01, self.opp.reveal_mask)
+
+    def test_opponent_item_none_counts_as_knowledge(self):
+        # `item is None` means known-to-hold-NOTHING (consumed/knocked off):
+        # that is knowledge, only UNKNOWN_ITEM is ignorance
+        self.opp.item = None
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04 | 0x01, self.opp.reveal_mask)
+
+    def test_opponent_observed_move_collapses_candidate_set(self):
+        # risingvoltage exists only in S1 -> item+ability+tera all deduced to
+        # certainty: announced-only would be wrong (V7_ENCODER_SPEC.md 4.2)
+        self.opp.add_move("risingvoltage")
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04 | 0x01 | 0x02 | 0x80, self.opp.reveal_mask)
+        self.assertEqual(frozenset(["risingvoltage"]), self.opp.reveal_mask_moves)
+
+    def test_opponent_never_seen_is_exactly_valid(self):
+        self.opp.revealed = False
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04, self.opp.reveal_mask)
+
+    def test_user_private_knowledge_does_not_leak_into_mask(self):
+        # us knowing our own item/ability/tera is NOT the opponent knowing it:
+        # with no public evidence the mask stays bare VALID
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04, self.me.reveal_mask)
+        self.assertEqual(frozenset(), self.me.reveal_mask_moves)
+
+    def test_user_unrevealed_mon_is_exactly_valid(self):
+        self.me.revealed = False
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04, self.me.reveal_mask)
+
+    def test_user_used_move_is_public_and_collapses_their_view(self):
+        # pp spent IS "the opponent has seen this move" (fp/infostate.py:229);
+        # risingvoltage eliminates S2 for the opponent's rational inference,
+        # so they now know our item/ability/tera too
+        self.me.moves[0].current_pp -= 1
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04 | 0x01 | 0x02 | 0x80, self.me.reveal_mask)
+        self.assertEqual(frozenset(["risingvoltage"]), self.me.reveal_mask_moves)
+
+    def test_user_knocked_off_item_is_public(self):
+        self.me.knocked_off = True
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x04 | 0x01, self.me.reveal_mask)
+
+    def test_conversion_without_annotation_leaves_mask_zero(self):
+        if not POKE_ENGINE_SUPPORTS_REVEAL_MASK:
+            self.skipTest("wheel lacks reveal_mask")
+        pkmn = Pokemon("pincurchin", 82)
+        pkmn.item = "leftovers"
+        engine_pkmn = pokemon_to_poke_engine_pkmn(pkmn)
+        # 0 = "no mask supplied": the replay checker / damage paths must keep
+        # constructing byte-identical states
+        self.assertEqual(0, engine_pkmn.reveal_mask)
+
+    def test_conversion_maps_observed_move_names_to_final_engine_slots(self):
+        if not POKE_ENGINE_SUPPORTS_REVEAL_MASK:
+            self.skipTest("wheel lacks reveal_mask")
+        self.opp.add_move("risingvoltage")
+        annotate_reveal_masks(self.battle)
+        self.assertEqual(0x87, self.opp.reveal_mask)
+        # simulate the sampled world: populate rebuilt pkmn.moves in the
+        # SET's order, so the observed move landed in a different slot
+        self.opp.moves = []
+        for mv in ("surf", "thunderbolt", "recover", "risingvoltage"):
+            self.opp.add_move(mv)
+        self.opp.item = "terrainextender"
+        self.opp.ability = "electricsurge"
+        engine_pkmn = pokemon_to_poke_engine_pkmn(self.opp)
+        # base 0x87 plus MOVE bit for slot 3 (0x08 << 3 = 0x40) = 0xC7; the
+        # unobserved sampled moves must NOT get bits
+        self.assertEqual(0x87 | 0x40, engine_pkmn.reveal_mask)
+
+    def test_sampler_fill_in_on_annotated_battler_gets_valid_not_zero(self):
+        if not POKE_ENGINE_SUPPORTS_REVEAL_MASK:
+            self.skipTest("wheel lacks reveal_mask")
+        annotate_reveal_masks(self.battle)
+        # a never-seen mon invented by the world sampler AFTER annotation:
+        # "we have seen nothing of it" = RM_VALID, never 0 = "no mask"
+        fill_in = Pokemon("pawmot", 82)
+        fill_in.item = "leftovers"
+        fill_in.ability = "ironfist"
+        self.battle.opponent.reserve.append(fill_in)
+        state = battle_to_poke_engine_state(self.battle)
+        self.assertEqual(0x04, state.side_two.pokemon[1].reveal_mask)
+
+    def test_masks_survive_deepcopy_and_serialize_into_field_36(self):
+        if not POKE_ENGINE_SUPPORTS_REVEAL_MASK:
+            self.skipTest("wheel lacks reveal_mask")
+        from copy import deepcopy
+
+        self.opp.item = None  # knocked off: ITEM bit
+        annotate_reveal_masks(self.battle)
+        world = deepcopy(self.battle)  # what prepare_random_battles does
+        world.opponent.active.item = "choicespecs"  # determinizer fill
+        state = battle_to_poke_engine_state(world)
+        self.assertEqual(0x05, state.side_two.pokemon[0].reveal_mask)
+        self.assertEqual(0x04, state.side_one.pokemon[0].reveal_mask)
+        # field 36 of the serialized mon is the byte the engine's NN encoder
+        # and every downstream worker parse
+        side_two_mon0 = state.to_string().split("/")[1].split("=")[0]
+        self.assertEqual("5", side_two_mon0.split(",")[36])

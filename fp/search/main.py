@@ -14,7 +14,10 @@ from .random_battles import prepare_random_battles
 
 from poke_engine import State as PokeEngineState, monte_carlo_tree_search, MctsResult
 
-from fp.search.poke_engine_helpers import battle_to_poke_engine_state
+from fp.search.poke_engine_helpers import (
+    annotate_reveal_masks,
+    battle_to_poke_engine_state,
+)
 
 # re-exports: the worker-pool lifecycle lives in fp.search.executor, but
 # fp.search.main remains the public import path
@@ -335,6 +338,14 @@ def find_best_move(battle: Battle) -> str:
         opp_tera_used = False
 
     if battle.battle_type == BattleType.RANDOM_BATTLE:
+        # PKNN v7 reveal masks: stamped on the ROOT battle BEFORE
+        # prepare_random_battles deepcopies it, because world sampling is
+        # exactly what erases the known-vs-sampled distinction the mask
+        # encodes. The per-mon attributes ride every deepcopy; the engine
+        # conversion turns them into Pokemon field 36. Gated to randbats:
+        # v7 training data is gen9randombattle only, and an unannotated
+        # battle keeps the pre-v7 "mask unavailable" encoding.
+        annotate_reveal_masks(battle)
         num_battles, search_time_per_battle = search_time_num_battles_randombattles(
             battle
         )
