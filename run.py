@@ -105,7 +105,13 @@ async def run_foul_play():
                 FoulPlayConfig.pokemon_format, FoulPlayConfig.room_name
             )
         elif FoulPlayConfig.bot_mode == BotModes.search_ladder:
-            await ps_websocket_client.search_for_match(FoulPlayConfig.pokemon_format)
+            # Ladder searches are owned by the battle-start watchdog
+            # (fp.run_battle.get_battle_tag_and_opponent). Searching blindly
+            # here raced the login-time |updatesearch| games push: when the
+            # account already had a live game (a ghost from the previous
+            # session), the search double-queued it and matched a second,
+            # never-played battle (2664176854 timer loss, 2026-08-13).
+            pass
         else:
             raise ValueError("Invalid Bot Mode: {}".format(FoulPlayConfig.bot_mode))
 

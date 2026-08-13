@@ -261,6 +261,13 @@ class _FoulPlayConfig:
             "reach to be considered by --tera-gate-per-mon. Default 0.5.",
         )
         parser.add_argument(
+            "--tera-gate-opp-tera-bonus",
+            type=float,
+            default=None,
+            help="Extra margin added to the tera gate floor while the opponent "
+            "still holds THEIR tera. Default 0.002.",
+        )
+        parser.add_argument(
             "--search-parallelism",
             type=int,
             default=1,
@@ -520,6 +527,8 @@ class _FoulPlayConfig:
             self.tera_gate_score_per_mon = args.tera_gate_per_mon
         if args.tera_gate_visit_frac is not None:
             self.tera_gate_visit_frac = args.tera_gate_visit_frac
+        if args.tera_gate_opp_tera_bonus is not None:
+            self.tera_gate_opp_tera_bonus = args.tera_gate_opp_tera_bonus
         self.websocket_uri = args.websocket_uri
         self.username = args.ps_username
         self.password = args.ps_password

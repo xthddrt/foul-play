@@ -23,6 +23,13 @@ from fp.websocket_client import PSWebsocketClient
 
 logger = logging.getLogger(__name__)
 
+# --- battle-start tunables (module-level so tests can compress time) ---
+SEARCH_RECV_TIMEOUT_S = 30  # watchdog wakes at least this often
+SEARCH_STALE_S = 45  # in-flight search unconfirmed this long => assume dead
+SEARCH_STALE_JITTER_S = 45  # spread fleet re-searches (shared IP budget)
+RESCUE_JOIN_S = 60  # single-process: live game but no |init| => /join it
+BOOTSTRAP_TIMEOUT_S = 240  # claim -> first choice sent must finish within this
+
 
 def format_decision(battle, decision):
     # Formats a decision for communication with Pokemon-Showdown
@@ -245,68 +252,141 @@ def claim_battle(battle_tag):
         return False
 
 
+def _first_game_tag(updatesearch_payload, pokemon_format):
+    # first live battle of OUR format from an |updatesearch| payload
+    try:
+        games = json.loads(updatesearch_payload.strip()).get("games") or {}
+    except ValueError:
+        return None
+    prefix = "battle-{}-".format(pokemon_format)
+    for tag in games:
+        if tag.startswith(prefix):
+            return tag
+    return None
+
+
 async def get_battle_tag_and_opponent(ps_websocket_client: PSWebsocketClient):
-    # --- search watchdog (ladder only). The logic, per the server's own view
-    # (never our beliefs): we are NOT in a game (this loop is the waiting
-    # state) -> is an active search CONFIRMED recently? -> if not, (re)start
-    # one. |updatesearch| carries both states and is pushed on every change;
-    # a 30s heartbeat covers pushes that never arrive (throttled /search,
-    # messages eaten elsewhere). Re-searching while already searching is
-    # harmless (an "already searching" popup). A guest demotion (sibling
-    # login or the user logging the account out in a browser) re-auths first.
-    # Observed 2026-08-08 on the AWS canary: without this, cancelled searches
-    # deadlocked both endodontist slots in "searching" forever.
-    last_confirmed = time.time()
+    """Wait for the next battle |init| and claim it; in ladder mode this loop
+    also OWNS every /search (run.py no longer fires one at startup — that send
+    raced the login-time |updatesearch| push and double-queued the account
+    when it already had a live game: the 2664176854 ghost loss, 2026-08-13).
+
+    The server's |updatesearch| pushes ({searching, games}) are the source of
+    truth; they arrive on login, after every game, and on every state change:
+      - our format in `searching` -> our search is alive, do nothing
+      - idle (no search, games:null) and nothing of ours in flight -> search
+      - idle but OUR search was just in flight -> MATCH FORMING: do NOT
+        re-search. This transient is pushed the instant a match is found,
+        before the battle room exists. The old watchdog re-armed right here
+        whenever the queue had taken >20s, double-queuing the account; the
+        second search matched a "ghost" battle nobody ever played (timer
+        losses 2664147697/2664150396/2664156364/2664176268/2664176854 on
+        2026-08-13 — each ghost id sits just above the real game's).
+        Only if the in-flight search stays unconfirmed for SEARCH_STALE_S
+        (cancelled server-side, push lost — the 2026-08-08 endodontist
+        deadlock class) is it re-armed, jittered across fleet slots
+        (2026-08-09: synchronized retries saturated the shared IP budget).
+      - games active with no search (single-process): OUR battle — its
+        |init|/rejoin dump normally follows within seconds; if it never comes
+        (a rotting game from a dead session), /join it to force the dump.
+    A guest demotion (sibling login or a browser logout) re-auths and lets
+    the server's next push decide.
+    """
+    armed = False  # a /search of ours is believed in-flight
+    armed_mono = 0.0
+    entry_mono = time.monotonic()
+    live_game_tag = None
+    rescue_attempted = False
+    fleet = bool(os.environ.get("FP_CLAIM_DIR"))
+
+    async def _search():
+        nonlocal armed, armed_mono
+        await ps_websocket_client.search_for_match(FoulPlayConfig.pokemon_format)
+        armed = True
+        armed_mono = time.monotonic()
+
     while True:
         try:
             msg = await asyncio.wait_for(
-                ps_websocket_client.receive_message(), timeout=30
+                ps_websocket_client.receive_message(), timeout=SEARCH_RECV_TIMEOUT_S
             )
         except asyncio.TimeoutError:
             msg = None
 
         if FoulPlayConfig.bot_mode == BotModes.search_ladder:
-            if msg is None:
-                # jittered: synchronized 30s retries from 30 idle slots kept
-                # the shared IP's 12-preps/3min budget saturated after a mass
-                # boot (2026-08-09), so no search could ever get through
-                if time.time() - last_confirmed > 30 + random.uniform(0, 45):
-                    await ps_websocket_client.search_for_match(
-                        FoulPlayConfig.pokemon_format
-                    )
-                    last_confirmed = time.time()
-                continue
-            if "|updateuser|" in msg:
+            if msg is not None and "|updateuser|" in msg:
                 fields = msg.split("|updateuser|")[1].split("|")
                 named = fields[1].strip() if len(fields) > 1 else "1"
                 if named == "0":
+                    # the demotion also cancelled the account's searches
                     await ps_websocket_client.relogin()
-                    await ps_websocket_client.search_for_match(
-                        FoulPlayConfig.pokemon_format
-                    )
-                    last_confirmed = time.time()
+                    armed = False
                     continue
-            if "|updatesearch|" in msg:
-                # Only OUR format's pending search counts as confirmation:
-                # with mixed-format slots on one account (blitz + regular),
-                # a sibling's blitz search must not convince a regular slot
-                # that its own search is alive. The searching list is the
-                # part before "games".
-                searching_part = msg.split("|updatesearch|", 1)[1].split('"games"')[0]
+
+            state = None
+            if msg is not None and "|updatesearch|" in msg:
+                payload = msg.split("|updatesearch|", 1)[1]
+                # Only OUR format counts: with mixed-format slots on one
+                # account (blitz + regular), a sibling's blitz search must
+                # not convince a regular slot its own search is alive.
+                searching_part = payload.split('"games"')[0]
                 if '"{}"'.format(FoulPlayConfig.pokemon_format) in searching_part:
-                    last_confirmed = time.time()
-                elif (
-                    '"searching":[]' in msg
-                    and '"games":null' in msg
-                    and time.time() - last_confirmed > 20
-                ):
-                    # account fully idle with no search: re-arm immediately
-                    await ps_websocket_client.search_for_match(
-                        FoulPlayConfig.pokemon_format
+                    state = "searching"
+                    armed = True  # adopt: it is our account's search
+                    armed_mono = time.monotonic()
+                elif '"games":null' in payload:
+                    state = "idle"
+                    live_game_tag = None
+                else:
+                    state = "in_game"
+                    if not fleet:
+                        # single-process: a live game with no search is OURS
+                        # to play (fleet slots see sibling games here and must
+                        # keep searching; the claim layer sorts ownership out)
+                        live_game_tag = (
+                            _first_game_tag(payload, FoulPlayConfig.pokemon_format)
+                            or live_game_tag
+                        )
+
+            now = time.monotonic()
+            if state == "searching":
+                pass
+            elif (
+                state == "idle" or (fleet and state == "in_game")
+            ) and not armed:
+                await _search()
+            elif (
+                armed
+                and live_game_tag is None
+                and now - armed_mono
+                > SEARCH_STALE_S + random.uniform(0, SEARCH_STALE_JITTER_S)
+            ):
+                # in-flight search unconfirmed for too long: assume it died
+                # (an "already searching" popup is harmless if it did not)
+                await _search()
+            elif (
+                not armed
+                and state is None
+                and live_game_tag is None
+                and now - entry_mono > SEARCH_RECV_TIMEOUT_S
+            ):
+                # never saw an |updatesearch| at all: fail open, don't idle out
+                await _search()
+
+            if (
+                live_game_tag is not None
+                and not rescue_attempted
+                and now - entry_mono > RESCUE_JOIN_S
+            ):
+                logger.warning(
+                    "Live unplayed game {} — joining to force the room dump".format(
+                        live_game_tag
                     )
-                    last_confirmed = time.time()
-                    continue
-        elif msg is None:
+                )
+                await ps_websocket_client.join_room(live_game_tag)
+                rescue_attempted = True
+
+        if msg is None:
             continue
 
         split_msg = msg.split("|")
@@ -324,9 +404,7 @@ async def get_battle_tag_and_opponent(ps_websocket_client: PSWebsocketClient):
                 logger.info("Claimed elsewhere, skipping: {}".format(battle_tag))
                 await ps_websocket_client.leave_room_now(battle_tag)
                 if FoulPlayConfig.bot_mode == BotModes.search_ladder:
-                    await ps_websocket_client.search_for_match(
-                        FoulPlayConfig.pokemon_format
-                    )
+                    await _search()
                 continue
             user_name = FoulPlayConfig.username
             opponent_name = (
@@ -341,43 +419,61 @@ async def get_battle_tag_and_opponent(ps_websocket_client: PSWebsocketClient):
             if os.environ.get("FP_CLAIM_DIR"):
                 await ps_websocket_client.send_message("", ["/cancelsearch"])
             logger.info("Initialized {} against: {}".format(battle_tag, opponent_name))
-            return battle_tag, opponent_name
+            # the msg is returned too: when this connection was joined to an
+            # ALREADY-RUNNING battle (login while the account had a live
+            # game), this |init| is the full room-history dump and carries
+            # the |player|/|start block the bootstrap needs
+            return battle_tag, opponent_name, msg
 
 
 async def start_battle_common(
-    ps_websocket_client: PSWebsocketClient, pokemon_battle_type
+    ps_websocket_client: PSWebsocketClient,
+    pokemon_battle_type,
+    battle_tag,
+    opponent_name,
+    msg,
 ):
-    battle_tag, opponent_name = await get_battle_tag_and_opponent(ps_websocket_client)
-    if FoulPlayConfig.log_to_file:
-        FoulPlayConfig.file_log_handler.do_rollover(
-            "{}_{}.log".format(battle_tag, opponent_name)
-        )
-
     battle = Battle(battle_tag)
     battle.opponent.account_name = opponent_name
     battle.pokemon_format = pokemon_battle_type
     battle.generation = pokemon_battle_type[:4]
 
-    # wait until the opponent's identifier is received. This will be `p1` or `p2`.
-    #
-    # e.g.
-    # '>battle-gen9randombattle-44733
-    # |player|p1|OpponentName|2|'
+    # Find the opponent's |player| line ('p1' or 'p2'), e.g.
+    # '|player|p1|OpponentName|2|'. It is NOT always a future message: when
+    # this connection was joined to an already-running battle, the |init| in
+    # `msg` is the room-history dump and already CONTAINS the player lines
+    # (and the |start block) — waiting for fresh messages then starves
+    # forever (2664176268, 2026-08-13: 24 min wedged at turn 1, timer loss).
+    # So the current msg is examined first, and the parse is line-based with
+    # an exact name match: substring matching once latched onto
+    # '|player|p2|<us>|...\n|inactive|... (requested by <opponent>)' and
+    # assigned us the wrong side.
     # Tag-filtered: with multiple battles on one account, another battle's
     # |player| line must not initialize this one.
     while True:
+        if not (msg.startswith(">battle") and battle.battle_tag not in msg):
+            player_line = None
+            for line in msg.split("\n"):
+                parts = line.split("|")
+                if (
+                    len(parts) > 3
+                    and parts[1] == "player"
+                    and parts[2].strip() in constants.ID_LOOKUP
+                    and parts[3].strip() == battle.opponent.account_name
+                ):
+                    player_line = parts
+                    break
+            if player_line is not None:
+                battle.opponent.name = player_line[2].strip()
+                battle.user.name = constants.ID_LOOKUP[battle.opponent.name]
+                # |player|p1|Name|avatar|rating - rating present on ladder games
+                battle.opponent.account_rating = (
+                    player_line[5].strip()
+                    if len(player_line) > 5 and player_line[5].strip()
+                    else None
+                )
+                break
         msg = await ps_websocket_client.receive_message()
-        if msg.startswith(">battle") and battle.battle_tag not in msg:
-            continue
-        if "|player|" in msg and battle.opponent.account_name in msg:
-            parts = msg.split("|")
-            battle.opponent.name = parts[2]
-            battle.user.name = constants.ID_LOOKUP[battle.opponent.name]
-            # |player|p1|Name|avatar|rating - rating present on ladder games
-            battle.opponent.account_rating = (
-                parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
-            )
-            break
 
     return battle, msg
 
@@ -401,9 +497,15 @@ async def get_first_request_json(
 
 
 async def start_random_battle(
-    ps_websocket_client: PSWebsocketClient, pokemon_battle_type
+    ps_websocket_client: PSWebsocketClient,
+    pokemon_battle_type,
+    battle_tag,
+    opponent_name,
+    first_msg,
 ):
-    battle, msg = await start_battle_common(ps_websocket_client, pokemon_battle_type)
+    battle, msg = await start_battle_common(
+        ps_websocket_client, pokemon_battle_type, battle_tag, opponent_name, first_msg
+    )
     battle.battle_type = BattleType.RANDOM_BATTLE
     RandomBattleTeamDatasets.initialize(pokemon_battle_type)
 
@@ -455,9 +557,16 @@ async def start_random_battle(
 
 
 async def start_standard_battle(
-    ps_websocket_client: PSWebsocketClient, pokemon_battle_type, team_dict
+    ps_websocket_client: PSWebsocketClient,
+    pokemon_battle_type,
+    team_dict,
+    battle_tag,
+    opponent_name,
+    first_msg,
 ):
-    battle, msg = await start_battle_common(ps_websocket_client, pokemon_battle_type)
+    battle, msg = await start_battle_common(
+        ps_websocket_client, pokemon_battle_type, battle_tag, opponent_name, first_msg
+    )
     battle.user.team_dict = team_dict
     if "battlefactory" in pokemon_battle_type:
         battle.battle_type = BattleType.BATTLE_FACTORY
@@ -544,12 +653,49 @@ async def start_standard_battle(
 
 
 async def start_battle(ps_websocket_client, pokemon_battle_type, team_dict):
-    if "random" in pokemon_battle_type:
-        battle = await start_random_battle(ps_websocket_client, pokemon_battle_type)
-    else:
-        battle = await start_standard_battle(
-            ps_websocket_client, pokemon_battle_type, team_dict
+    battle_tag, opponent_name, first_msg = await get_battle_tag_and_opponent(
+        ps_websocket_client
+    )
+    if FoulPlayConfig.log_to_file:
+        FoulPlayConfig.file_log_handler.do_rollover(
+            "{}_{}.log".format(battle_tag, opponent_name)
         )
+
+    # Everything between claiming the battle and sending the first choice is
+    # message-driven with no other watchdog: a broken assumption here used to
+    # wedge the process SILENTLY until the timer bled the game out and the
+    # zombie had to be killed by hand (2664176268). Bound it: on expiry,
+    # forfeit — a fast visible loss that frees the account instead of a slow
+    # one that poisons the next session — and crash out loudly so the
+    # launcher starts clean.
+    try:
+        async with asyncio.timeout(BOOTSTRAP_TIMEOUT_S):
+            if "random" in pokemon_battle_type:
+                battle = await start_random_battle(
+                    ps_websocket_client,
+                    pokemon_battle_type,
+                    battle_tag,
+                    opponent_name,
+                    first_msg,
+                )
+            else:
+                battle = await start_standard_battle(
+                    ps_websocket_client,
+                    pokemon_battle_type,
+                    team_dict,
+                    battle_tag,
+                    opponent_name,
+                    first_msg,
+                )
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.critical(
+            "Battle bootstrap wedged for >{}s in {} — forfeiting".format(
+                BOOTSTRAP_TIMEOUT_S, battle_tag
+            )
+        )
+        await ps_websocket_client.send_message(battle_tag, ["/forfeit"])
+        await ps_websocket_client.leave_room_now(battle_tag)
+        raise
 
     # random battles already sent /timer on before their first search; don't
     # spend a second message on the account's shared throttle budget
