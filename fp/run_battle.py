@@ -337,6 +337,22 @@ async def get_battle_tag_and_opponent(ps_websocket_client: PSWebsocketClient):
                 elif '"games":null' in payload:
                     state = "idle"
                     live_game_tag = None
+                    # An idle push WHILE our search is armed is the server
+                    # changing our search state right now: either the
+                    # MATCH-FORMING transient (battle |init| follows within
+                    # seconds) or a genuine cancel. Restart the stale clock —
+                    # if the queue wait had already exceeded SEARCH_STALE_S,
+                    # the rescue branch below would otherwise fire a second
+                    # /search INSIDE the forming window, where the account is
+                    # no longer "searching" and the send registers cleanly:
+                    # that second search then matches mid-game into a ghost
+                    # battle nobody drives (2665285185, 2026-08-15 — id just
+                    # above the real game 2665284849, the documented ghost
+                    # signature). A genuine cancel just waits one full quiet
+                    # stale period from HERE, which the endodontist-deadlock
+                    # rescue still covers.
+                    if armed:
+                        armed_mono = time.monotonic()
                 else:
                     state = "in_game"
                     if not fleet:
