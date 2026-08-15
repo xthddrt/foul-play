@@ -175,24 +175,26 @@ def search_time_num_battles_randombattles(battle):
         and battle.opponent.active.hp > 0
         and opponent_active_num_moves == 0
     ):
-        # HISTORY: this was a x4 fan-out (x2 under time pressure), from the era
-        # when every world drew its active set INDEPENDENTLY and more samples
-        # meant better coverage. Under stratified allocation it became actively
-        # harmful: the world cap below trims back to `parallelism` with
-        # sorted-by-chance, and the stratified plan gives each world
-        # chance = set_probability / replica_count — so the MOST probable set
-        # gets the most replicas, the smallest per-replica chance, and is
-        # evicted FIRST. Measured (2665284849 turn 1): Gogoat's Earthquake
-        # sets were 78% of the sampled worlds and 1/8 of the searched ones —
-        # the cap inverted the belief on exactly the decision where set
-        # uncertainty is highest, and the bot clicked Toxic Spikes into a 4x
-        # Earthquake it believed was rare. Default 1: sample exactly what will
-        # be searched, so the stratified proportions survive untouched (the
-        # per-world budget is identical — the wall was already re-divided over
-        # the post-cap count). first_turn_world_multiplier still overrides.
+        # HISTORY: this was a x4 fan-out (x2 under time pressure) that the
+        # world cap in find_best_move then TRIMMED back to `parallelism` by
+        # sorted-by-chance — and under stratified allocation each world
+        # carries chance = set_probability / replica_count, so the MOST
+        # probable set gets the most replicas, the smallest per-replica
+        # chance, and is evicted first. Measured (2665284849 turn 1):
+        # Gogoat's Earthquake sets were 78% of the sampled worlds and 1/8 of
+        # the searched ones — the belief inverted on exactly the decision
+        # where set uncertainty is highest.
+        #
+        # NOW (Sally, 2026-08-15): the first decision genuinely SEARCHES the
+        # widened fan-out instead of trimming it — the cap honors the sized
+        # first-decision world count, so every sampled world is searched and
+        # the stratified proportions survive by construction. x2 = two full
+        # waves on the standard 8-process pool; the first turn's larger
+        # clock bank (blitz grants ~45s vs 15s steady-state) pays for the
+        # second wave. first_turn_world_multiplier still overrides.
         num_battles_multiplier = getattr(
             FoulPlayConfig, "first_turn_world_multiplier", None
-        ) or 1
+        ) or 2
         num_battles = FoulPlayConfig.parallelism * num_battles_multiplier
         # base_ms is the WALL budget for the whole first decision
         return num_battles, _per_world_search_ms(base_ms, num_battles)
@@ -452,7 +454,14 @@ def find_best_move(battle: Battle) -> str:
     # the multi-wave semantics so e.g. 8 worlds on a 4-process pool = 2 waves
     # x wall/2 each; pool unset keeps pool = parallelism = one wave, so every
     # existing single-wave config is unchanged).
-    _cap = FoulPlayConfig.parallelism
+    # The FIRST decision may deliberately sample wider than `parallelism`
+    # (see search_time_num_battles_randombattles) and SEARCHES all of it in
+    # ceil(n/pool) waves — trimming a stratified batch by top-chance evicts
+    # the most probable sets first (chance = probability/replicas), which is
+    # the belief inversion fixed 2026-08-15. The cap therefore honors the
+    # sized world count on first decisions and still bounds every other path
+    # (remote-config fallbacks in particular) at `parallelism`.
+    _cap = num_battles if is_first_decision(battle) else FoulPlayConfig.parallelism
     if len(states) > _cap:
         _trimmed = sorted(states, key=lambda sc: -sc[1])[:_cap]
         _tot = sum(c for _, c in _trimmed) or 1.0

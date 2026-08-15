@@ -492,17 +492,15 @@ class TestFirstTurnSearchTime(unittest.TestCase):
                 setattr(FoulPlayConfig, attr, value)
 
     def test_randombattles_first_decision_uses_first_turn_time(self):
-        # first decision, nothing revealed: the fan-out multiplier defaults
-        # to 1 since 2026-08-15 — oversampling beyond the searchable world
-        # count fed the chance-sorted cap, which systematically evicted the
-        # MOST probable sets (stratified replicas carry chance p/count, so
-        # more replicas = smaller per-replica chance = trimmed first; the
-        # Gogoat-Earthquake belief inversion, game 2665284849). One wave at
-        # the full first-turn budget.
+        # first decision, nothing revealed: x2 fan-out that is genuinely
+        # SEARCHED (the world cap honors the sized first-decision count since
+        # 2026-08-15 — trimming a stratified batch by top-chance evicted the
+        # most probable sets: the Gogoat-Earthquake belief inversion, game
+        # 2665284849). Two waves at wall/2 each.
         battle = battle_stub(turn=1, decisions_made=1)
         num_battles, search_time = search_time_num_battles_randombattles(battle)
-        self.assertEqual(1, num_battles)
-        self.assertEqual(20000, search_time)
+        self.assertEqual(2, num_battles)
+        self.assertEqual(10000, search_time)
 
     def test_randombattles_later_decision_uses_search_time(self):
         battle = battle_stub(turn=5, decisions_made=6)
