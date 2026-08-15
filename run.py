@@ -61,6 +61,14 @@ async def run_foul_play():
 
     apply_mods(FoulPlayConfig.pokemon_format)
 
+    # Spawn + warm every search worker NOW, while the wall time is free
+    # (login/matchmaking wait), instead of inside turn 1's clock: the cold
+    # first task per worker measured ~700ms (spawn + poke_engine import +
+    # net LazyLock) and showed up as 500-540ms of turn-1 overhead.
+    from fp.search.executor import prewarm_search_pool
+
+    prewarm_search_pool()
+
     original_pokedex = deepcopy(pokedex)
     original_move_json = deepcopy(all_move_json)
 

@@ -47,6 +47,50 @@ def _discard_search_executor():
         _search_executor = None
 
 
+def _warmup_worker(hold_s: float) -> int:
+    """Runs in a pool worker: forces the expensive one-time work a worker
+    otherwise pays inside the FIRST decision — interpreter spawn, this
+    module's imports (the poke_engine dylib), and the value net's LazyLock
+    (engine_config() resolves it, ~1.5MB read + weight re-blocking). The
+    short hold keeps this worker busy so every warm task lands on a
+    DIFFERENT worker instead of the first one to spawn."""
+    import time as _time
+
+    from poke_engine import engine_config
+
+    engine_config()
+    _time.sleep(hold_s)
+    import os as _os
+
+    return _os.getpid()
+
+
+def prewarm_search_pool(timeout_s: float = 15.0) -> int:
+    """Spawn and warm every pool worker BEFORE the first decision.
+
+    Measured cost of not doing this: turn 1 ran 500-540ms over its expected
+    wall (cold spawn ~700ms first-task vs 5-7ms warm). Called at bot startup,
+    where the wall time is free (login/matchmaking wait). Returns the number
+    of distinct workers warmed; 0 (with a log line) on any failure — this is
+    an optimization, never a startup blocker."""
+    if not getattr(FoulPlayConfig, "reuse_search_pool", True):
+        return 0  # a fresh pool per decision cannot be pre-warmed
+    try:
+        executor = _get_search_executor()
+        workers = pool_workers()
+        futures = [executor.submit(_warmup_worker, 0.4) for _ in range(workers)]
+        pids = {f.result(timeout=timeout_s) for f in futures}
+        logger.info(
+            "Search pool pre-warmed: {} worker(s), {} distinct process(es)".format(
+                workers, len(pids)
+            )
+        )
+        return len(pids)
+    except Exception:
+        logger.warning("Search pool pre-warm failed (continuing cold)", exc_info=True)
+        return 0
+
+
 def gather_mcts_results(
     futures: list,
 ) -> tuple[list[(MctsResult, float, int)], bool]:
