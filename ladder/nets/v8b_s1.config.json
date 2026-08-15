@@ -1,0 +1,296 @@
+{
+ "name": "v8b_s1",
+ "created_utc": "2026-08-15T10:44Z",
+ "what": "The adopted evallab evaluator 'arm A + setup', MON_HID 128 / TRUNK_HID 256, retrained FROM RANDOM INIT on the DOUBLED corpus (plc1 + plc2 = 1,899,870 training rows vs v8n_s1's 900,000). Architecture, recipe, encoder, holdout and metric code are v8n_s1's, untouched; only the training rows and the step budget (scaled to hold passes constant) differ.",
+ "architecture": {
+  "builder": "evallab/vt_lib.py:build_net('old', (128,256), seed, add='setup')",
+  "class": "vt_lib.ArmAPlusNet wrapping labmodel.LabValueNet(use_rel=False)",
+  "MON_HID": 128,
+  "TRUNK": 256,
+  "n_params": 370645,
+  "mon_mlp_in": 226,
+  "trunk_in": 728,
+  "bench_pool": "sum",
+  "numeric_per_mon": 72,
+  "addon_mon_setup_cols": 14,
+  "side_feats": 99,
+  "global_feats": 18,
+  "encoder_flags": {
+   "BENCH_SORT": 1,
+   "PP_TRUE_MAX": 1,
+   "REVEAL_MASKS": 0,
+   "MASK_SPLICE_SPECIES": 0,
+   "DROP_TIMES_ATTACKED": 1
+  }
+ },
+ "data": {
+  "cache": "s3://pokebot-valuenet-389825051723/evallab/enc_plc12/",
+  "rows_total": 1999870,
+  "rows_plc1": 1000000,
+  "rows_plc2": 999870,
+  "train_rows": 1899870,
+  "holdout_rows": 100000,
+  "holdout_index": "enc_plc12/holdout_i.npy",
+  "holdout_identical_to_plc1": true,
+  "holdout_i_sha256": "9c8bf63b216617de1b64bb39334fdd849c2d4a4d17c52d3a93050a075d3f61f3",
+  "holdout_carved_by": "team pair (plc1 split.json, NOT re-carved)",
+  "target": "label_p (playout win rate, N=10, same engine wheel 0.0.59)",
+  "plc1e_touched": false
+ },
+ "recipe": {
+  "batch": 4096,
+  "lr": 0.0001,
+  "lr_emb": 3.3333333333333335e-05,
+  "wd": 0.002,
+  "wd_emb": 0.0,
+  "dropout": 0.0,
+  "warm_frac": 0.167,
+  "cos_floor": 0.0,
+  "total_steps": 25000,
+  "warmup_steps": 4175,
+  "loss": "BCE-with-logits on soft label_p",
+  "optimizer": "AdamW, 2 param groups (embeddings / dense)",
+  "schedule": "linear warmup then cosine to cos_floor, COMPLETED",
+  "checkpoint_selection": "final fully-annealed step, no early stopping",
+  "from_random_init": true,
+  "step_budget_rationale": "25,000 steps x 4,096 = 102.4M sample visits = 53.9 passes over 1,899,870 rows, matching v8n_s1's 54.6 passes over 900,000 rows. Holding passes constant keeps the optimizer budget per datum identical, so the measured delta is attributable to data volume and not to a longer schedule."
+ },
+ "seeds_run": [
+  0,
+  1,
+  2
+ ],
+ "best_seed": 1,
+ "seed_spread_brier_all": {
+  "min": 0.0451764697797464,
+  "max": 0.04555600793624411,
+  "mean": 0.045345682780624015,
+  "std": 0.0001930801906206258
+ },
+ "holdout_results": {
+  "brier": {
+   "all": 0.0451764697797464,
+   "early": 0.04634763970726584,
+   "mid": 0.04552715565944899,
+   "late": 0.042097258732104306
+  },
+  "auc_soft": {
+   "all": 0.8032071682683942,
+   "early": 0.700952415111486,
+   "mid": 0.8135296322067285,
+   "late": 0.9235989236091746
+  },
+  "paired_vs_q_search": {
+   "all": {
+    "delta": -0.031532954637253606,
+    "se": 0.0003600637802387135,
+    "z": -87.57602504852898
+   },
+   "early": {
+    "delta": -0.025483907532484158,
+    "se": 0.00046699536487668117,
+    "z": -54.569936768459485
+   },
+   "mid": {
+    "delta": -0.04240945159774503,
+    "se": 0.0006040218803496266,
+    "z": -70.21178036331585
+   },
+   "late": {
+    "delta": -0.021663332594122144,
+    "se": 0.0009446548189564874,
+    "z": -22.932538065123655
+   }
+  },
+  "q_search_brier": {
+   "all": 0.076709424417,
+   "early": 0.07183154723975001,
+   "mid": 0.08793660725719402,
+   "late": 0.06376059132622644
+  },
+  "q_search_auc_soft": {
+   "all": 0.7128738836606212,
+   "early": 0.6021881638128462,
+   "mid": 0.6963610951606399,
+   "late": 0.8952674195326324
+  },
+  "label_noise_floor": {
+   "all": 0.013504,
+   "early": 0.0173,
+   "mid": 0.013,
+   "late": 0.0069
+  },
+  "pred_stats": {
+   "min": 0.0001362858893116936,
+   "max": 0.999955415725708,
+   "mean": 0.5052249762500763,
+   "std": 0.26763436194667356,
+   "nonfinite": 0
+  },
+  "ensemble_brier_all": 0.04450519491321003
+ },
+ "vs_v8n_900k": {
+  "compared_against": "s3://.../evallab/nets_v8n/v8n_s1.pt (900,000 train rows)",
+  "same_holdout": true,
+  "baseline_brier": {
+   "all": 0.04695905874974631,
+   "early": 0.04795318898501729,
+   "mid": 0.047362036281443136,
+   "late": 0.0441314061944099
+  },
+  "baseline_auc": {
+   "all": 0.7991031905772524,
+   "early": 0.6955361586449029,
+   "mid": 0.8095934900141939,
+   "late": 0.920830646437011
+  },
+  "paired_v8b_minus_v8n_best": {
+   "all": {
+    "delta": -0.0017825889699999093,
+    "se": 7.226571703348333e-05,
+    "z": -24.667145683671432
+   },
+   "early": {
+    "delta": -0.0016055492777514381,
+    "se": 0.00010014707568138599,
+    "z": -16.031913731155072
+   },
+   "mid": {
+    "delta": -0.0018348806219941447,
+    "se": 0.00011440869929505852,
+    "z": -16.037946705975667
+   },
+   "late": {
+    "delta": -0.0020341474623056036,
+    "se": 0.00019576899015426367,
+    "z": -10.39054990630906
+   }
+  },
+  "paired_v8b_minus_v8n_seed_matched": {
+   "s0": {
+    "all": {
+     "delta": -0.00176172025309121,
+     "se": 7.293805038251305e-05,
+     "z": -24.153651541988346
+    },
+    "early": {
+     "delta": -0.001437762227805529,
+     "se": 9.728300991172754e-05,
+     "z": -14.779170886161138
+    },
+    "mid": {
+     "delta": -0.001928406299976744,
+     "se": 0.00011351989889865249,
+     "z": -16.987385636225532
+    },
+    "late": {
+     "delta": -0.00207781054381523,
+     "se": 0.00020964497163203843,
+     "z": -9.911091726359794
+    }
+   },
+   "s1": {
+    "all": {
+     "delta": -0.0017825889699999093,
+     "se": 7.226571703348333e-05,
+     "z": -24.667145683671432
+    },
+    "early": {
+     "delta": -0.0016055492777514381,
+     "se": 0.00010014707568138599,
+     "z": -16.031913731155072
+    },
+    "mid": {
+     "delta": -0.0018348806219941447,
+     "se": 0.00011440869929505852,
+     "z": -16.037946705975667
+    },
+    "late": {
+     "delta": -0.0020341474623056036,
+     "se": 0.00019576899015426367,
+     "z": -10.39054990630906
+    }
+   },
+   "s2": {
+    "all": {
+     "delta": -0.0018794191566253913,
+     "se": 7.25701077431967e-05,
+     "z": -25.89797941703598
+    },
+    "early": {
+     "delta": -0.001622050548694302,
+     "se": 9.990086522447067e-05,
+     "z": -16.236601605498223
+    },
+    "mid": {
+     "delta": -0.001994419205569625,
+     "se": 0.0001154131552093934,
+     "z": -17.280692152910664
+    },
+    "late": {
+     "delta": -0.0021659314260813987,
+     "se": 0.0001967075262640743,
+     "z": -11.010923004408571
+    }
+   }
+  },
+  "paired_v8b_minus_v8n_ens": {
+   "all": {
+    "delta": -0.0018048892260759388,
+    "se": 5.376701263964988e-05,
+    "z": -33.56870946452665
+   },
+   "early": {
+    "delta": -0.0015858332312093108,
+    "se": 7.293918500318547e-05,
+    "z": -21.741855645083678
+   },
+   "mid": {
+    "delta": -0.00192172739119309,
+    "se": 8.533909977168769e-05,
+    "z": -22.518721152840744
+   },
+   "late": {
+    "delta": -0.002010241001440956,
+    "se": 0.00014834074519308365,
+    "z": -13.551509390251352
+   }
+  }
+ },
+ "training": {
+  "wall_s": 2425.4,
+  "rows_per_s": 42219.2,
+  "torch_threads": 21,
+  "grad_norm_max": 1.967556118965149,
+  "nonfinite_events": 0,
+  "instance": "c7a.16xlarge spot, us-east-2, 3 seeds concurrent, torch 2.13.0+cpu, poke_engine 0.0.59 (pinned)"
+ },
+ "engine_bin": {
+  "version": 8,
+  "mon_in": 226,
+  "trunk_in": 728,
+  "mon_hid": 128,
+  "trunk": 256,
+  "bench_mult": 1,
+  "bench_sort": 1,
+  "pp_true_max": 1,
+  "attn_d": 0,
+  "policy_slots": 0,
+  "n_blocks": 0,
+  "bytes": 1496242,
+  "sha256": "af5df24ba68e3f74c7cdd8eec1c442f25f174195612b9515b459191f9a2f58d7",
+  "from_ckpt": "v8b_s1.pt",
+  "ckpt_cap": [
+   128,
+   256
+  ],
+  "ckpt_seed": 1,
+  "ckpt_brier_all": 0.0451764697797464
+ },
+ "artifacts": {
+  "v8b_s1.bin": 1496242,
+  "v8b_s1.constants.json": 6997,
+  "v8b_s1.meta.json": 401,
+  "v8b_s1.pt": 1489696
+ }
+}

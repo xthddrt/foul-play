@@ -1,0 +1,22 @@
+{
+ "version": 8,
+ "mon_in": 226,
+ "trunk_in": 728,
+ "mon_hid": 128,
+ "trunk": 256,
+ "bench_mult": 1,
+ "bench_sort": 1,
+ "pp_true_max": 1,
+ "attn_d": 0,
+ "policy_slots": 0,
+ "n_blocks": 0,
+ "bytes": 1496242,
+ "sha256": "af5df24ba68e3f74c7cdd8eec1c442f25f174195612b9515b459191f9a2f58d7",
+ "from_ckpt": "v8b_s1.pt",
+ "ckpt_cap": [
+  128,
+  256
+ ],
+ "ckpt_seed": 1,
+ "ckpt_brier_all": 0.0451764697797464
+}
