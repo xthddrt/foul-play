@@ -193,8 +193,9 @@ class PSRandomTeams(_sets.PSSetsMoves):
         return _abil.get_level(species, RANDOM_SETS[species.id], is_doubles)
 
     # -- group 1's team loop ----------------------------------------------
-    def random_team(self, max_team_size=6, is_monotype=False, is_doubles=False):
-        return _loop.random_team(max_team_size, is_monotype, is_doubles)
+    def random_team(self, max_team_size=6, is_monotype=False, is_doubles=False,
+                    existing=None):
+        return _loop.random_team(max_team_size, is_monotype, is_doubles, existing)
 
 
 # One shared generator and one shared RNG.  The team loop and the ability/item
@@ -217,6 +218,33 @@ def random_team():
 
 
 generate_team = random_team
+
+
+def complete_team(existing: list[dict]) -> list[dict]:
+    """CONDITIONAL team completion: fill a partially-revealed opponent team.
+
+    `existing` is one dict per revealed mon with speciesId (normalized id),
+    ability (display or normalized), moves (list of normalized move ids) and
+    level. PS's randomTeam state (Species Clause, type/weakness caps, the
+    mutable teamDetails that cullMovePool reads) is seeded from them, then the
+    sequential loop runs for the remaining slots only. Returns just the
+    generated fill-in sets, same dict shape as random_team's.
+
+    Approximation, stated: the revealed mons are treated as the build-order
+    prefix. That is not literally the conditional distribution (PS could have
+    drawn them in any order), but every hard constraint is enforced exactly,
+    which is what the old independent-marginal sampler could not do."""
+    existing = [
+        {
+            "speciesId": to_id(e["speciesId"]),
+            "species": e.get("species") or get_species(e["speciesId"]).name,
+            "ability": e.get("ability") or "",
+            "moves": list(e.get("moves") or ()),
+            "level": e.get("level"),
+        }
+        for e in existing
+    ]
+    return _GEN.random_team(existing=existing)[len(existing):]
 
 
 if __name__ == "__main__":

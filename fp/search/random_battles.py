@@ -8,7 +8,7 @@ from constants import BattleType
 from data import all_move_json, pokedex
 from fp.battle import Battle, Pokemon
 from data.pkmn_sets import RandomBattleTeamDatasets, TeamDatasets
-from fp.search.helpers import populate_pkmn_from_set
+from fp.search.helpers import log_pkmn_set, populate_pkmn_from_set
 from fp.helpers import (
     POKEMON_TYPE_INDICES,
     is_super_effective,
@@ -19,6 +19,9 @@ from fp.helpers import (
 logger = logging.getLogger(__name__)
 
 SHOWDOWN_TEAM_CONSTRAINTS_CONTROL_OFF = "FP_CONTROL_NO_SHOWDOWN_TEAM_CONSTRAINTS"
+# Negative control for the PS-exact conditional team sampler (ps_teams.py).
+# Set to 1 to restore the independent marginal-count sampler below.
+PS_TEAM_SAMPLER_CONTROL_OFF = "FP_CONTROL_NO_PS_TEAM_SAMPLER"
 MAX_RANDOM_SAMPLING_ATTEMPTS = 100
 
 # ENTRY-INTENT reweighting: a mon the opponent CHOSE to send in (voluntary
@@ -721,6 +724,66 @@ def _sample_valid_randombattle_pokemon(
     return random.choices(valid_candidates, weights=valid_weights)[0]
 
 
+def _ps_sampler_enabled() -> bool:
+    # gen9randombattle(+blitz) only: ps_teams is a port of the gen9 generator.
+    # Battle factory and other dataset modes keep the marginal sampler.
+    return (
+        os.environ.get(PS_TEAM_SAMPLER_CONTROL_OFF) != "1"
+        and "gen9randombattle" in (getattr(RandomBattleTeamDatasets, "pkmn_mode", "") or "")
+    )
+
+
+def _pokemon_from_ps_set(ps_set: dict) -> Pokemon:
+    """PS random_team set dict -> a foul-play Pokemon, mirroring what
+    populate_pkmn_from_set does for dataset sets. EVs/IVs are PS's own
+    (HP shaving, Atk zeroing), so the fill-in's stats are the generator's."""
+    evs = tuple(ps_set["evs"][k] for k in ("hp", "atk", "def", "spa", "spd", "spe"))
+    ivs = tuple(ps_set["ivs"][k] for k in ("hp", "atk", "def", "spa", "spd", "spe"))
+    name = normalize_name(ps_set["species"])
+    if name not in pokedex:
+        name = ps_set["speciesId"]
+    pkmn = Pokemon(name, ps_set["level"], evs=evs, ivs=ivs)
+    pkmn.ability = normalize_name(ps_set["ability"]) if ps_set["ability"] else None
+    # '' means the generator assigned NO item (item is None is knowledge,
+    # not ignorance -- see battle_to_poke_engine_state)
+    pkmn.item = normalize_name(ps_set["item"]) if ps_set["item"] else None
+    pkmn.moves = []
+    for move_id in ps_set["moves"]:
+        pkmn.add_move(move_id)
+    if ps_set.get("teraType"):
+        pkmn.tera_type = normalize_name(ps_set["teraType"])
+    # a sampled fill-in was never actually seen on the field
+    pkmn.revealed = False
+    return pkmn
+
+
+def _ps_fill_ins(existing_pkmn: list[Pokemon], n_missing: int) -> list[Pokemon]:
+    from fp.search import ps_teams
+
+    existing = [
+        {
+            "speciesId": pkmn.name,
+            "ability": pkmn.ability or "",
+            "moves": [m.name for m in pkmn.moves],
+            "level": pkmn.level,
+        }
+        for pkmn in existing_pkmn
+    ]
+    fill_sets = ps_teams.complete_team(existing)
+    if len(fill_sets) != n_missing:
+        raise ValueError(
+            "PS sampler returned {} fill-ins, wanted {}".format(
+                len(fill_sets), n_missing
+            )
+        )
+    fills = []
+    for ps_set in fill_sets:
+        pkmn = _pokemon_from_ps_set(ps_set)
+        log_pkmn_set(pkmn, source="ps-team-sampler")
+        fills.append(pkmn)
+    return fills
+
+
 # take a Battle and fill in the unrevealed pkmn for the opponent
 def populate_randombattle_unrevealed_pkmn(battle: Battle):
     num_revealed_pkmn = 0
@@ -736,6 +799,23 @@ def populate_randombattle_unrevealed_pkmn(battle: Battle):
         return
 
     logger.info("Sampling {} unrevealed pokemon".format(6 - num_revealed_pkmn))
+
+    # PS-EXACT conditional completion: seed PS's sequential team-builder state
+    # from the revealed mons and generate the remaining slots with the real
+    # generator (Species Clause, type/weakness caps, cullMovePool hazard
+    # dedup). The marginal sampler below stays as fallback and as the
+    # FP_CONTROL_NO_PS_TEAM_SAMPLER=1 negative control.
+    if _ps_sampler_enabled():
+        try:
+            fills = _ps_fill_ins(existing_pkmn, 6 - num_revealed_pkmn)
+            battle.opponent.reserve.extend(fills)
+            return
+        except Exception:
+            logger.warning(
+                "PS-exact team sampler failed; falling back to the marginal "
+                "sampler", exc_info=True
+            )
+
     while num_revealed_pkmn < 6:
         pkmn = sample_randombattle_pokemon(existing_pkmn)
         existing_pkmn.append(pkmn)

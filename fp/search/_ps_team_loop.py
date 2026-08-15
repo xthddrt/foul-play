@@ -135,7 +135,17 @@ def to_id(text) -> str:
         return sid
     if isinstance(text, dict):
         text = text.get("name", "")
-    return _NON_ID.sub("", str(text).lower())
+    text = str(text)
+    # memoized: called ~150k times per team build on a small recurring set of
+    # strings; the regex is pure so this cannot change any result
+    cached = _ID_MEMO.get(text)
+    if cached is None:
+        cached = _NON_ID.sub("", text.lower())
+        _ID_MEMO[text] = cached
+    return cached
+
+
+_ID_MEMO: dict[str, str] = {}
 
 
 # --------------------------------------------------------------------------
@@ -354,11 +364,36 @@ def get_forme(species: Species) -> str:
 # teams.ts:1614-1646  getPokemonPool
 # --------------------------------------------------------------------------
 
+# (forme_id, baseSpecies) pairs per pokemon_list, resolved once: the
+# get_species/to_id sweep over all 509 pool entries was ~1/3 of a team build
+# and is invariant across calls. Pure lookup, so caching cannot change output.
+_POOL_PAIRS_CACHE: dict[tuple, list] = {}
+
+
+def _pool_pairs(pokemon_list):
+    key = tuple(pokemon_list)
+    pairs = _POOL_PAIRS_CACHE.get(key)
+    if pairs is None:
+        pairs = [(p, get_species(p).baseSpecies) for p in pokemon_list]
+        _POOL_PAIRS_CACHE[key] = pairs
+    return pairs
+
+
 def get_pokemon_pool(type_name, pokemon_to_exclude=None, is_monotype=False, pokemon_list=None):
     pokemon_to_exclude = pokemon_to_exclude or []
-    exclude = [to_id(p["species"]) for p in pokemon_to_exclude]
+    exclude = {to_id(p["species"]) for p in pokemon_to_exclude}
     pokemon_pool: dict[str, list[str]] = {}
     base_species_pool: list[str] = []
+    if not is_monotype:
+        # fast path off the cached pairs -- same iteration order, same output
+        for pokemon, base_species in _pool_pairs(pokemon_list):
+            if pokemon in exclude:
+                continue
+            if base_species in pokemon_pool:
+                pokemon_pool[base_species].append(pokemon)
+            else:
+                pokemon_pool[base_species] = [pokemon]
+        return _weight_base_species(pokemon_pool)
     for pokemon in pokemon_list:
         species = get_species(pokemon)
         if species.id in exclude:
@@ -376,6 +411,11 @@ def get_pokemon_pool(type_name, pokemon_to_exclude=None, is_monotype=False, poke
         else:
             pokemon_pool[species.baseSpecies] = [pokemon]
 
+    return _weight_base_species(pokemon_pool)
+
+
+def _weight_base_species(pokemon_pool):
+    base_species_pool: list[str] = []
     # Include base species 1x if 1-3 formes, 2x if 4-6 formes, 3x if 7+ formes
     for base_species in pokemon_pool:
         # Squawkabilly has 4 formes but only 2 functionally different ones -> 1x
@@ -466,9 +506,99 @@ ADJUST_LEVEL = None
 FORCE_MONOTYPE = None
 
 
-def random_team(max_team_size=MAX_TEAM_SIZE, is_monotype=False, is_doubles=False):
-    """gen9randombattle randomTeam.  Returns the list of set dicts, lead first."""
-    pokemon: list[dict] = []
+def _team_building_species(species_id: str) -> "Species":
+    """The species PS's randomTeam would have DRAWN to produce this mon.
+
+    Revealed opponent mons can be in a battle-only forme (Zacian-Crowned,
+    Terapagos-Terastal) that never appears in the team loop; the counters must
+    be seeded from the species the generator actually drew, exactly as
+    teams.ts reads species.types of the drawn species."""
+    sp = get_species(species_id)
+    battle_only = sp.battleOnly
+    if isinstance(battle_only, str):
+        return get_species(battle_only)
+    if isinstance(battle_only, list) and battle_only:
+        return get_species(battle_only[0])
+    return sp
+
+
+def _seed_from_existing(existing, base_formes, type_count, type_combo_count,
+                        type_weaknesses, type_double_weaknesses, team_details):
+    """Replay randomTeam's post-accept counter block for already-revealed mons.
+
+    Mirrors the "Now that our Pokemon has passed all checks" block below,
+    line for line, so a continuation build obeys exactly the constraints a
+    from-scratch build would. `existing` entries carry speciesId / ability /
+    moves / level; ability may be a display name or a normalized id (compared
+    through to_id), and role is unknown for a revealed mon, so the Tera Blast
+    team detail falls back to the move itself.
+
+    Returns num_max_level_pokemon."""
+    num_max_level = 0
+    for e in existing:
+        species = _team_building_species(e["speciesId"])
+        if not species.exists:
+            continue
+        base_formes[species.baseSpecies] = 1
+        for t in species.types:
+            type_count[t] = type_count.get(t, 0) + 1
+        type_combo = ",".join(sorted(species.types))
+        type_combo_count[type_combo] = type_combo_count.get(type_combo, 0) + 1
+        for t in TYPE_NAMES:
+            if get_effectiveness(t, species) > 0:
+                type_weaknesses[t] = type_weaknesses.get(t, 0) + 1
+            if get_effectiveness(t, species) > 1:
+                type_double_weaknesses[t] = type_double_weaknesses.get(t, 0) + 1
+        ability = to_id(e.get("ability") or "")
+        if ability in ("dryskin", "fluffy") and get_effectiveness("Fire", species) == 0:
+            type_weaknesses["Fire"] = type_weaknesses.get("Fire", 0) + 1
+        if (get_effectiveness("Ice", species) > 0 or
+                (get_effectiveness("Ice", species) > -2 and "Water" in species.types)):
+            type_weaknesses["Freeze-Dry"] = type_weaknesses.get("Freeze-Dry", 0) + 1
+        if e.get("level") == 100:
+            num_max_level += 1
+
+        moves = set(e.get("moves") or ())
+        if ability == "drizzle" or "raindance" in moves:
+            team_details["rain"] = 1
+        if ability in ("drought", "orichalcumpulse") or "sunnyday" in moves:
+            team_details["sun"] = 1
+        if ability == "sandstream":
+            team_details["sand"] = 1
+        if ability == "snowwarning" or "snowscape" in moves or "chillyreception" in moves:
+            team_details["snow"] = 1
+        if "healbell" in moves:
+            team_details["statusCure"] = 1
+        if "spikes" in moves or "ceaselessedge" in moves:
+            team_details["spikes"] = team_details.get("spikes", 0) + 1
+        if "toxicspikes" in moves or ability == "toxicdebris":
+            team_details["toxicSpikes"] = 1
+        if "stealthrock" in moves or "stoneaxe" in moves:
+            team_details["stealthRock"] = 1
+        if "stickyweb" in moves:
+            team_details["stickyWeb"] = 1
+        if "defog" in moves:
+            team_details["defog"] = 1
+        if "rapidspin" in moves or "mortalspin" in moves:
+            team_details["rapidSpin"] = 1
+        if "auroraveil" in moves or ("reflect" in moves and "lightscreen" in moves):
+            team_details["screens"] = 1
+        if "terablast" in moves or species.id in ("ogerpon", "ogerponhearthflame", "terapagos"):
+            team_details["teraBlast"] = 1
+    return num_max_level
+
+
+def random_team(max_team_size=MAX_TEAM_SIZE, is_monotype=False, is_doubles=False,
+                existing=None):
+    """gen9randombattle randomTeam.  Returns the list of set dicts, lead first.
+
+    `existing` (CONTINUATION MODE): already-revealed opponent mons as dicts
+    carrying speciesId / species / ability / moves / level. The loop state is
+    seeded from them and only the remaining slots are generated and returned.
+    The lead is never among the fill-ins: in a random battle the lead is
+    revealed at battle start, so any state with revealed mons has already
+    consumed leads_remaining."""
+    pokemon: list[dict] = list(existing) if existing else []
 
     # For Monotype
     is_monotype = bool(FORCE_MONOTYPE) or is_monotype
@@ -488,12 +618,18 @@ def random_team(max_team_size=MAX_TEAM_SIZE, is_monotype=False, is_doubles=False
     team_details: dict = {}
     num_max_level_pokemon = 0
 
+    if existing:
+        num_max_level_pokemon = _seed_from_existing(
+            existing, base_formes, type_count, type_combo_count,
+            type_weaknesses, type_double_weaknesses, team_details
+        )
+
     pokemon_list = list(RANDOM_SETS.keys())
     pokemon_pool, base_species_pool = get_pokemon_pool(
         type_name, pokemon, is_monotype, pokemon_list
     )
 
-    leads_remaining = 2 if is_doubles else 1
+    leads_remaining = 0 if existing else (2 if is_doubles else 1)
     # gen9randombattle has neither 'pickedteamsize' nor 'teampreview'.
     while base_species_pool and len(pokemon) < max_team_size:
         base_species = sample_no_replace(base_species_pool)
