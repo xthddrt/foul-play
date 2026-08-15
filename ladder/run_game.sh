@@ -3,7 +3,7 @@
 # champion config + tera gate, then archive it into ladder-games/. See README.md.
 set -euo pipefail
 
-ROOT="/Users/sallyliu/pokemon-fast-bot"
+ROOT="${FP_ROOT:-/Users/sallyliu/pokemon-fast-bot}"
 set -a; . "$ROOT/.env"; set +a
 
 # Overridable per run: RG_WORLDS (searched worlds), RG_POOL (parallel search

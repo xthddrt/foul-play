@@ -8,7 +8,7 @@
 set -euo pipefail
 
 N="${1:-2}"
-ROOT="/Users/sallyliu/pokemon-fast-bot"
+ROOT="${FP_ROOT:-/Users/sallyliu/pokemon-fast-bot}"
 CLAIM_DIR="$(mktemp -d /tmp/fp-claims.XXXXXX)"
 START=$(date +%s)
 echo "claim dir: $CLAIM_DIR"

@@ -21,6 +21,36 @@ Layout expectations: `run_game.sh` assumes a workspace root containing
 `../valuenet/nets_v8b/v8b_s1.bin` relative to foul-play (or set
 `RG_NN_WEIGHTS`), and a `ladder-games/` dir for archives.
 
+## Fresh-machine quickstart (nothing but the two repos)
+
+```bash
+mkdir workspace && cd workspace
+git clone https://github.com/xthddrt/foul-play
+git clone https://github.com/xthddrt/poke-engine
+cd foul-play
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt   # builds poke_engine from ../poke-engine (needs Rust; NEVER from PyPI)
+mkdir ../ladder-games && cp ladder/run_game.sh ladder/run_parallel.sh ladder/archive_game.py ../ladder-games/
+cat > ../.env <<'ENV'
+FP_PYTHON="$PWD/foul-play/.venv/bin/python"
+FP_WEBSOCKET_URI="wss://sim3.psim.us/showdown/websocket"
+FP_BOT_MODE="search_ladder"
+PS_USERNAME="your-account"
+PS_PASSWORD="your-password"
+ENV
+FP_ROOT="$(dirname "$PWD")" RG_NN_WEIGHTS="$PWD/ladder/nets/v8b_s1.bin" \
+  bash ../ladder-games/run_game.sh
+```
+
+Notes: `FP_ROOT` points the launcher at your workspace (defaults to Sally's
+path); `RG_NN_WEIGHTS` points at the net vendored here (the default path
+expects a `valuenet/` dir that only exists in the original workspace); the
+PS-exact team sampler uses the `sets.json` vendored at
+`data/ps/gen9randombattle_sets.json` when no `pokemon-showdown` checkout is
+present (env `PS_SETS_JSON` overrides). Randbats set statistics are fetched
+by foul-play at battle start (network required). The engine wheel needs a
+Rust toolchain (`rustup`) and builds in ~5-10 min.
+
 Secrets: the launcher sources `<workspace>/.env`, which is NOT in git.
 Required vars: `FP_PYTHON` (path to foul-play/.venv/bin/python),
 `FP_WEBSOCKET_URI` (wss://sim3.psim.us/showdown/websocket), `FP_BOT_MODE`

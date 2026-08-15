@@ -100,8 +100,12 @@ from fp.helpers import DAMAGE_MULTIPICATION_ARRAY, POKEMON_TYPE_INDICES
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _FP_ROOT = os.path.dirname(os.path.dirname(_HERE))  # .../foul-play
 
-PS_SETS_JSON = os.environ.get(
-    "PS_SETS_JSON",
+# Resolution order: explicit env var; the live pokemon-showdown checkout
+# (ground truth, tracks PS updates); the copy VENDORED into this repo so a
+# bare foul-play+poke-engine clone still runs the PS-exact sampler instead of
+# silently falling back to the marginal one. The vendored copy is byte-equal
+# to the checkout as of 2026-08-15 (sets.json unchanged since 2026-08-06).
+_PS_SETS_CANDIDATES = (
     os.path.join(
         os.path.dirname(_FP_ROOT),
         "pokemon-showdown",
@@ -110,6 +114,11 @@ PS_SETS_JSON = os.environ.get(
         "gen9",
         "sets.json",
     ),
+    os.path.join(_FP_ROOT, "data", "ps", "gen9randombattle_sets.json"),
+)
+PS_SETS_JSON = os.environ.get("PS_SETS_JSON") or next(
+    (p for p in _PS_SETS_CANDIDATES if os.path.isfile(p)),
+    _PS_SETS_CANDIDATES[0],
 )
 PS_POKEDEX_JSON = os.path.join(_FP_ROOT, "data", "pokedex.json")
 
