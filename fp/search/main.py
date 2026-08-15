@@ -59,9 +59,10 @@ def is_first_decision(battle) -> bool:
 
 
 def base_search_time_ms(battle) -> int:
-    if FoulPlayConfig.first_turn_search_time_ms is not None and is_first_decision(
+    first = FoulPlayConfig.first_turn_search_time_ms is not None and is_first_decision(
         battle
-    ):
+    )
+    if first:
         ms = FoulPlayConfig.first_turn_search_time_ms
     else:
         ms = FoulPlayConfig.search_time_ms
@@ -77,8 +78,13 @@ def base_search_time_ms(battle) -> int:
     #
     # So cap the SEARCH budget at the increment minus a margin for everything
     # else in the turn. Bank-based clamping below still applies on top.
+    # The FIRST decision is exempt: it spends from the fresh starting bank
+    # (blitz: 15s), not from the per-turn increment, so a deliberate
+    # --first-turn-search-time-ms above the increment is safe -- the
+    # time_remaining clamp below still bounds it against the actual clock.
+    # Steady-state turns keep the cap; they are what drains the bank.
     inc = getattr(FoulPlayConfig, "turn_increment_ms", 0) or 0
-    if inc > 0:
+    if inc > 0 and not first:
         margin = getattr(FoulPlayConfig, "turn_overhead_margin_ms", 1500)
         sustainable = max(300, inc - margin)
         if ms > sustainable:
