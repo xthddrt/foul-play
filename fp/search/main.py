@@ -454,14 +454,15 @@ def find_best_move(battle: Battle) -> str:
     # the multi-wave semantics so e.g. 8 worlds on a 4-process pool = 2 waves
     # x wall/2 each; pool unset keeps pool = parallelism = one wave, so every
     # existing single-wave config is unchanged).
-    # The FIRST decision may deliberately sample wider than `parallelism`
-    # (see search_time_num_battles_randombattles) and SEARCHES all of it in
-    # ceil(n/pool) waves — trimming a stratified batch by top-chance evicts
-    # the most probable sets first (chance = probability/replicas), which is
-    # the belief inversion fixed 2026-08-15. The cap therefore honors the
-    # sized world count on first decisions and still bounds every other path
-    # (remote-config fallbacks in particular) at `parallelism`.
-    _cap = num_battles if is_first_decision(battle) else FoulPlayConfig.parallelism
+    # NO EVICTIONS (Sally, 2026-08-15): every locally-sized world is
+    # SEARCHED, in ceil(n/pool) waves — the sizing functions already budget
+    # the wall for exactly `num_battles` worlds. Trimming a stratified batch
+    # by top-chance evicts the most probable sets first (each world carries
+    # chance = probability/replicas), the belief inversion found on game
+    # 2665284849. This cap now only guards the pathological case of a batch
+    # somehow exceeding what was sized (remote fallbacks are separately
+    # bounded in run_mcts_searches).
+    _cap = num_battles
     if len(states) > _cap:
         _trimmed = sorted(states, key=lambda sc: -sc[1])[:_cap]
         _tot = sum(c for _, c in _trimmed) or 1.0

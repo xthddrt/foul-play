@@ -26,9 +26,15 @@ def mcts_result(options):
 class TestSwitchWeightMultiplier(unittest.TestCase):
     def setUp(self):
         self.original = FoulPlayConfig.switch_weight_multiplier
+        # near-tie mixing samples RANDOMLY among options inside the mix band;
+        # these fixtures use equal/近-equal scores, so with mixing live the
+        # assertions were weighted coin flips (observed flipping run to run)
+        self._mix = FoulPlayConfig.mix_visit_ratio
+        FoulPlayConfig.mix_visit_ratio = 0
 
     def tearDown(self):
         FoulPlayConfig.switch_weight_multiplier = self.original
+        FoulPlayConfig.mix_visit_ratio = self._mix
 
     def test_multiplier_flips_marginal_switch_to_attack(self):
         # REWORKED for the score-dominance gate: the old equal-score stub let
@@ -95,14 +101,20 @@ def mcts_result_scored(options):
 
 
 class TestScoreBlendedSelection(unittest.TestCase):
-    _ATTRS = ("losing_attack_fallback_threshold", "switch_weight_multiplier")
+    _ATTRS = (
+        "losing_attack_fallback_threshold",
+        "switch_weight_multiplier",
+        "mix_visit_ratio",
+    )
 
     def setUp(self):
         self.originals = {attr: getattr(FoulPlayConfig, attr) for attr in self._ATTRS}
-        # neutralize damping and the losing fallback: these tests isolate the
-        # share x score blending itself
+        # neutralize damping, the losing fallback, AND near-tie mixing: these
+        # tests isolate the share x score blending itself, and mixing made
+        # equal-score fixtures nondeterministic (weighted coin flips)
         FoulPlayConfig.losing_attack_fallback_threshold = 0.0
         FoulPlayConfig.switch_weight_multiplier = 1.0
+        FoulPlayConfig.mix_visit_ratio = 0
 
     def tearDown(self):
         for attr, value in self.originals.items():
@@ -601,9 +613,14 @@ class TestTeraMarginGate(unittest.TestCase):
 
     def setUp(self):
         self.original = FoulPlayConfig.tera_margin_gate
+        # near-tie mixing randomizes among close-scored options; these
+        # fixtures live inside the mix band by design (they test margins)
+        self._mix = FoulPlayConfig.mix_visit_ratio
+        FoulPlayConfig.mix_visit_ratio = 0
 
     def tearDown(self):
         FoulPlayConfig.tera_margin_gate = self.original
+        FoulPlayConfig.mix_visit_ratio = self._mix
 
     def test_tie_break_level_tera_edge_is_gated(self):
         # tera edges the plain move by 0.006 (< 0.025 margin): gated, plain played
