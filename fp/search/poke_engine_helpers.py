@@ -618,7 +618,23 @@ def battler_to_poke_engine_side(
 ):
     last_used_move = "move:none"
     if battler.last_used_move.move.startswith("switch "):
-        last_used_move = "switch:0"
+        # The engine's `Switch(PokemonIndex)` payload names the mon that came IN
+        # (genx/generate_instructions.rs:532), so resolve the tracked name against the
+        # SAME party order `_padded_party` serializes rather than asserting a constant.
+        # 0 is right whenever the entrant is still the active - which is every state
+        # measured (`switch:N == active_index` on 53,424 / 53,424 switch-kind side
+        # vectors across both producers, LOSSLESS_ENCODING_SPEC F4) - but it was right
+        # by coincidence, not by construction: `illusion_end` swaps the active out from
+        # under a standing "switch X" and deliberately leaves last_used_move alone
+        # (battle_modifier.py:2552), and any future path that does the same would have
+        # serialized a payload naming the wrong mon with nothing to catch it.
+        entrant = battler.last_used_move.move[len("switch ") :]
+        switched_in_index = 0
+        for i, p in enumerate(([battler.active] + list(battler.reserve))[:6]):
+            if p is not None and p.name == entrant:
+                switched_in_index = i
+                break
+        last_used_move = "switch:{}".format(switched_in_index)
     elif battler.last_used_move.move == "struggle":
         # Struggle occupies no moveset slot, so it has no index to serialize. It is not
         # "move:none" either: PS records it as `lastMove` like any other move and Encore
@@ -824,7 +840,24 @@ def battler_to_poke_engine_side(
         accuracy_boost=battler.active.boosts[constants.ACCURACY],
         evasion_boost=battler.active.boosts[constants.EVASION],
         last_used_move=last_used_move,
-        switch_out_move_second_saved_move="NONE",  # always none because we can't know this
+        # The engine banks a side's SELECTED-but-unresolved move here when the OTHER
+        # side is force-switching out of a fast pivot (generate_instructions.rs:12388),
+        # and `get_all_options` then restricts that side to the banked move alone
+        # (genx/state.rs:1199-1230). Neither half of that is reachable at serve time:
+        # - when WE fast-pivot, side_two's pending move is the opponent's SELECTION,
+        #   which is hidden. `slow_uturn_move` below is the honest model of it - the
+        #   engine's wrapper clears the [None] this early-return produced and re-offers
+        #   the opponent its whole moveset (genx/state.rs:1142-1166) instead of guessing
+        #   one move. Measured: 261 ladder side-vectors carry it, 0.33%, against the
+        #   0.36% of self-play vectors whose banked move is actually live.
+        # - when the OPPONENT fast-pivots, PS sends us a `wait` request and never asks
+        #   for a decision, so no state is built and our own pending move is never
+        #   banked. `battle.force_switch` is our side only (battle_modifier.py:617).
+        # The remaining 5,711 of the 6,000 self-play vectors that carry a banked move
+        # (95%) have it with NO side force-switching: the engine sets the field and
+        # never clears it on the consuming path, so that residue is stale engine state,
+        # not a fact about the position. Nothing here can honestly reproduce it.
+        switch_out_move_second_saved_move="NONE",
         **extra_side_kwargs,
     )
 

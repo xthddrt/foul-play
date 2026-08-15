@@ -294,6 +294,16 @@ class Battler:
         # what Alluring Voice / Burning Jealousy's 100% confuse/burn secondary reads.
         self.stats_raised_this_turn = False
 
+        # PS `moveLastTurnResult` for this side's active: did the move it used on the
+        # PREVIOUS turn fail? Stomping Tantrum / Temper Flare double their base power on
+        # it (data/moves.ts temperflare basePowerCallback `source.moveLastTurnResult ===
+        # false`), and the engine gates that doubling on the serialized side field
+        # (genx/choice_effects.rs:509). Nothing set it before, so the doubling was dead
+        # at serve time. `move_failed_this_turn` is the in-flight `moveThisTurnResult`
+        # accumulator; battle_modifier rolls it over at `|turn|`, mirroring nextTurn.
+        self.last_move_failed = False
+        self.move_failed_this_turn = False
+
         self.account_name = None
 
         self.team_dict = None

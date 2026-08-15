@@ -6616,6 +6616,118 @@ def transform(battle, split_msg):
     side.active.ability = deepcopy(transformed_into_ability)
 
 
+# --- PS `moveThisTurnResult` / `moveLastTurnResult` -------------------------
+# An absorbing ability soaks the hit without an `|-immune|` line: PS sets the
+# attacker's `moveThisTurnResult` false exactly like a miss
+# (sim/battle-actions.ts), and the block only says so through a
+# `[from] ability: X|[of] <attacker>` annotation -- e.g. Waterfall into Water
+# Absorb is just `|-heal|p1a: Poliwrath|302/302|[from] ability: Water Absorb|
+# [of] p2a: Gyarados`.
+_ABSORB_ABILITIES = frozenset(
+    (
+        "voltabsorb",
+        "waterabsorb",
+        "dryskin",
+        "flashfire",
+        "lightningrod",
+        "stormdrain",
+        "motordrive",
+        "sapsipper",
+        "wellbakedbody",
+        "eartheater",
+        "windrider",
+        "magicbounce",
+    )
+)
+# Actions that mark the in-flight move as FAILED for its user.
+_MOVE_FAILED_ACTIONS = frozenset(("-fail", "-miss", "-immune", "-notarget"))
+_FROM_ABILITY = re.compile(r"\[from\] ability: ([^|]+)")
+_OF_SLOT = re.compile(r"\[of\] (p[12][ab]?): ?([^|]*)")
+
+
+def _move_failed_sides(block_lines) -> dict:
+    """Which sides' moves FAILED in this resolution block (PS `moveThisTurnResult`
+    false), read straight off the protocol.
+
+    Consumed as the NEXT turn's `moveLastTurnResult`, which is what Stomping Tantrum /
+    Temper Flare double on (data/moves.ts temperflare basePowerCallback
+    `source.moveLastTurnResult === false`).
+
+    A gen9 Protect-class block is deliberately NOT a failure: PS's protect handlers do not
+    clear the flag in this generation (the same carve-out the engine documents at
+    genx/choice_effects.rs:404-410). A side that SWITCHED after its failed move is also
+    not carried: the engine's flag is per-SIDE while PS's is per-POKEMON, so it is only
+    honest while the same mon is still standing."""
+    failed = {"p1": False, "p2": False}
+    switched_after: dict = {}
+    attacker_slot = None
+    for line in block_lines:
+        sp = line.split("|")
+        if len(sp) < 3:
+            continue
+        action = sp[1]
+        slot = sp[2].split(":")[0].strip()
+        if action in ("switch", "drag"):
+            switched_after[slot[:2]] = True
+            attacker_slot = None
+            continue
+        if action == "move":
+            attacker_slot = slot
+            switched_after.pop(slot[:2], None)
+            continue
+        if action == "cant":
+            # PS aborts runMove whenever the BeforeMove event returns false and stores
+            # that false in `moveThisTurnResult` (sim/battle-actions.ts:254-262).  Every
+            # `|cant|` line IS such an abort -- flinch / par / slp / frz
+            # (data/conditions.ts), Truant, recharge, Disable / Taunt / Attract, the
+            # Choice-item lock (data/conditions.ts:341-346) and `nopp` -- so the mon
+            # NAMED ON THE CANT LINE failed, whoever moved earlier in the block.
+            # Dropping these hid every interrupted-then-Temper-Flare/Stomping-Tantrum
+            # double: synth843494 T1 `|cant|p2a: Gyarados|flinch` -> T2 150 BP Temper
+            # Flare KOs Sceptile and Moxie boosts, which no engine branch could reach.
+            failed[slot[:2]] = True
+            switched_after.pop(slot[:2], None)
+            attacker_slot = None
+            continue
+        if attacker_slot is None:
+            continue
+        if action in _MOVE_FAILED_ACTIONS:
+            failed[attacker_slot[:2]] = True
+            continue
+        m = _FROM_ABILITY.search(line)
+        if m is not None and normalize_name(m.group(1)) in _ABSORB_ABILITIES:
+            of = _OF_SLOT.search(line)
+            if of is not None and of.group(1)[:2] == attacker_slot[:2]:
+                failed[attacker_slot[:2]] = True
+    for pid in ("p1", "p2"):
+        if switched_after.get(pid):
+            failed[pid] = False
+    return failed
+
+
+def update_last_move_failed(battle: Battle, msg_lines) -> None:
+    """Stamp PS's `moveLastTurnResult` onto both battlers from the block that just
+    resolved.  This is the ONLY thing that sets `Side.last_move_failed` at serve time:
+    the field is serialized (poke-engine state.rs:1569) and forwarded by
+    poke_engine_helpers, but nothing ever raised it, so the Stomping Tantrum / Temper
+    Flare doubling gate was dead in live play exactly as it was dead in replay before
+    checker.py started stamping it.
+
+    The roll-over is keyed on `|turn|`, which PS emits from `nextTurn` -- the same call
+    that copies `moveThisTurnResult` into `moveLastTurnResult` and resets it.  A block
+    with no `|turn|` line is a MID-turn resolution (the forceSwitch request a fast pivot
+    produces); PS has not rolled over yet, so the failures accumulate and the previous
+    turn's value keeps standing for the decision made inside that window."""
+    failed = _move_failed_sides(msg_lines)
+    for battler in (battle.user, battle.opponent):
+        if failed.get((battler.name or "")[:2]):
+            battler.move_failed_this_turn = True
+    if any(line.split("|")[1:2] == ["turn"] for line in msg_lines):
+        for battler in (battle.user, battle.opponent):
+            battler.last_move_failed = battler.move_failed_this_turn
+            battler.move_failed_this_turn = False
+
+
 def turn(battle, split_msg):
     battle.turn = int(split_msg[2])
     logger.info("")
@@ -6734,6 +6846,10 @@ def process_battle_updates(battle: Battle):
 def _process_battle_updates(battle: Battle):
     msg_lines = battle.msg_list
     check_speed_ranges(battle, msg_lines)
+    # read off the raw block, before any handler mutates the battle: the rule is
+    # purely protocol-shaped and the `switch`/`drag` carve-out needs the pre-switch
+    # actives to still be identified by SLOT, not by the reconstructed roster
+    update_last_move_failed(battle, msg_lines)
     for i, line in enumerate(msg_lines):
         split_msg = line.split("|")
         if len(split_msg) < 2:
