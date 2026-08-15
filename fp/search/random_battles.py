@@ -113,6 +113,9 @@ def entry_intent_multipliers(pkmn, remaining_sets):
 
 
 def entry_weighted_counts(pkmn, remaining_sets):
+    # counts are GENERATOR-TRUTH since 2026-08-15: RandomBattleTeamDatasets
+    # rebuilds every species' set structures and counts from the PS-exact
+    # distribution at initialize (see _override_with_ps_distribution)
     multipliers = entry_intent_multipliers(pkmn, remaining_sets)
     return [
         s.pkmn_set.count * m for s, m in zip(remaining_sets, multipliers)

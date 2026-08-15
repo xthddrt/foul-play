@@ -143,6 +143,11 @@ class TestGetSetsFile(unittest.TestCase):
 
 class TestUserObservedSets(unittest.TestCase):
     def setUp(self):
+        # these tests pin the OVERLAY-MERGE layer on synthetic species data;
+        # the PS-distribution override (which replaces real species' sets
+        # with generator truth) must stay out of the way
+        os.environ["FP_CONTROL_NO_PS_SET_DIST"] = "1"
+        self.addCleanup(os.environ.pop, "FP_CONTROL_NO_PS_SET_DIST", None)
         tmp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(tmp_dir.cleanup)
         self.cache_dir = tmp_dir.name

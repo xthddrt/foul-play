@@ -786,7 +786,72 @@ class _RandomBattleSets(PokemonSets):
         self.pkmn_sets = {}
         self.pkmn_mode = pkmn_mode
         self._load_raw_sets(pkmn_mode)
+        self._override_with_ps_distribution(pkmn_mode)
         self._initialize_pkmn_sets()
+
+    def _override_with_ps_distribution(self, pkmn_mode):
+        """Replace observed set counts AND structures with the PS-generator
+        truth (data/ps/gen9randombattle_set_dist.json, built by
+        tools/gen_ps_set_distributions.py from the ps_teams port).
+
+        The observed data is REVEAL-CENSORED: moves that rarely get clicked
+        are under-counted, and whole (item, tera) cells of real sets are
+        missing. Measured 2026-08-15: Mienshao's Triple Axel carried 7-11%
+        of candidate mass vs ~27% generator truth, so no sampled world had
+        the move that 4x-KO'd Noivern (game 2665304553 turn 5); the
+        Gogoat-Earthquake case was the same class. Reweighting alone could
+        not fix it -- the dataset's structures did not ENUMERATE most
+        TA (item, tera) cells -- hence this whole-structure override.
+
+        Per species the total count is scaled to the OLD total, so the
+        species marginal (used by the fallback unrevealed sampler) is
+        preserved; only the within-species set distribution changes. Levels
+        come from the species' existing keys (uniform per species in gen9
+        randbats). Missing file or species => untouched observed data.
+        FP_CONTROL_NO_PS_SET_DIST=1 disables."""
+        if "gen9randombattle" not in pkmn_mode.replace("blitz", ""):
+            return
+        if os.environ.get("FP_CONTROL_NO_PS_SET_DIST") == "1":
+            return
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "ps",
+            "gen9randombattle_set_dist.json",
+        )
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            n, dist = d["n_per_species"], d["dist"]
+        except (OSError, ValueError, KeyError):
+            logger.warning(
+                "PS set-distribution file missing/unreadable (%s); "
+                "keeping observed set data", path,
+            )
+            return
+        replaced = 0
+        for pkmn, sets in list(self.raw_pkmn_sets.items()):
+            ps = dist.get(pkmn)
+            if not ps or not sets:
+                continue
+            level = next(iter(sets)).split(",")[0]
+            scale = sum(sets.values()) / n
+            new_sets = {}
+            for key, cnt in ps.items():
+                moves, item, ability, tera = key.split("|")
+                # itemless convention: the dist writes "none", the raw-key
+                # format (and every downstream item comparison) uses the
+                # EMPTY string — "none" would be treated as a real item
+                # named none (caught on Jumpluff: zero key overlap)
+                if item == "none":
+                    item = ""
+                raw_key = "{},{},{},{},{}".format(level, item, ability, moves, tera)
+                new_sets[raw_key] = max(1, round(cnt * scale))
+            self.raw_pkmn_sets[pkmn] = new_sets
+            replaced += 1
+        logger.info(
+            "PS set-distribution override: %d species rebuilt from generator "
+            "truth", replaced,
+        )
 
     def predict_set(
         self, pkmn: Pokemon, match_traits=True
