@@ -175,13 +175,24 @@ def search_time_num_battles_randombattles(battle):
         and battle.opponent.active.hp > 0
         and opponent_active_num_moves == 0
     ):
-        # The x4 fan-out was sized for parallelism=8 (32 worlds). It scales with
-        # parallelism, so a wider pool multiplies into far more worlds than intended;
-        # first_turn_world_multiplier pins it when the world count matters more than
-        # the historical default.
+        # HISTORY: this was a x4 fan-out (x2 under time pressure), from the era
+        # when every world drew its active set INDEPENDENTLY and more samples
+        # meant better coverage. Under stratified allocation it became actively
+        # harmful: the world cap below trims back to `parallelism` with
+        # sorted-by-chance, and the stratified plan gives each world
+        # chance = set_probability / replica_count — so the MOST probable set
+        # gets the most replicas, the smallest per-replica chance, and is
+        # evicted FIRST. Measured (2665284849 turn 1): Gogoat's Earthquake
+        # sets were 78% of the sampled worlds and 1/8 of the searched ones —
+        # the cap inverted the belief on exactly the decision where set
+        # uncertainty is highest, and the bot clicked Toxic Spikes into a 4x
+        # Earthquake it believed was rare. Default 1: sample exactly what will
+        # be searched, so the stratified proportions survive untouched (the
+        # per-world budget is identical — the wall was already re-divided over
+        # the post-cap count). first_turn_world_multiplier still overrides.
         num_battles_multiplier = getattr(
             FoulPlayConfig, "first_turn_world_multiplier", None
-        ) or (2 if in_time_pressure else 4)
+        ) or 1
         num_battles = FoulPlayConfig.parallelism * num_battles_multiplier
         # base_ms is the WALL budget for the whole first decision
         return num_battles, _per_world_search_ms(base_ms, num_battles)
