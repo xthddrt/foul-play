@@ -1,0 +1,80 @@
+{
+ "_doc": "MCTS constants that ship WITH v8n_s1.bin. foul-play (config.py:491, search_server.py:39) and the duel harness (valuenet/sprt/run_duels.py:_sidecar_constants) copy every PE_* key here into the engine's environment when --nn-weights / PE_NN_WEIGHTS points at the matching .bin; explicit PE_* already in the environment wins. Without this file the engine silently runs the PREVIOUS champion's constants on the RELATIVE reward scale.",
+ "_derivation": "NOT produced by valuenet/derive_constants.py: that script measures a RELATIVE-mode tau (tau=1/delta on logit swings) and a SIGMOID_SCALE, both of which are INERT for this net (see _traps). It was replaced by a direct engine measurement of the leaf-reward spread -- the quantity both formulations actually spend -- described in _measurement.",
+ "PE_NN_REWARD": "absolute",
+ "PE_NN_TAU": 1.0,
+ "PE_TUNE_UCB_EXPLORATION": 0.0345,
+ "PE_TUNE_OPPONENT_UCB_EXPLORATION": 0.0345,
+ "_omitted_on_purpose": {
+  "PE_TUNE_SIGMOID_SCALE": "INERT in absolute mode -- absolute_leaf_reward() (mcts_common.rs:166-168) uses sigmoid(PE_NN_TAU * raw_logit) and never reads SIGMOID_SCALE; root_reference_eval() returns 0.0 early. Setting it here would look like calibration and change nothing.",
+  "PE_NN_SCALE": "INERT in absolute mode for the same reason (the raw net logit is used, not NN_SCALE * logit).",
+  "PE_MCTS_FPU": "left unset = +inf = one forced visit per arm, unchanged."
+ },
+ "_traps": {
+  "reward_mode": "NN_REWARD_ABSOLUTE = (PE_NN_REWARD == 'absolute') AND nn_active() (mcts_common.rs:142-149). A typo, or a net that fails to load, silently gives RELATIVE scoring of an absolute-valued net with no error. Verify with engine_config(): it must print reward=absolute.",
+  "tau_effective": "engine_config()'s tau_effective field is nn_scale * sigmoid_scale. In absolute mode it is MEANINGLESS (it prints 2.5000 here, the engine default) and is NOT evidence that tau is right. The live tau is PE_NN_TAU, which that line does not print.",
+  "duel_harness": "run_duels.py Worker.start() strips only PE_TUNE_* from the inherited environment, not PE_NN_*. If the parent shell exports PE_NN_REWARD=absolute, BOTH children inherit it, and a relative-calibrated champion whose sidecar has no PE_NN_REWARD key would silently run in absolute mode. Export PE_NN_REWARD nowhere; let this sidecar carry it."
+ },
+ "_measurement": {
+  "what": "sigma_R -- the standard deviation of the leaf-reward samples one root arm's Q averages over. It is the whole content of the UCB constant: with bonus = sqrt(c lnN / n) and SE(Q) = sigma_R/sqrt(n), k = sqrt(c lnN)/sigma_R is the exploration/exploitation setting and c = k^2 sigma_R^2 / lnN.",
+  "how": "One real search per state, 12,000 iterations, 1 thread, seed 12345, on 24 states drawn from the plc1 HOLDOUT (see _data). The engine already carries per-arm total_score and total_score_sq (poke-engine-py/src/lib.rs:1248-1253), so Var_i = total_score_sq_i/n_i - Q_i^2 is read straight out of the search; sigma_R is the visit-weighted pool over all root arms of both sides with n >= 30 (322 arms challenger / 287 champion).",
+  "sigma_R_absolute_v8n_s1": 0.1611,
+  "sigma_R_relative_champion": 0.3042,
+  "champion": "valuenet/m4_artifacts/valuenet_v6ref_nopuct.bin, its own sidecar constants (SIGMOID_SCALE 0.01806, UCB 0.1231, tau_effective 2.625), same 24 states, same budget, same estimator.",
+  "transfer": "c = c_champion * (sigma_abs/sigma_rel)^2 = 0.1231 * (0.1611/0.3042)^2 = 0.03452. Measuring BOTH sides with the identical estimator cancels its systematic biases (rollout correlation, leaf selection, budget), which is why the ratio is trusted rather than either sigma alone.",
+  "k_effective": 3.5348,
+  "self_consistency": "sigma_R depends slightly on the c the search ran with. Re-measured at c=0.1363 (4x higher) sigma_R moved only 0.1611 -> 0.1531, i.e. c -> 0.0312. The fixed point is 0.031-0.035; the shipped value is the one measured at its own operating point.",
+  "band_split": {
+   "early": 0.1314,
+   "mid": 0.1447,
+   "late": 0.1991
+  },
+  "cross_checks": {
+   "vs_analytic": "LEAF_REWARD_SCALE.md derived c=0.035 from an INFERRED sigma_abs of 0.1872 and an unmeasured f_4=0.198. The measurement lands at 0.0345 -- 1.5% away -- so the analytic value is confirmed, not overridden. Measured f_4 = sigma_abs^2 / E[p(1-p)] = 0.1611^2 / 0.17979 = 0.144 (E[p(1-p)] from this net's own holdout pred_stats), against the two indirect estimates 0.140 and 0.280 the document averaged.",
+   "estimator_sanity": "The same estimator returns 0.3042 for the champion, against the 0.3683 that document computed analytically for the older tuned pair (tau_rel 2.8503); scaled to this champion's tau_rel 2.625 that analytic value is 0.339, so the estimator reproduces an independently derived number to ~10%."
+  },
+  "residual_uncertainty": "c is now measured rather than inferred; the remaining spread is the 0.031-0.035 fixed-point band plus the 24-state sample. The old 0.020-0.060 credible range is superseded. Both UCB constants are equal by the same argument as every previous net: they rank Q values from one reward function on one scale."
+ },
+ "_tau_note": "PE_NN_TAU = 1.0 is not a tuning knob and was NOT re-derived: terminals enter the same accumulator as hard 1.0/0.0 (mcts_common.rs:363-364), so only tau=1 makes a net leaf the same physical quantity as a real win, and the net is calibrated to exactly that quantity (label_p, holdout Brier 0.046959 against a 0.013504 noise floor). If a duel ever moves tau, c must move as tau^2.",
+ "derived_from": "v8n_s1.bin (loaded by the engine itself); provenance from v8n_s1.meta.json / v8n_s1.config.json",
+ "shard": "plc1 holdout -- 24 states whose row index is in evallab/data/plc1/holdout_i.npy, read from s3://pokebot-valuenet-389825051723/evallab/plc1/positions.jsonl.gz (8 early / 8 mid / 8 late). The net trained on the 900,000 NON-holdout plc1 rows only; the holdout is carved by team pair, so these states share no game and no team pair with training. plc1e was NOT read.",
+ "weights_sha256": "fa4080b7e0f88b80b3935092095cf24e2883c7d165c1e2117acb511b5bded6af",
+ "ckpt": {
+  "name": "v8n_s1",
+  "from_ckpt": "v8n_s1.pt",
+  "seed": 1,
+  "mon_hid": 128,
+  "trunk": 256,
+  "mon_in": 226,
+  "trunk_in": 728,
+  "n_params": 370645,
+  "attn_d": 0,
+  "policy_slots": 0,
+  "bench_pool": "sum",
+  "trunk_blocks": 0,
+  "bench_sort": 1,
+  "pp_true_max": 1,
+  "reveal_masks": 0,
+  "target": "label_p (playout win rate, N=10)",
+  "holdout_brier_all": 0.04695905874974631
+ },
+ "engine": "poke-engine feat/adopted-eval @ 9ea2c61; verified with engine_config() -> nn_active=true reward=absolute ucb_exploration=0.0345 opponent_ucb_exploration=0.0345 fpu=inf",
+ "iters": 12000,
+ "lnN": 9.39,
+ "k": 3.5348,
+ "sigma": 0.1611,
+ "tau": 1.0,
+ "_copied_from": "nets_v8n/v8n_s1.constants.json, byte-identical PE_* values: the reward scale, tau and UCB exploration are unchanged by the corpus doubling -- only the evaluator weights changed, and sigma_R was not re-measured.",
+ "_hammered": {
+  "tag": "h2",
+  "rulings": [
+   "v1-2665399837-t18",
+   "mine1-g101-t18",
+   "mine1-g102-t106",
+   "mine1-g103-t65",
+   "mine1-g104-t53",
+   "mine1-g105-t43"
+  ],
+  "ts": "2026-08-16T03:12Z"
+ }
+}
