@@ -424,16 +424,24 @@ def find_best_move(battle: Battle) -> str:
         states.append((_s, chance))
         if _phantom_on:
             _party = ([b.opponent.active] + list(b.opponent.reserve))[:6]
-            phantom_masks[_s] = [
+            _m2 = [
                 i for i, p in enumerate(_party)
                 if p is not None and not getattr(p, "revealed", True)
             ]
+            # OUR unrevealed slots (concealment prior, alpha_self): what the
+            # opponent has not yet seen of us — identical across worlds.
+            _us = ([b.user.active] + list(b.user.reserve))[:6]
+            _m1 = [
+                i for i, p in enumerate(_us)
+                if p is not None and not getattr(p, "revealed", True)
+            ]
+            phantom_masks[_s] = (_m1, _m2)
     if _phantom_on and states:
         logger.info(
             "PHANTOM mode={} alpha={}: {} unseen opp slots in world 0: {}".format(
                 os.environ.get("PE_PHANTOM_MODE"),
                 os.environ.get("PE_PHANTOM_ALPHA", "0.5"),
-                len(phantom_masks[states[0][0]]),
+                len(phantom_masks[states[0][0]][1]),
                 phantom_masks[states[0][0]],
             )
         )

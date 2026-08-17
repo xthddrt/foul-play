@@ -135,14 +135,15 @@ def gather_mcts_results(
 
 def get_result_from_mcts(
     state: str, search_time_ms: int, index: int, threads: int,
-    phantom_side_two: list = None,
+    phantom_masks: tuple = None,
 ) -> MctsResult:
     logger.debug("Calling with {} state: {}".format(index, state))
     poke_engine_state = PokeEngineState.from_string(state)
 
+    p1, p2 = phantom_masks if phantom_masks else (None, None)
     res = monte_carlo_tree_search(
         poke_engine_state, search_time_ms, threads=threads,
-        phantom_side_two=phantom_side_two,
+        phantom_side_one=p1, phantom_side_two=p2,
     )
     logger.info("Iterations {}: {}".format(index, res.total_visits))
     return res
