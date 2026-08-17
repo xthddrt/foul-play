@@ -469,6 +469,39 @@ class _FoulPlayConfig:
         # once per process, then caches forever. A worker that has already
         # resolved that LazyLock would keep the hand eval no matter what we set
         # later — silently, with no error.
+        # ---- PHANTOM opponent-model knobs (engine-side; documented here so the
+        # config is the one place that knows they exist and what they do).
+        # All read by poke-engine through Rust LazyLocks (once per process) and
+        # only ACTIVE when fp/search/main.py passes per-world phantom masks,
+        # which it does iff PE_PHANTOM_MODE is "soft" or "cut".
+        #
+        #   PE_PHANTOM_MODE        off | cut | soft
+        #     soft (production): arms switching into a masked never-revealed
+        #       slot keep full Q but get a reduced exploration bonus.
+        #     cut: any node where a masked mon is ACTIVE becomes a leaf
+        #       (net eval, no expansion). Duel-measured ~+7 Elo vs off.
+        #   PE_PHANTOM_ALPHA       (0.5) exploration mult for THEIR phantom
+        #       switches — how hard we discount lines about mons we invented.
+        #   PE_PHANTOM_ALPHA_SELF  (0.9) exploration mult for OUR switches into
+        #       mons the opponent has not seen — a mild concealment tax.
+        #   PE_PHANTOM_SELF_AS_SEEN (0.5) what the MODELED OPPONENT believes
+        #       our unrevealed-switch rate to be: their tree statistics skip
+        #       our-hidden-switch samples at 1 - as_seen/alpha_self, so their
+        #       replies stop bracing for arrivals they cannot see and surprise
+        #       value backs up into our lines. Root pair table stays true.
+        #
+        # Masks-off / knobs-off is bit-exact with the pre-feature engine
+        # (parity-gated 2026-08-17). Launchers (run_game.sh / run_parallel.sh)
+        # export the production values; RG_PHANTOM_* overrides per run.
+        self.phantom_note = " ".join(
+            "{}={}".format(k, os.environ.get(k, "<unset>"))
+            for k in (
+                "PE_PHANTOM_MODE",
+                "PE_PHANTOM_ALPHA",
+                "PE_PHANTOM_ALPHA_SELF",
+                "PE_PHANTOM_SELF_AS_SEEN",
+            )
+        )
         self.nn_constants_note = None
         if args.nn_weights:
             weights = os.path.abspath(os.path.expanduser(args.nn_weights))
