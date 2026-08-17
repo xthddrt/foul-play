@@ -412,9 +412,31 @@ def find_best_move(battle: Battle) -> str:
     )
     _t_search_start = time.time()
 
-    states = [
-        (battle_to_poke_engine_state(b).to_string(), chance) for b, chance in battles
-    ]
+    # PHANTOM masks (Sally 2026-08-17): per world, the opponent party slots the
+    # sampler invented (never-revealed mons). Engine-side PE_PHANTOM_MODE
+    # decides what they mean (soft = half exploration, cut = leaf); env unset
+    # keeps everything byte-identical (masks never computed or passed).
+    _phantom_on = os.environ.get("PE_PHANTOM_MODE") in ("soft", "cut")
+    phantom_masks = {} if _phantom_on else None
+    states = []
+    for b, chance in battles:
+        _s = battle_to_poke_engine_state(b).to_string()
+        states.append((_s, chance))
+        if _phantom_on:
+            _party = ([b.opponent.active] + list(b.opponent.reserve))[:6]
+            phantom_masks[_s] = [
+                i for i, p in enumerate(_party)
+                if p is not None and not getattr(p, "revealed", True)
+            ]
+    if _phantom_on and states:
+        logger.info(
+            "PHANTOM mode={} alpha={}: {} unseen opp slots in world 0: {}".format(
+                os.environ.get("PE_PHANTOM_MODE"),
+                os.environ.get("PE_PHANTOM_ALPHA", "0.5"),
+                len(phantom_masks[states[0][0]]),
+                phantom_masks[states[0][0]],
+            )
+        )
     num_sampled = len(states)
     deduped_states = dedupe_states(states)
     # Dump the exact engine state of every sampled world. These strings are the
@@ -514,7 +536,8 @@ def find_best_move(battle: Battle) -> str:
         )
 
     mcts_results = run_mcts_searches(
-        states, search_time_per_battle, FoulPlayConfig.search_threads
+        states, search_time_per_battle, FoulPlayConfig.search_threads,
+        phantom_masks=phantom_masks,
     )
 
     if probe_eligible:

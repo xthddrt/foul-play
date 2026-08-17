@@ -134,12 +134,16 @@ def gather_mcts_results(
 
 
 def get_result_from_mcts(
-    state: str, search_time_ms: int, index: int, threads: int
+    state: str, search_time_ms: int, index: int, threads: int,
+    phantom_side_two: list = None,
 ) -> MctsResult:
     logger.debug("Calling with {} state: {}".format(index, state))
     poke_engine_state = PokeEngineState.from_string(state)
 
-    res = monte_carlo_tree_search(poke_engine_state, search_time_ms, threads=threads)
+    res = monte_carlo_tree_search(
+        poke_engine_state, search_time_ms, threads=threads,
+        phantom_side_two=phantom_side_two,
+    )
     logger.info("Iterations {}: {}".format(index, res.total_visits))
     return res
 
@@ -233,7 +237,8 @@ def run_probe_searches(
 
 
 def run_mcts_searches(
-    states: list[(str, float)], search_time_ms: int, threads: int
+    states: list[(str, float)], search_time_ms: int, threads: int,
+    phantom_masks: dict = None,
 ) -> list[(MctsResult, float, int)]:
     """Run one MCTS search per (state_string, sample_chance) world.
 
@@ -300,6 +305,7 @@ def run_mcts_searches(
                 search_time_ms,
                 index,
                 threads,
+                (phantom_masks or {}).get(state_string),
             )
             futures.append((fut, chance, index))
         return futures
