@@ -12,6 +12,7 @@ matching `.teams.json` sidecar states for that pokemon.
   5. stratified (largest-remainder) world allocation
 """
 
+import random
 import unittest
 from unittest import mock
 
@@ -480,20 +481,48 @@ class TestStratifiedWorldAllocation(unittest.TestCase):
                 self.assertEqual(n, len(plan))
                 self.assertAlmostEqual(1.0, sum(c for _, c in plan))
 
-    def test_total_chance_behind_a_set_is_its_posterior(self):
+    def test_total_chance_behind_a_set_is_its_posterior_in_expectation(self):
+        # RELAXED FROM PER-DRAW TO IN-EXPECTATION (Sally 2026-08-20).
+        # Systematic PPS hands set i floor(n_i) or ceil(n_i) seats, so a SINGLE
+        # plan cannot carry exactly its posterior unless n_i is a whole number.
+        # The old planner did hit it per-draw, but only by renormalizing over
+        # the SEATED sets -- which is exactly the bias that replaced it, since
+        # it fed the unseated tail's mass to whoever was already seated.
+        # The contract that matters is that the estimator is UNBIASED.
+        random.seed(11)
         sets = ["a", "b", "c"]
         weights = [50, 30, 20]
-        plan = _stratified_active_plan(sets, weights, 7)
+        trials = 20000
+        totals = {s: 0.0 for s in sets}
+        for _ in range(trials):
+            plan = _stratified_active_plan(sets, weights, 7)
+            self.assertEqual(7, len(plan))
+            self.assertAlmostEqual(1.0, sum(c for _, c in plan))
+            for s, c in plan:
+                totals[s] += c
         for name, weight in zip(sets, weights):
-            total = sum(c for s, c in plan if s == name)
-            self.assertAlmostEqual(weight / sum(weights), total)
+            self.assertAlmostEqual(
+                weight / sum(weights), totals[name] / trials, places=2
+            )
 
-    def test_the_allocation_is_deterministic(self):
-        sets = ["a", "b", "c", "d"]
-        weights = [11, 7, 5, 3]
-        first = _stratified_active_plan(sets, weights, 13)
-        for _ in range(5):
-            self.assertEqual(first, _stratified_active_plan(sets, weights, 13))
+    def test_the_tail_is_reachable_and_the_plan_is_not_frozen(self):
+        # INVERTED 2026-08-20. This used to assert the plan was DETERMINISTIC.
+        # The determinism WAS the defect: with more candidate sets than worlds,
+        # a pure-function allocation drops the SAME tail sets on every decision,
+        # so a genuinely possible set sits at probability zero for the entire
+        # battle instead of averaging in across turns. Measured at 72.3% of
+        # Mesprit's posterior mass permanently unreachable.
+        random.seed(3)
+        sets = ["s%d" % i for i in range(20)]
+        weights = [20 - i for i in range(20)]
+        seen, plans = set(), set()
+        for _ in range(400):
+            plan = _stratified_active_plan(sets, weights, 8)
+            self.assertEqual(8, len(plan))
+            plans.add(tuple(s for s, _ in plan))
+            seen.update(s for s, _ in plan)
+        self.assertEqual(set(sets), seen, "every set with p>0 must be reachable")
+        self.assertGreater(len(plans), 1, "the plan must not be frozen")
 
 
 if __name__ == "__main__":

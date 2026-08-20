@@ -517,6 +517,32 @@ class PokemonSet:
 
         return pkmn.speed_range.min <= speed <= pkmn.speed_range.max
 
+    def item_impossible(self, pkmn: Pokemon) -> bool:
+        """HARD negative item evidence -- never relaxable by the ladder.
+
+        Split out of `item_check` (Sally 2026-08-20) so the depth>=2 rungs in
+        `get_all_remaining_sets` can relax the SOFT question -- "do we merely
+        not KNOW the item?" -- without also discarding what we positively
+        PROVED. Both clauses below are conclusions drawn from observed play,
+        not guesses: `impossible_items` is written when a mon demonstrably
+        lacked an item (took hazard damage, so no Heavy-Duty Boots), and
+        `can_have_choice_item` is cleared once it used two different moves.
+
+        Relaxing these let rung 2 hand a Choice item to a mon we had watched
+        click two different moves; `lock_moves()` then hard-disabled its real
+        moves in every sampled world, so the search planned the whole turn
+        against a lock that could not exist.
+        """
+        if pkmn.item == self.item and pkmn.removed_item is None:
+            return False
+        if pkmn.removed_item == self.item:
+            return False
+        if self.item in pkmn.impossible_items:
+            return True
+        if self.item in constants.CHOICE_ITEMS and not pkmn.can_have_choice_item:
+            return True
+        return False
+
     def item_check(self, pkmn: Pokemon) -> bool:
         if pkmn.item == self.item and pkmn.removed_item is None:
             return True
@@ -549,7 +575,13 @@ class PokemonSet:
         match_tera=True,
     ):
         ability_check = not match_ability or self.ability_check(pkmn)
-        item_check = not match_item or self.item_check(pkmn)
+        # HARD impossibility applies at EVERY relaxation depth -- the ladder
+        # may relax "we do not know the item", never "we proved it is not this
+        # one". No-op while match_item=True (item_check already rejects those);
+        # it is depth>=2, which passes match_item=False, that this constrains.
+        item_check = not self.item_impossible(pkmn) and (
+            not match_item or self.item_check(pkmn)
+        )
         level_check = not level_check or pkmn.level == self.level
         speed_check = not speed_check or self.speed_check(pkmn)
         tera_check = True
@@ -682,9 +714,27 @@ class PokemonSets:
 
         pkmn_mega_info = pkmn.get_mega_pkmn_info()
         for pkmn_mega_name, _ in pkmn_mega_info:
-            ret += self.get_key_in_dict_from_pkmn_name(
-                pkmn_mega_name, pkmn_mega_name, None, self.pkmn_sets
-            )
+            # EXACT key only (Sally 2026-08-20). get_key_in_dict_from_pkmn_name
+            # falls back through baseSpecies, and fp/battle.py builds this name
+            # as f"{name}mega" -- 'meowsticfmega' IS in pokedex.json with
+            # baseSpecies 'Meowstic', so that rung handed Meowstic-F the BASE
+            # Meowstic's sets. They are different mons: Meowstic runs Prankster
+            # with screens, Meowstic-F runs Competitive with Nasty Plot, and
+            # Prankster is not among Meowstic-F's abilities at all. Live proof
+            # in ladder game 2662062714: 405 sampled world states gave
+            # Meowstic-F a moveset no Meowstic-F set can carry.
+            #
+            # The exact form also stops a BASE species' own list coming back a
+            # second time and being double-weighted in the count-weighted draw.
+            # ...and never the mon's OWN key: Rayquaza's mega info is
+            # ('rayquaza', 'none') -- it mega-evolves via Dragon Ascent rather
+            # than a stone -- so an unguarded lookup returned its list a second
+            # time and doubled every Rayquaza set's weight in the draw.
+            if (
+                pkmn_mega_name != pkmn.name
+                and pkmn_mega_name in self.pkmn_sets
+            ):
+                ret += self.pkmn_sets[pkmn_mega_name]
 
         return ret
 
@@ -706,6 +756,10 @@ class PokemonSets:
 
         return {}
 
+
+# Below this many generator draws a species keeps its OBSERVED distribution:
+# reweighting on a handful of samples substitutes noise for real counts.
+_PS_DIST_MIN_DRAWS = 200
 
 class _RandomBattleSets(PokemonSets):
     def __init__(self):
@@ -821,7 +875,7 @@ class _RandomBattleSets(PokemonSets):
         try:
             with open(path) as f:
                 d = json.load(f)
-            n, dist = d["n_per_species"], d["dist"]
+            dist = d["dist"]
         except (OSError, ValueError, KeyError):
             logger.warning(
                 "PS set-distribution file missing/unreadable (%s); "
@@ -829,12 +883,24 @@ class _RandomBattleSets(PokemonSets):
             )
             return
         replaced = 0
+        floored = 0
+        thin = 0
         for pkmn, sets in list(self.raw_pkmn_sets.items()):
             ps = dist.get(pkmn)
             if not ps or not sets:
                 continue
+            # Per-species denominator (Sally 2026-08-20). The table is now
+            # bucketed out of whole teams, so each species gets however many
+            # draws its pool rate earned rather than a fixed N; summing the
+            # species' own counts is also correct for the older fixed-N files.
+            denom = sum(ps.values())
+            if denom < _PS_DIST_MIN_DRAWS:
+                # too few draws to reweight with: a handful of samples would
+                # replace the observed distribution with noise. Keep observed.
+                thin += 1
+                continue
             level = next(iter(sets)).split(",")[0]
-            scale = sum(sets.values()) / n
+            scale = sum(sets.values()) / denom
             new_sets = {}
             for key, cnt in ps.items():
                 moves, item, ability, tera = key.split("|")
@@ -846,11 +912,26 @@ class _RandomBattleSets(PokemonSets):
                     item = ""
                 raw_key = "{},{},{},{},{}".format(level, item, ability, moves, tera)
                 new_sets[raw_key] = max(1, round(cnt * scale))
+            # UNION, NOT REPLACE (Sally 2026-08-20). This is a REWEIGHTING of
+            # the within-species distribution, and a reweighting must never
+            # delete a set from the support. The table is generated with
+            # is_lead=False and team_details={} (tools/gen_ps_set_distributions
+            # .py), so lead-only items (Focus Sash, Eviolite) and every
+            # team-conditional set come back with count 0 while being perfectly
+            # reachable in a real game -- and `= new_sets` made those P=0 for
+            # the whole battle. Observed keys the generator never produced are
+            # kept at a floor of 1 so they stay samplable at low weight.
+            for key in sets:
+                if key not in new_sets:
+                    new_sets[key] = 1
+                    floored += 1
             self.raw_pkmn_sets[pkmn] = new_sets
             replaced += 1
         logger.info(
             "PS set-distribution override: %d species rebuilt from generator "
-            "truth", replaced,
+            "truth (%d observed sets kept at floor count -- absent from the "
+            "generated table but genuinely reachable; %d species left on "
+            "observed data for too few draws)", replaced, floored, thin,
         )
 
     def predict_set(

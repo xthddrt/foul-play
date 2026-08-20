@@ -88,6 +88,28 @@ class Species:
         # foul-play's pokedex.json lowercases the `name` field.
         self.name = _loop._display_name(species_id, entry.get("name", species_id))
         base = entry.get("baseSpecies")
+        if not base:
+            # COSMETIC FORMES carry no `baseSpecies` here -- PS lists them on
+            # the BASE entry's `cosmeticFormes` -- so this fell through to the
+            # display name and every colour keyed as its own species. Species
+            # Clause is tested on `baseSpecies` (_ps_team_loop.py:551 seeds it,
+            # :650 enforces it), so a revealed Florges-Blue did not block an
+            # invented Florges-White. Measured 94/8000 fill-ins for florgesblue
+            # (0/8000 using the base id), and reproduced live: validation game
+            # g13 sampled two Florges in 3 worlds. PS keys Species Clause on
+            # the base species and 0 of 100,000 generated teams hold two.
+            #
+            # Resolve to the base's DISPLAY name, not its id: the base species
+            # itself also has no `baseSpecies` and so keys as `self.name`, and
+            # the two must produce the SAME key to collide.
+            from data.pkmn_sets import COSMETIC_FORME_TO_BASE, pokedex as _dex
+
+            cosmetic_base = COSMETIC_FORME_TO_BASE.get(species_id)
+            if cosmetic_base:
+                base = _loop._display_name(
+                    cosmetic_base,
+                    (_dex.get(cosmetic_base) or {}).get("name", cosmetic_base),
+                )
         self.baseSpecies = base if base else self.name
         self.base_species = self.baseSpecies
         self.forme = entry.get("forme", "")

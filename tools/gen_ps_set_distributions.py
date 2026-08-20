@@ -1,11 +1,11 @@
 """Generate per-species SET DISTRIBUTIONS from the PS-exact generator.
 
-    .venv/bin/python tools/gen_ps_set_distributions.py [N_per_species]
+    .venv/bin/python tools/gen_ps_set_distributions.py [N_TEAMS]
 
 Writes data/ps/gen9randombattle_set_dist.json: for every species in the
 gen9randombattle pool, the empirical distribution of complete sets
-(moves, item, ability, teraType) over N draws of `ps_teams.random_set` —
-i.e. the GENERATOR-TRUE prior for what a revealed mon is running.
+(moves, item, ability, teraType) — i.e. the GENERATOR-TRUE prior for what a
+revealed mon is running.
 
 WHY: the observed-count dataset (RandomBattleTeamDatasets) is built from
 REVEALED sets, and moves that rarely get clicked are systematically
@@ -16,14 +16,43 @@ as the Gogoat-Earthquake case. This file is the correction: battle-time
 candidate sets keep the dataset's STRUCTURES (and its evidence filtering)
 but are REWEIGHTED to these probabilities.
 
-Sets are drawn with is_lead=False (the mid-game entry regime; lead-only
-culls like Fast Bulky Setup's Booster Energy rule differ slightly for the
-opening mon — accepted approximation). Keys are foul-play-normalized:
-moves sorted, item/ability/tera via normalize_name, '' item -> "none".
+WHOLE-TEAM SAMPLING (Sally 2026-08-20). Sets are bucketed out of complete
+`ps_teams.random_team()` draws, NOT out of per-species
+`random_set(team_details={}, is_lead=False)` calls. The old form asked the
+generator a question no real game ever asks — "what set would this mon roll
+as the FIRST member of an EMPTY team?" — and the answer is not the marginal:
+
+  * team_details={} means PS's team-level culls at teams.ts:516-523 never
+    fire and its enforcements at :788-796 always do, so every
+    team-conditional set had probability ZERO. Corviknight came out
+    P(defog)=1.000 against a true 0.866; Heatran P(stealthrock)=1.000 vs
+    0.870. 34 species lost 10-17% of their real mass.
+  * is_lead=False means the lead-only branches (:1203, :1312-1315,
+    :1372-1375, :1399-1403) never fire, so Focus Sash and Eviolite were
+    impossible on the one mon PS guarantees IS the lead — 100% of ariados /
+    galvantula / kricketune lead sets were unreachable.
+
+Bucketing whole teams makes the table the true unconditional marginal,
+including leads (slot 0 of every team) and team-conditional sets at their
+real rates. It does NOT make it conditional on what the opponent has already
+shown — that needs a teamDetails-keyed table or conditional redraw, and is
+tracked separately.
+
+Sampling cost is proportional to coverage of the RAREST species, not the
+mean: species are near-uniform in gen9 randbats (~509 of them, 6 slots per
+team), so N_TEAMS teams give a species about 6*N/509 draws. 255k teams
+~= 3000 draws/species ~= 7 minutes.
+
+Keys are foul-play-normalized: moves sorted, item/ability/tera via
+normalize_name, '' item -> "none". `n_per_species` is written as a per-species
+MAP now (counts differ by species); the loader falls back to summing a
+species' own counts, so the file stays readable by older code.
 """
+import collections
 import json
 import os
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FP = os.path.dirname(HERE)
@@ -34,31 +63,48 @@ from fp.search import ps_teams  # noqa: E402
 from fp.search._ps_team_loop import RANDOM_SETS  # noqa: E402
 
 
-def main(n_per_species=3000):
-    ps_teams.seed(20260815)
-    out = {}
-    species_ids = sorted(RANDOM_SETS.keys())
-    for i, sid in enumerate(species_ids):
-        counts = {}
-        for _ in range(n_per_species):
-            s = ps_teams._GEN.random_set(sid, team_details={}, is_lead=False)
-            key = "|".join([
-                ",".join(sorted(s["moves"])),
-                normalize_name(s["item"]) if s["item"] else "none",
-                normalize_name(s["ability"]),
-                normalize_name(s["teraType"]),
-            ])
-            counts[key] = counts.get(key, 0) + 1
-        out[sid] = counts
-        if (i + 1) % 50 == 0:
-            print(f"{i + 1}/{len(species_ids)} species", flush=True)
+def set_key(mon: dict) -> str:
+    return "|".join([
+        ",".join(sorted(normalize_name(m) for m in mon["moves"])),
+        normalize_name(mon["item"]) if mon["item"] else "none",
+        normalize_name(mon["ability"]),
+        normalize_name(mon["teraType"]),
+    ])
+
+
+def main(n_teams=255000):
+    ps_teams.seed(20260820)
+    out = collections.defaultdict(collections.Counter)
+    t0 = time.time()
+    for i in range(n_teams):
+        for mon in ps_teams.random_team():
+            out[mon["speciesId"]][set_key(mon)] += 1
+        if (i + 1) % 25000 == 0:
+            el = time.time() - t0
+            print(f"{i + 1}/{n_teams} teams  {el:.0f}s  "
+                  f"({(i + 1) / el:.0f}/s)", flush=True)
+
+    pool = sorted(RANDOM_SETS.keys())
+    dist = {sid: dict(out[sid]) for sid in pool if out.get(sid)}
+    per_species = {sid: sum(dist[sid].values()) for sid in dist}
+    missing = [sid for sid in pool if sid not in dist]
+    thin = sorted((n, s) for s, n in per_species.items())[:5]
+    print(f"species covered: {len(dist)}/{len(pool)}  missing={len(missing)}")
+    print(f"draws/species: min={min(per_species.values())} "
+          f"mean={sum(per_species.values()) // len(per_species)} "
+          f"max={max(per_species.values())}")
+    print(f"thinnest: {thin}")
+    if missing:
+        print(f"MISSING (kept on observed data by the loader): {missing[:20]}")
+
     path = os.path.join(FP, "data", "ps", "gen9randombattle_set_dist.json")
     with open(path, "w") as f:
-        json.dump({"n_per_species": n_per_species, "seed": 20260815,
-                   "dist": out}, f, separators=(",", ":"))
+        json.dump({"n_per_species": per_species, "seed": 20260820,
+                   "n_teams": n_teams, "source": "whole-team",
+                   "dist": dist}, f, separators=(",", ":"))
     print(f"wrote {path} ({os.path.getsize(path) // 1024} KB, "
-          f"{len(species_ids)} species x {n_per_species} draws)")
+          f"{len(dist)} species from {n_teams} teams)")
 
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]) if len(sys.argv) > 1 else 3000)
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 255000)

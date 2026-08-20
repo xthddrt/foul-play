@@ -639,6 +639,11 @@ def random_team(max_team_size=MAX_TEAM_SIZE, is_monotype=False, is_doubles=False
     )
 
     leads_remaining = 0 if existing else (2 if is_doubles else 1)
+    # How many members were already on the team when this call started. PS's
+    # position rules count mons IT built; in continuation mode `pokemon` is
+    # pre-seeded with the revealed ones, so a raw len(pokemon) conflates
+    # "sixth mon generated" with "sixth mon on the team".
+    n_seeded = len(pokemon)
     # gen9randombattle has neither 'pickedteamsize' nor 'teampreview'.
     while base_species_pool and len(pokemon) < max_team_size:
         base_species = sample_no_replace(base_species_pool)
@@ -655,8 +660,25 @@ def random_team(max_team_size=MAX_TEAM_SIZE, is_monotype=False, is_doubles=False
         if species.id in ("ogerpon", "ogerponhearthflame", "terapagos") and team_details.get("teraBlast"):
             continue
 
-        # Illusion shouldn't be on the last slot
-        if species.baseSpecies == "Zoroark" and len(pokemon) >= (max_team_size - 1):
+        # Illusion shouldn't be on the last slot (teams.ts:1767-1768). This is a
+        # BUILD-ORDER rule -- PS's `pokemon.length` is how many mons IT has
+        # generated so far, i.e. Zoroark may not be the last mon GENERATED. It
+        # says nothing about which members are revealed.
+        #
+        # Ported with a raw len(pokemon) it became a team-MEMBERSHIP rule: in
+        # continuation mode `pokemon` is seeded with the revealed mons, so with
+        # 5 of 6 revealed the single fill is judged at len(pokemon)==5 >= 5 and
+        # every Zoroark forme is skipped unconditionally. Measured over 60,000
+        # trials (build a real team, hide one random slot, complete the other
+        # 5): the hidden mon was a Zoroark forme 144 times and complete_team
+        # returned a Zoroark fill ZERO times. Real PS runs them at 0.200% of
+        # slots / ~1.2% of teams, and a team holding one demonstrably exists
+        # with any 5 of its members revealed -- so the fill must be allowed to
+        # be Zoroark. Count only what THIS call built.
+        if (
+            species.baseSpecies == "Zoroark"
+            and len(pokemon) - n_seeded >= (max_team_size - 1)
+        ):
             continue
 
         types = species.types

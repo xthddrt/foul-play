@@ -6431,10 +6431,20 @@ def upkeep(battle, _):
     # a mon that sat below max through a full turn boundary and did not gain HP
     # cannot be holding it. A single below-max reading is consistent with having
     # just switched into hazards, or with healing and then taking more damage.
+    # ...and only if it is ALIVE. A mon that was chipped to 0 this turn reads
+    # as `below_max` with `hp <= prev_hp` while never having survived a residual
+    # at all -- Leftovers gets no chance to fire on a fainted mon. Measured in
+    # validation batch 20260820-151732 game g6: Hitmontop sat at 100/100 for
+    # nine turns, was KO'd in one hit, and the faint itself "proved" no
+    # Leftovers. Its true set WAS the Leftovers one, so every candidate died and
+    # the empty-candidate fallback ran 112 times in that game, writing merged
+    # movesets the generator never produces (112/184/48 in g6/g9/g7).
+    alive = opp_pkmn.hp > 0
     saw_residual_without_heal = (
-        below_max and prev_hp is not None and opp_pkmn.hp <= prev_hp
+        alive and below_max and prev_hp is not None and opp_pkmn.hp <= prev_hp
     )
-    opp_pkmn._last_upkeep_hp = opp_pkmn.hp
+    if alive:
+        opp_pkmn._last_upkeep_hp = opp_pkmn.hp
 
     if below_max and saw_residual_without_heal:
         logger.info(

@@ -33,6 +33,28 @@ def _pace_across_processes(path, min_gap):
         f.flush()
 
 
+def _is_local_server(address: str) -> bool:
+    """True only for a websocket on this machine.
+
+    The send pacing and the post-login settle below exist because Showdown
+    THROTTLES and a dropped /choose is an inactivity loss (battle 2662166594,
+    2026-08-09). They are pure cost against a local --no-security server, which
+    has no throttle at all -- and they dominate a short validation game: 0.62s
+    per outbound message plus a 3s settle turned a 2.5s-of-search game into 18s.
+    Speeding that up must never be able to touch a real ladder connection, so
+    the opt-out is gated on the ADDRESS, not just on an env var.
+    """
+    a = (address or "").lower()
+    host = a.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    return host in ("localhost", "127.0.0.1", "::1", "[::1]")
+
+
+def _fast_local(address: str) -> bool:
+    return (
+        os.environ.get("FP_LOCAL_NO_PACE") == "1" and _is_local_server(address)
+    )
+
+
 class LoginError(Exception):
     pass
 
@@ -100,6 +122,7 @@ class PSWebsocketClient:
         if not hasattr(self, "_send_lock"):
             self._send_lock = asyncio.Lock()
             self._last_send_mono = 0.0
+            self._min_send_gap = 0.0 if _fast_local(self.address) else 0.62
             pace_dir = os.environ.get("FP_CLAIM_DIR")
             self._pace_file = (
                 os.path.join(
@@ -114,10 +137,10 @@ class PSWebsocketClient:
             if self._pace_file:
                 # account-wide pacing across sibling slot processes
                 await asyncio.to_thread(
-                    _pace_across_processes, self._pace_file, 0.62
+                    _pace_across_processes, self._pace_file, self._min_send_gap
                 )
             else:
-                gap = self._last_send_mono + 0.62 - time.monotonic()
+                gap = self._last_send_mono + self._min_send_gap - time.monotonic()
                 if gap > 0:
                     await asyncio.sleep(gap)
             message = room + "|" + "|".join(message_list)
@@ -211,7 +234,11 @@ class PSWebsocketClient:
         message = ["/trn " + self.username + ",0," + assertion]
         logger.info("Successfully logged in")
         await self.send_message("", message)
-        await asyncio.sleep(3)
+        # NOT zero even locally: /trn is processed asynchronously, and
+        # challenging before the rename lands makes the server drop the
+        # challenge with "cancelled because they changed their username".
+        # 0.5s is empirically enough on loopback; 3s is the remote setting.
+        await asyncio.sleep(0.5 if _fast_local(self.address) else 3)
         return userid
 
     async def relogin(self):

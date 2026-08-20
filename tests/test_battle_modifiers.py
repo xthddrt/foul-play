@@ -8908,3 +8908,41 @@ class TestConsumableNonActivationMining(unittest.TestCase):
             ["|-damage|p2a: Caterpie|0 fnt", "|faint|p2a: Caterpie"],
         )
         self.assertNotIn("rockyhelmet", self.battle.opponent.active.impossible_items)
+
+
+class TestLeftoversRuleOutRequiresSurvival(unittest.TestCase):
+    """REGRESSION (Sally 2026-08-20).
+
+    `upkeep` rules out Leftovers/Black Sludge once a mon has sat through a
+    residual phase below max HP without healing. A mon that was KO'd this turn
+    satisfies the arithmetic -- hp 0 < max_hp, and 0 <= last upkeep's hp --
+    without ever having survived a residual, and Leftovers cannot fire on a
+    fainted mon anyway.
+
+    Measured in validation batch 20260820-151732 game g6: Hitmontop sat at
+    100/100 for nine turns and was KO'd in one hit; the faint itself "proved"
+    no Leftovers. Its true set was the Leftovers one, so every candidate set
+    died and the empty-candidate fallback ran 112 times in that game.
+    """
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.opponent.active = Pokemon("hitmontop", 88)
+        self.battle.user.active = Pokemon("pikachu", 80)
+
+    def test_fainting_does_not_rule_out_leftovers(self):
+        opp = self.battle.opponent.active
+        opp.hp = opp.max_hp                 # untouched for the whole stint
+        upkeep(self.battle, "")
+        opp.hp = 0                          # KO'd this turn
+        upkeep(self.battle, "")
+        self.assertNotIn(constants.LEFTOVERS, opp.impossible_items)
+        self.assertNotIn(constants.BLACK_SLUDGE, opp.impossible_items)
+
+    def test_surviving_below_max_without_healing_still_rules_it_out(self):
+        # the real inference must keep working
+        opp = self.battle.opponent.active
+        opp.hp = opp.max_hp - 50
+        upkeep(self.battle, "")
+        upkeep(self.battle, "")
+        self.assertIn(constants.LEFTOVERS, opp.impossible_items)

@@ -7,7 +7,7 @@ import constants
 from constants import BattleType
 from data import all_move_json, pokedex
 from fp.battle import Battle, Pokemon
-from data.pkmn_sets import RandomBattleTeamDatasets, TeamDatasets
+from data.pkmn_sets import COSMETIC_FORME_TO_BASE, RandomBattleTeamDatasets, TeamDatasets
 from fp.search.helpers import log_pkmn_set, populate_pkmn_from_set
 from fp.helpers import (
     POKEMON_TYPE_INDICES,
@@ -168,7 +168,30 @@ def _clean_kill_moves(opponent_active, user_active, pkmn_set, ctx, our_best_hit)
 
 
 def revenge_certain_sets(opponent_active, user_active, remaining_sets):
-    """CERTAIN-REVENGE modeling: the opponent CHOSE this entry against our
+    """RETIRED 2026-08-20 -- NO LONGER CALLED. Kept for its tests and as the
+    record of why. Do not re-wire it into `prepare_random_battles`.
+
+    It hard-locked a just-entered opponent to a single clean-kill move, which
+    is exactly what the SPEC-B5 lesson forbids (see the ENTRY-INTENT comment at
+    the top of this file: intent may shift the prior but "can never exclude the
+    truth"). Measured cost, ladder game 2667906697 / 2667910469 turn 5: it
+    sampled Volcarona with ['fireblast'] only, so Quiver Dance -- present in
+    38/38 of its candidate sets, i.e. CERTAIN -- had probability zero in all 8
+    worlds. The opponent clicked Quiver Dance. Re-running that decision with
+    complete sets moved the argmax off `switch chimecho` entirely (95.0% ->
+    0.4%) and dropped the position from 0.744 to ~0.50: the lock was not
+    mispricing a tail, it was inflating the whole evaluation.
+
+    The premise is unsound, not merely mistuned. `_clean_kill_moves` tests
+    whether a KO is AVAILABLE, never whether taking it NOW beats setting up --
+    and against a mon it outspeeds and walls, the KO is still there next turn,
+    so a setup sweeper strictly prefers to boost first. The graded
+    entry-intent weights encode the same signal within a 0.5x-6x band and are
+    what the sampler uses now.
+
+    Original contract below.
+
+    CERTAIN-REVENGE modeling: the opponent CHOSE this entry against our
     current active, the revenge window is still open (no move used since
     entering), and candidate sets carry a CLEAN-KILL move - one that KOs
     our active at no or minimal cost to the killer. Model them as certainly
@@ -256,6 +279,106 @@ _INCOMPATIBLE_POKEMON = (
 _EXTRA_FIRE_WEAK_ABILITIES = {"dryskin", "fluffy"}
 
 
+# PS's TEAM-BASED MOVE CULLS (pokemon-showdown teams.ts:503-535), driven by the
+# teamDetails it accumulates as it builds each member (teams.ts:1909-1919).
+# Each entry is (moves that SET the flag, moves culled from later members once
+# it is set).
+#
+# These culls are SOFT in PS: every branch bails with
+# `if (moves.size + movePool.length <= this.maxMoveCount) return;` when removing
+# the move would leave the mon short, so the duplicate survives occasionally.
+# Measured over 100k generated teams: P(>=2 stealthrock) = 0.0000, but spikes
+# 0.0109 and rapidspin 0.0081. The sampler below mirrors that -- it prefers
+# candidate sets without the locked move and only falls back when NO candidate
+# avoids it.
+_TEAM_EXCLUSIVE = (
+    (("stealthrock", "stoneaxe"), ("stealthrock",)),
+    (("stickyweb",), ("stickyweb",)),
+    (("toxicspikes",), ("toxicspikes",)),
+    (("defog", "rapidspin", "mortalspin"), ("defog", "rapidspin")),
+    (("healbell",), ("healbell",)),
+)
+# spikes is a COUNTER in PS, not a flag: only the THIRD user is culled
+# (teams.ts:529 `teamDetails.spikes >= 2`).
+_SPIKES_SETTERS = ("spikes", "ceaselessedge")
+
+
+def _team_locked_moves(pkmn_list):
+    """Moves PS would have culled from any further member of this team.
+
+    Without this, each revealed opponent mon draws its set independently
+    (`random.choices` per reserve) with no cross-mon state, so a world can hold
+    two Stealth Rock users -- a team the generator can never produce. Seen in
+    validation runs vg_t2 and vg_f2: 14 and 13 of the sampled worlds gave the
+    opponent both an Azelf and a Camerupt carrying Stealth Rock.
+    """
+    locked, spikes_users = set(), 0
+    for pkmn in pkmn_list:
+        names = {m.name for m in getattr(pkmn, "moves", None) or []}
+        if not names:
+            continue
+        for setters, culled in _TEAM_EXCLUSIVE:
+            if names.intersection(setters):
+                locked.update(culled)
+        if names.intersection(_SPIKES_SETTERS):
+            spikes_users += 1
+    if spikes_users >= 2:
+        locked.add("spikes")
+    return locked
+
+
+def _draw_set_respecting_team(pkmn, candidate_sets, weights, locked):
+    """`random.choices` over the candidates, preferring ones that do not
+    duplicate an already-locked team move. Falls back to the unfiltered draw
+    when every candidate carries it -- which is PS's own behaviour, and is also
+    what keeps a mon that has genuinely REVEALED the move samplable."""
+    if locked:
+        keep = [
+            (s, w) for s, w in zip(candidate_sets, weights)
+            if not locked.intersection(s.pkmn_moveset.moves)
+        ]
+        if keep:
+            candidate_sets, weights = [k[0] for k in keep], [k[1] for k in keep]
+    return random.choices(candidate_sets, weights=weights)[0]
+
+
+def _forced_exclusive_moves(battle, revealed_pkmn_sets, skip=None):
+    """Exclusive team moves some OTHER opponent mon MUST be holding.
+
+    Two sources, both facts about this battle rather than draws: a move already
+    seen on the field, and a move present in EVERY candidate set that survived
+    the evidence for that mon. The second is what the reserve-side filter alone
+    cannot see -- in validation game g15 a speed read ruled out Choice Scarf for
+    Mamoswine, which killed its non-Stealth-Rock sets, so Stealth Rock became
+    forced; the ACTIVE (Stonjourner) was still planned without that knowledge
+    and duplicated it in 14 worlds.
+
+    The active is drawn from `_stratified_active_plan`, decided ONCE before the
+    world loop, so it cannot use the per-world lock the reserves use. Filtering
+    its candidate list up front is the equivalent.
+    """
+    party = [battle.opponent.active] + list(battle.opponent.reserve)
+    locked, spikes_users = set(), 0
+    for pkmn in party:
+        if pkmn is None or pkmn is skip:
+            continue
+        names = {m.name for m in getattr(pkmn, "moves", None) or []}
+        candidates = revealed_pkmn_sets.get(pkmn.name) or []
+        if candidates:
+            common = set(candidates[0].pkmn_moveset.moves)
+            for c in candidates[1:]:
+                common &= set(c.pkmn_moveset.moves)
+            names |= common
+        for setters, culled in _TEAM_EXCLUSIVE:
+            if names.intersection(setters):
+                locked.update(culled)
+        if names.intersection(_SPIKES_SETTERS):
+            spikes_users += 1
+    if spikes_users >= 2:
+        locked.add("spikes")
+    return locked
+
+
 def _datasets_for(battle: Battle):
     if battle.battle_type == BattleType.RANDOM_BATTLE:
         return RandomBattleTeamDatasets
@@ -283,8 +406,41 @@ def populate_pkmn_from_fallback_set(pkmn: Pokemon, datasets) -> bool:
         return False
 
     known_moves = list(pkmn.moves)
+    # HARD NEGATIVE EVIDENCE still applies (Sally 2026-08-20). The list above is
+    # the RAW species list -- get_pkmn_sets_from_pkmn_name never runs
+    # full_set_pkmn_can_have_set -- so drawing from it straight writes an item
+    # or ability we positively DISPROVED. That evidence is direct observation,
+    # not inference: battle_modifier.py:1427 adds every ability in
+    # ABILITIES_REVEALED_ON_SWITCH_IN (intimidate, pressure, neutralizinggas,
+    # sandstream, drought, drizzle, snowwarning) to impossible_abilities when a
+    # switch-in announced none of them, and can_have_choice_item is cleared once
+    # the mon used two different moves.
+    #
+    # Filter to sets that do not contradict any of it, and fall through to the
+    # unfiltered draw only if that leaves nothing -- the whole point of this
+    # function is that a live threat must never reach the engine un-populated.
+    plausible = [
+        s for s in unfiltered
+        if s.pkmn_set.item not in pkmn.impossible_items
+        and not (
+            s.pkmn_set.item in constants.CHOICE_ITEMS
+            and not pkmn.can_have_choice_item
+        )
+        and s.pkmn_set.ability not in pkmn.impossible_abilities
+        and not (
+            pkmn.terastallized
+            and s.pkmn_set.tera_type is not None
+            and s.pkmn_set.tera_type != pkmn.tera_type
+        )
+    ]
+    pool = plausible or unfiltered
+    if not plausible:
+        logger.warning(
+            "%s: even the unfiltered set list contradicts the evidence - "
+            "drawing anyway rather than leaving it blank", pkmn.name,
+        )
     sampled = random.choices(
-        unfiltered, weights=[s.pkmn_set.count for s in unfiltered]
+        pool, weights=[s.pkmn_set.count for s in pool]
     )[0]
     logger.warning(
         "No candidate set survived the evidence for {} - falling back to an "
@@ -360,30 +516,61 @@ def largest_remainder_allocation(weights, n: int) -> list[int]:
 def _stratified_active_plan(sets, weights, num_battles):
     """`[(set, sample_chance)] * num_battles` -- one entry per world.
 
-    Each world carries the posterior probability of the set it was given,
-    divided by the number of worlds that set received, so the chances sum to
-    exactly 1 over the whole batch (that is the invariant `_aggregate_results`
-    in fp/search/selection.py relies on when it weights each world's policy by
-    `sample_chance`, and `pooled_share` is compared against ABSOLUTE thresholds
-    there, so a deflated sum would silently tighten those gates).
+    SYSTEMATIC PPS SAMPLING with a random start. Set i is targeted
+    n_i = p_i * num_battles seats and receives floor(n_i) or ceil(n_i) of them,
+    so E[seats_i] = n_i EXACTLY, and any set with p_i > 0 is reachable on some
+    decision -- including the tail that cannot afford a whole seat.
 
-    The posterior is renormalized over the REPRESENTED sets: when there are
-    more candidate sets than worlds, the sets that got no seat would otherwise
-    take their mass out of the batch entirely. Within the represented sets the
-    relative weights are still exactly the posterior's.
+    Every world then carries the SAME chance, 1/num_battles: under systematic
+    PPS the sample is self-weighting, because the Horvitz-Thompson weight
+    p_i/pi_i collapses to 1/num_battles both for a set seated with certainty
+    and for one seated with probability n_i < 1. So the chances still sum to
+    exactly 1 -- the invariant `_aggregate_results` in fp/search/selection.py
+    relies on when it weights each world's policy by `sample_chance`, and
+    `pooled_share` is compared against ABSOLUTE thresholds there, so a deflated
+    sum would silently tighten those gates -- while the estimator is now
+    UNBIASED for the true posterior.
+
+    REPLACES a deterministic largest-remainder pick that renormalized over the
+    SEATED sets only (Sally 2026-08-20). That was biased twice over. It handed
+    the unseated mass to whoever was already seated -- measured up to 8.7x
+    inflation of the top set -- and because the allocation was a pure function
+    of the weights, the SAME tail sets were dropped on every decision while the
+    evidence was unchanged, so it never averaged out across turns the way
+    sampling noise does. Mesprit reached 72.3% of posterior mass permanently
+    unreachable, 19.7% of it holding a move that appeared in NO sampled world:
+    the Volcarona/Quiver-Dance failure reached without any revenge lock.
+
+    Tradeoff, stated: the plan is no longer deterministic, so two searches of
+    the same position can sample different sets. That is the point -- the
+    determinism WAS the defect -- but it means per-decision reproduction now
+    needs the RNG seeded. Honest limit: num_battles worlds still cannot COVER
+    more than num_battles sets on one decision; this fixes the persistence and
+    the inflation, not the per-decision coverage.
     """
-    allocation = largest_remainder_allocation(weights, num_battles)
-    represented_total = sum(w for w, c in zip(weights, allocation) if c > 0)
-    represented_count = sum(1 for c in allocation if c > 0)
+    if not sets:
+        return []
+    chance = 1.0 / num_battles
+    total = float(sum(weights))
+    if total <= 0:
+        # no usable posterior: fall back to spreading the seats evenly
+        return [(sets[i % len(sets)], chance) for i in range(num_battles)]
+
+    start = random.random()
     plan = []
-    for pkmn_set, weight, count in zip(sets, weights, allocation):
-        if count <= 0:
-            continue
-        if represented_total > 0:
-            probability = weight / represented_total
-        else:
-            probability = 1 / represented_count
-        plan.extend([(pkmn_set, probability / count)] * count)
+    cum_prev = 0.0
+    for pkmn_set, weight in zip(sets, weights):
+        cum = cum_prev + (weight / total) * num_battles
+        seats = int(cum + start) - int(cum_prev + start)
+        if seats > 0:
+            plan.extend([(pkmn_set, chance)] * seats)
+        cum_prev = cum
+    # Cumulative float error can leave the plan a seat short or long; trim or
+    # top up from the heaviest set so len(plan) == num_battles exactly.
+    del plan[num_battles:]
+    if len(plan) < num_battles:
+        heaviest = sets[max(range(len(sets)), key=lambda k: weights[k])]
+        plan.extend([(heaviest, chance)] * (num_battles - len(plan)))
     return plan
 
 
@@ -398,27 +585,24 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
     active_plan = None
     root_active = battle.opponent.active
     if root_active is not None and revealed_pkmn_sets.get(root_active.name):
-        certain_sets, certain_moves = (None, None)
-        if battle.user.active is not None and not getattr(
-            root_active, "transformed_into", None
-        ):
-            certain_sets, certain_moves = revenge_certain_sets(
-                root_active, battle.user.active, revealed_pkmn_sets[root_active.name]
-            )
-        if certain_sets:
-            logger.info(
-                "Certain-revenge entry: {} sampled with {} only".format(
-                    root_active.name, sorted(certain_moves)
-                )
-            )
-            plan_sets = certain_sets
-            plan_weights = [s.pkmn_set.count for s in certain_sets]
-        else:
-            plan_sets = revealed_pkmn_sets[root_active.name]
-            plan_weights = entry_weighted_counts(root_active, plan_sets)
+        # CERTAIN-REVENGE LOCK RETIRED (Sally 2026-08-20) -- see the banner on
+        # `revenge_certain_sets`. The graded entry-intent weights below already
+        # carry the "sent in to revenge-kill" signal, and carry it FLOORED AND
+        # CAPPED, so they can shift the prior without ever zeroing the truth.
+        plan_sets = revealed_pkmn_sets[root_active.name]
+        plan_weights = entry_weighted_counts(root_active, plan_sets)
+        # Plan around what the REST of the team is already forced to hold, so
+        # the active cannot duplicate a hazard/removal move PS would have culled.
+        forced = _forced_exclusive_moves(battle, revealed_pkmn_sets, skip=root_active)
+        if forced:
+            keep = [
+                (s_, w) for s_, w in zip(plan_sets, plan_weights)
+                if not forced.intersection(s_.pkmn_moveset.moves)
+            ]
+            if keep:      # else every candidate carries it -- PS bails too
+                plan_sets = [k[0] for k in keep]
+                plan_weights = [k[1] for k in keep]
         active_plan = _stratified_active_plan(plan_sets, plan_weights, num_battles)
-    else:
-        certain_sets, certain_moves = (None, None)
 
     sampled_battles = []
     for index in range(num_battles):
@@ -436,14 +620,40 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
                 # get_all_remaining_sets)
                 if active.item == constants.UNKNOWN_ITEM:
                     active.item = pkmn_full_set.pkmn_set.item
+                # ...and its TERA TYPE, which Transform does not copy in PS, so
+                # the base species' (Ditto's) own tera type is the correct one.
+                # `pkmn_full_set` is already the base species' set here -- the
+                # information was present in the very object being sampled and
+                # was simply dropped, leaving tera_type None so the serializer
+                # defaulted it (poke_engine_helpers.py:384
+                # `tera_type=pkmn.tera_type or "typeless"`). The engine's
+                # typeless column is 1.0 against everything, so the search
+                # priced the mon's tera arm as all-neutral AND STAB-less while
+                # still offering it. Measured across all 1,520 archived ladder
+                # games: 2,810 serializations carried tera_type=TYPELESS and
+                # every single one was a transformed mon; reproduced live in
+                # validation batch 20260820-155152 game g78, where a Ditto
+                # copying Slowbro-Galar serialized TYPELESS in 24 worlds.
+                if (
+                    not active.terastallized
+                    and not active.tera_type
+                    and pkmn_full_set.pkmn_set.tera_type is not None
+                ):
+                    active.tera_type = pkmn_full_set.pkmn_set.tera_type
             else:
                 populate_pkmn_from_set(active, pkmn_full_set)
-                if certain_sets:
-                    kept = [m for m in active.moves if m.name in certain_moves]
-                    if kept:
-                        active.moves = kept
         elif not getattr(active, "transformed_into", None):
             populate_pkmn_from_fallback_set(active, datasets)
+
+        # Seeded with every mon's CONFIRMED moves so a mon that has actually
+        # been seen using Stealth Rock locks it for the others, whatever order
+        # the reserves happen to be walked in. These are the SAME objects the
+        # loop populates, so each entry upgrades from confirmed-moves-only to
+        # its full sampled set as it is drawn -- no re-append (a duplicate
+        # reference would double-count the spikes counter).
+        fixed_so_far = [p for p in battle_copy.opponent.reserve if p is not None]
+        if battle_copy.opponent.active is not None:
+            fixed_so_far = [battle_copy.opponent.active] + fixed_so_far
 
         # fainted reserves are included so that a pkmn revived by
         # Revival Blessing has a predicted set for the search
@@ -452,10 +662,20 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
                 if not getattr(pkmn, "transformed_into", None):
                     populate_pkmn_from_fallback_set(pkmn, datasets)
                 continue
-            pkmn_full_set = random.choices(
+            # TEAM-AWARE draw: everything already fixed in THIS world (the
+            # active's sampled set, earlier reserves, and every mon's genuinely
+            # revealed moves) locks out the hazard/removal/screen moves PS
+            # would have culled. Drawn independently, these produced teams the
+            # generator cannot build.
+            locked = _team_locked_moves(
+                [p for p in fixed_so_far if p is not pkmn]
+            )
+            pkmn_full_set = _draw_set_respecting_team(
+                pkmn,
                 revealed_pkmn_sets[pkmn.name],
-                weights=entry_weighted_counts(pkmn, revealed_pkmn_sets[pkmn.name]),
-            )[0]
+                entry_weighted_counts(pkmn, revealed_pkmn_sets[pkmn.name]),
+                locked,
+            )
             populate_pkmn_from_set(pkmn, pkmn_full_set)
 
         populate_randombattle_unrevealed_pkmn(battle_copy)
@@ -556,7 +776,13 @@ def sample_randombattle_pokemon(existing_pokemon: list[Pokemon]) -> Pokemon:
 #   or more than 1 Pokemon that shares a 4x weakness
 def _team_building_name(pkmn: Pokemon) -> str:
     name = getattr(pkmn, "base_name", pkmn.name)
-    return name if name in pokedex else pkmn.name
+    name = name if name in pokedex else pkmn.name
+    # A COSMETIC forme carries no `baseSpecies` in pokedex.json, so the caller's
+    # `pokedex[...].get("baseSpecies", name)` falls back to the forme itself and
+    # Species Clause treats Florges-Blue and Florges-White as different species.
+    # Same defect as the PS-sampler path fixed in ps_teams.Species; resolved
+    # here too so the two samplers agree.
+    return COSMETIC_FORME_TO_BASE.get(name, name)
 
 
 def _team_building_types(pkmn: Pokemon) -> list[str]:
@@ -742,7 +968,26 @@ def _pokemon_from_ps_set(ps_set: dict) -> Pokemon:
     (HP shaving, Atk zeroing), so the fill-in's stats are the generator's."""
     evs = tuple(ps_set["evs"][k] for k in ("hp", "atk", "def", "spa", "spd", "spe"))
     ivs = tuple(ps_set["ivs"][k] for k in ("hp", "atk", "def", "spa", "spd", "spe"))
+    # BATTLE-ONLY FORMES (Sally 2026-08-20). ps_set["species"] is getForme's
+    # DISPLAY name, and for a battle-only forme that is its BASE -- getForme
+    # returns species.battleOnly (_ps_team_loop.py:347-350, ported from
+    # teams.ts:1449-1451). Naming the mon from it silently downgrades the
+    # forme: the CROWNED set (Rusted Sword, Behemoth Blade, level 64) lands on
+    # base Zacian, which is mono-Fairy with 120 Atk instead of Fairy/Steel with
+    # 150. `speciesId` is the forme actually drawn, the pokedex and the engine
+    # both carry ZACIANCROWNED/ZAMAZENTACROWNED, and it is also how a REVEALED
+    # opponent of the same mon already arrives (via PS's detailschange) -- so
+    # this is what makes the sampled and revealed copies agree.
+    # Measured before the fix, validation run 20260820-141359: 2/1680 sampled
+    # mon-instances were a Crowned set wearing the base forme's stats.
+    # Terapagos needs nothing here: poke-engine does Tera Shift itself.
     name = normalize_name(ps_set["species"])
+    sid = normalize_name(ps_set.get("speciesId") or "")
+    if sid and sid != name and sid in pokedex:
+        from fp.search import ps_teams
+
+        if getattr(ps_teams.get_species(sid), "battleOnly", None):
+            name = sid
     if name not in pokedex:
         name = ps_set["speciesId"]
     pkmn = Pokemon(name, ps_set["level"], evs=evs, ivs=ivs)
