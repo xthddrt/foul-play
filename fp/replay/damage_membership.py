@@ -2256,12 +2256,71 @@ def load_teams_sidecar(log_path: str, teams_dir: str) -> dict | None:
     return out if (out.get("p1") or out.get("p2")) else None
 
 
-def _match_exact_mon(lookup: dict, species: str) -> dict | None:
+def _row_move_keys(rec) -> set:
+    """The sidecar row's SET moves as normalized keys (empty for non-rows)."""
+    if not isinstance(rec, dict):
+        return set()
+    return {normalize_name(m) for m in (rec.get("moves") or ()) if m}
+
+
+def _is_transform_only_row(rec) -> bool:
+    """A row whose whole moveset is Transform -- i.e. an Imposter Ditto."""
+    return _row_move_keys(rec) == {"transform"}
+
+
+def _disambiguate_by_moves(candidates: list, revealed: set, drop_decoys=False) -> list:
+    """Narrow same-forme-family sidecar rows using the live mon's revealed moves.
+
+    IMPOSTER-DITTO SPECIES COLLISION.  A Ditto that Transforms into a species
+    its own side also carries makes the sidecar hold TWO rows in one forme
+    family, and a species-keyed lookup then joins the live mon to whichever the
+    generator happened to name -- with the Ditto's flat 133 stats, which
+    `apply_exact_team` applies verbatim because live key == row key.  Measured,
+    synthu6256926: p2's Imposter Ditto was recorded as `Terapagos-Terastal`
+    while the REAL Terapagos kept the base-forme name, so the terastallized
+    Terapagos derived atk 133 / spa 133 instead of 191 / 206 and both its hits
+    (crit Rapid Spin T2, super-effective Earth Power T3) fell outside the
+    PS-exact roll set.
+    Moves settle it: a Transform-only row cannot be a mon that has used any
+    other move, and otherwise the row that CONTAINS every revealed move is the
+    set actually being played.
+    """
+    if not revealed and not drop_decoys:
+        return candidates
+    non_decoy = [c for c in candidates if not _is_transform_only_row(c)]
+    if non_decoy:
+        candidates = non_decoy
+    if len(candidates) > 1:
+        covering = [c for c in candidates if revealed <= _row_move_keys(c)]
+        if covering:
+            candidates = covering
+    return candidates
+
+
+def _match_exact_mon(lookup: dict, species: str, moves=None) -> dict | None:
     key = _species_key(species)
     if key is None:
         return None
+    # Revealed moves of the LIVE mon (`fp.battle.Move` objects or plain names),
+    # minus Transform itself -- a real Ditto legitimately shows Transform.
+    revealed = {
+        normalize_name(getattr(m, "name", m)) for m in (moves or ()) if m is not None
+    }
+    revealed.discard("transform")
     rec = lookup.get(key)
-    if rec is not None:
+    # A row whose ENTIRE moveset is Transform is an Imposter Ditto, and the
+    # sidecar contract states the immutable SET species -- so a Transform-only
+    # row named as anything but a Ditto forme is a generator-written LIVE
+    # (Transformed) species: its key is not the identity of any set, and the
+    # live mon that hit it is the real bearer of that species.  Prefer any
+    # other row of the same forme family; keep `rec` if there is none, so a
+    # rejection can never lose a slot.
+    decoy = (
+        rec is not None
+        and _is_transform_only_row(rec)
+        and not key.startswith("ditto")
+    )
+    if rec is not None and not decoy and not (revealed and _is_transform_only_row(rec)):
         return rec
     if not os.environ.get("FP_CONTROL_NO_EXACT_TEAM_FORME_FAMILY"):
         # A permanent detailschange names a different forme of the SAME
@@ -2277,11 +2336,15 @@ def _match_exact_mon(lookup: dict, species: str) -> dict | None:
 
         wanted_family = family(key)
         family_hits = [v for k, v in lookup.items() if family(k) == wanted_family]
+        family_hits = _disambiguate_by_moves(family_hits, revealed, drop_decoys=decoy)
         if len(family_hits) == 1:
             return family_hits[0]
     # forme drift (detailschange etc.): fall back to a unique prefix match
     hits = [v for k, v in lookup.items() if k.startswith(key) or key.startswith(k)]
-    return hits[0] if len(hits) == 1 else None
+    hits = _disambiguate_by_moves(hits, revealed, drop_decoys=decoy)
+    if len(hits) == 1:
+        return hits[0]
+    return rec
 
 
 _STAT_ORDER = ("hp", "atk", "def", "spa", "spd", "spe")
@@ -2590,11 +2653,11 @@ def _fold_forme_duplicate_rows(battler, lookup: dict) -> None:
         return
     groups: dict = {}
     for pkmn in battler.reserve:
-        rec = _match_exact_mon(lookup, pkmn.name)
+        rec = _match_exact_mon(lookup, pkmn.name, pkmn.moves)
         if rec is not None:
             groups.setdefault(id(rec), []).append(pkmn)
     active_rec = (
-        _match_exact_mon(lookup, battler.active.name)
+        _match_exact_mon(lookup, battler.active.name, battler.active.moves)
         if battler.active is not None
         else None
     )
@@ -2609,7 +2672,7 @@ def _fold_forme_duplicate_rows(battler, lookup: dict) -> None:
             continue
         if len(rows) < 2:
             continue
-        rec = _match_exact_mon(lookup, rows[0].name) or {}
+        rec = _match_exact_mon(lookup, rows[0].name, rows[0].moves) or {}
         set_key = _species_key(rec.get("species") or "")
 
         def _liveness(p):
@@ -2672,7 +2735,7 @@ def _fill_unrevealed_reserves(battler, lookup: dict) -> None:
     # `Terapagos-Terastal` already claims the sidecar's `Terapagos` slot.
     claimed = set()
     for pkmn in party:
-        rec = _match_exact_mon(lookup, pkmn.name)
+        rec = _match_exact_mon(lookup, pkmn.name, pkmn.moves)
         if rec is not None:
             claimed.add(id(rec))
     for rec in lookup.values():  # sidecar order == PS's initial party order
@@ -2706,7 +2769,7 @@ def apply_exact_team(battler, lookup: dict, is_user: bool) -> None:
     if battler.active is not None:
         mons.append(battler.active)
     for pkmn in mons:
-        rec = _match_exact_mon(lookup, pkmn.name)
+        rec = _match_exact_mon(lookup, pkmn.name, pkmn.moves)
         if rec is None:
             continue
         tera_type = rec.get("teraType")

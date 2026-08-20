@@ -135,14 +135,17 @@ def gather_mcts_results(
 
 def get_result_from_mcts(
     state: str, search_time_ms: int, index: int, threads: int,
-    phantom_masks: tuple = None,
+    phantom_masks: tuple = None, iterations: int = 0,
 ) -> MctsResult:
     logger.debug("Calling with {} state: {}".format(index, state))
     poke_engine_state = PokeEngineState.from_string(state)
 
     p1, p2 = phantom_masks if phantom_masks else (None, None)
+    # iterations > 0 = fixed-iteration SCREENING search (EPG mode): the engine
+    # picks SearchLimit::Iterations whenever iterations > 0, so time must be 0.
     res = monte_carlo_tree_search(
-        poke_engine_state, search_time_ms, threads=threads,
+        poke_engine_state, 0 if iterations else search_time_ms,
+        iterations, threads=threads,
         phantom_side_one=p1, phantom_side_two=p2,
     )
     logger.info("Iterations {}: {}".format(index, res.total_visits))
@@ -239,7 +242,7 @@ def run_probe_searches(
 
 def run_mcts_searches(
     states: list[(str, float)], search_time_ms: int, threads: int,
-    phantom_masks: dict = None,
+    phantom_masks: dict = None, iterations: int = 0,
 ) -> list[(MctsResult, float, int)]:
     """Run one MCTS search per (state_string, sample_chance) world.
 
@@ -256,7 +259,10 @@ def run_mcts_searches(
     # so a dead worker box costs strength, never the game.
     from fp.search.remote import remote_mcts_searches
 
-    remote = remote_mcts_searches(states, search_time_ms, threads)
+    remote = remote_mcts_searches(
+        states, search_time_ms, threads,
+        phantom_masks=phantom_masks, iterations=iterations,
+    )
     if remote is not None:
         return remote
 
@@ -279,7 +285,17 @@ def run_mcts_searches(
     # remote-sized pool (e.g. 64) falling back to an 8-core box still trims
     # exactly as before.
     _local_pool = min(pool_workers(), _os.cpu_count() or 8)
-    _budgeted_waves = max(1, _math.ceil(FoulPlayConfig.parallelism / pool_workers()))
+    # Waves the CALLER budgeted for, derived from the world list it actually
+    # handed us -- not from FoulPlayConfig.parallelism. parallelism is the
+    # STEADY-STATE world count; the first decision deliberately samples
+    # parallelism x first_turn_world_multiplier (16 worlds / 2 waves by
+    # default) and divides the wall budget across those waves. Deriving the
+    # cap from parallelism made it 1 wave, trimmed turn 1 back to 8 worlds,
+    # and -- since the per-world ms was already halved for two waves -- spent
+    # half the configured first-turn budget (14000ms -> 7.1s observed
+    # 2026-08-17). len(states) keeps the remote-fallback case identical: 64
+    # states through a 64-pool is still 1 budgeted wave -> cap = local pool.
+    _budgeted_waves = max(1, _math.ceil(len(states) / pool_workers()))
     _cap = _local_pool * _budgeted_waves
     if len(states) > _cap:
         _trimmed = sorted(states, key=lambda sc: -sc[1])[:_cap]
@@ -307,6 +323,7 @@ def run_mcts_searches(
                 index,
                 threads,
                 (phantom_masks or {}).get(state_string),
+                iterations,
             )
             futures.append((fut, chance, index))
         return futures

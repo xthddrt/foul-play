@@ -8,6 +8,7 @@ from copy import deepcopy
 
 from constants import BattleType
 from fp.battle import Battle
+from fp.helpers import normalize_name
 from config import FoulPlayConfig
 from .standard_battles import prepare_battles
 from .random_battles import prepare_random_battles
@@ -344,6 +345,34 @@ def find_best_move(battle: Battle) -> str:
     except Exception:
         opp_alive = _OPP_TEAM_SIZE
     opp_unrevealed = max(0, _OPP_TEAM_SIZE - len(revealed_opponent_names))
+    # RB-SWITCH GATE inputs (Sally 2026-08-19). our_alive sets the gate margin
+    # (0.005 x alive): hiding the carrier is worth most with a full team.
+    # rb_switch_arms is the set of "switch <species>" arms that would REVEAL one
+    # of our Revival Blessing carriers -- unrevealed (never been active) and
+    # still holding the move with PP. Once revealed the arm drops out of the set
+    # and the gate stops applying, which is the intended scope.
+    try:
+        our_alive = 6 - battle.user.num_fainted_pkmn()
+    except Exception:
+        our_alive = 6
+    rb_switch_arms = set()
+    try:
+        for _p in list(battle.user.reserve):
+            if _p is None or getattr(_p, "hp", 0) <= 0:
+                continue
+            if getattr(_p, "revealed", True):
+                continue
+            for _mv in getattr(_p, "moves", []) or []:
+                _nm = getattr(_mv, "name", None) or getattr(_mv, "id", "")
+                if normalize_name(str(_nm)) == "revivalblessing" and getattr(_mv, "current_pp", 1) > 0:
+                    rb_switch_arms.add("switch " + normalize_name(_p.name))
+                    break
+    except Exception:
+        rb_switch_arms = set()
+    if rb_switch_arms:
+        logger.info("RB-SWITCH GATE armed: hidden carriers {} our_alive={}".format(
+            sorted(rb_switch_arms), our_alive))
+    rb_switch_arms = frozenset(rb_switch_arms)
     # Same derivation as poke_engine_helpers: tera is spent if the flag was set
     # (tera'd mon later fainted) or any party mon is currently terastallized.
     try:
@@ -411,6 +440,24 @@ def find_best_move(battle: Battle) -> str:
         )
     )
     _t_search_start = time.time()
+    # BLITZ TURN ALLOTMENT (Sally 2026-08-19, after the a44ects inactivity
+    # loss): the blitz timer is QUANTIZED per turn, not a running bank. Each
+    # turn starts with an allotment (normally 15s); finish the turn with >=6s
+    # of it left and the next turn is a fresh 15s; finish with 1-5s left and
+    # the next turn gets only 10s; run out and it is an inactivity forfeit
+    # (warnings fire at 10s and 5s). The server-parsed time_remaining is too
+    # sparse/stale to budget from (it sat at 15 through the entire forfeit
+    # game), so the allotment is tracked LOCALLY from our own measured turn
+    # times and only tightened, never loosened, by server messages.
+    # Tracked on FoulPlayConfig, NOT on `battle`: find_best_move receives a
+    # per-decision copy, so an attribute written here dies with the copy
+    # (observed 2026-08-19: turn 1 logged the penalty, turn 2 read 15 again).
+    # The FIRST decision is exempt from the model entirely -- the server runs
+    # it on a grace window (~40s observed), not the 15s allotment.
+    _is_first = is_first_decision(battle)
+    if _is_first:
+        FoulPlayConfig.turn_allotment = 15  # fresh game, fresh tracker
+    _allot = getattr(FoulPlayConfig, "turn_allotment", None) or 15
 
     # PHANTOM masks (Sally 2026-08-17): per world, the opponent party slots the
     # sampler invented (never-revealed mons). Engine-side PE_PHANTOM_MODE
@@ -428,7 +475,7 @@ def find_best_move(battle: Battle) -> str:
                 i for i, p in enumerate(_party)
                 if p is not None and not getattr(p, "revealed", True)
             ]
-            # OUR unrevealed slots (concealment prior, alpha_self): what the
+            # OUR unrevealed slots (PE_PHANTOM_SELF_AS_SEEN): what the
             # opponent has not yet seen of us — identical across worlds.
             _us = ([b.user.active] + list(b.user.reserve))[:6]
             _m1 = [
@@ -502,16 +549,46 @@ def find_best_move(battle: Battle) -> str:
                 num_sampled, len(states), _wave_count(len(states))
             )
         )
-    wall_budget_ms = base_search_time_ms(battle)
-    search_time_per_battle = _per_world_search_ms(wall_budget_ms, len(states))
-    logger.info(
-        "Budget: wall={}ms worlds={} waves={} -> {}ms per world".format(
-            wall_budget_ms,
-            len(states),
-            _wave_count(len(states)),
-            search_time_per_battle,
+    # EPG SCREENING MODE (Sally 2026-08-18): when the endgame playout gate is
+    # armed and the roster trigger is met, the timed search is replaced by a
+    # cheap fixed-iteration screening search (rank the top arms only) and the
+    # saved wall goes to the playouts, which make the final call. ~0.5s of
+    # screening + up to 8s of playouts fits the real blitz envelope.
+    from fp.search.epg import screening_iterations
+    epg_screen_iters = screening_iterations(states, battle)
+    if epg_screen_iters:
+        wall_budget_ms = 0
+        search_time_per_battle = 0
+        logger.info(
+            "Budget: EPG screening mode -> {} iterations x {} worlds".format(
+                epg_screen_iters, len(states)
+            )
         )
-    )
+    else:
+        wall_budget_ms = base_search_time_ms(battle)
+        # Allotment recovery: on a 10s penalty turn, finish with >=6s left so
+        # the NEXT turn returns to 15s. A full 4.5s search from a 10s
+        # allotment leaves ~5.3s (1-5s band) and locks the penalty in
+        # forever; a 3s search leaves >=6s and recovers immediately.
+        if "blitz" in (FoulPlayConfig.pokemon_format or "") and _allot < 15:
+            _cap = max(300, int((_allot - 7.0) * 1000))
+            if wall_budget_ms > _cap:
+                logger.info(
+                    "SEARCH CLAMPED by allotment: {}ms -> {}ms (allot={}s, "
+                    "recovering to 15s next turn)".format(
+                        wall_budget_ms, _cap, _allot
+                    )
+                )
+                wall_budget_ms = _cap
+        search_time_per_battle = _per_world_search_ms(wall_budget_ms, len(states))
+        logger.info(
+            "Budget: wall={}ms worlds={} waves={} -> {}ms per world".format(
+                wall_budget_ms,
+                len(states),
+                _wave_count(len(states)),
+                search_time_per_battle,
+            )
+        )
     # forensic artifact: the EXACT engine state each world searches, replayable
     # later with State.from_string (DEBUG => file log only). Without this,
     # post-game review has to reconstruct worlds from the sampled-set lines.
@@ -545,10 +622,10 @@ def find_best_move(battle: Battle) -> str:
 
     mcts_results = run_mcts_searches(
         states, search_time_per_battle, FoulPlayConfig.search_threads,
-        phantom_masks=phantom_masks,
+        phantom_masks=phantom_masks, iterations=epg_screen_iters,
     )
 
-    if probe_eligible:
+    if probe_eligible and not epg_screen_iters:
         choice, candidates = select_move_from_mcts_results(
             mcts_results,
             revealed_opponent_names,
@@ -557,6 +634,8 @@ def find_best_move(battle: Battle) -> str:
             opp_alive=opp_alive,
             opp_unrevealed=opp_unrevealed,
             opp_tera_used=opp_tera_used,
+            our_alive=our_alive,
+            rb_switch_arms=rb_switch_arms,
         )
         if len(candidates) > 1:
             choice = _probe_and_choose(states, candidates, choice, mcts_results)
@@ -567,8 +646,29 @@ def find_best_move(battle: Battle) -> str:
             opp_alive=opp_alive,
             opp_unrevealed=opp_unrevealed,
             opp_tera_used=opp_tera_used,
+            our_alive=our_alive,
+            rb_switch_arms=rb_switch_arms,
         )
+    # ENDGAME PLAYOUT GATE (Sally 2026-08-18): in small-roster positions the
+    # final say goes to forced-arm playouts (see fp/search/epg.py). No-op
+    # unless --endgame-playout-gate is set.
+    from fp.search.epg import maybe_playout_gate
+    choice = maybe_playout_gate(
+        choice, states, mcts_results, _allot,
+        spent_s=time.time() - _t_search_start,
+    )
     _elapsed = time.time() - _t_search_start
+    # Allotment transition (see the comment at _t_search_start). ~0.3s covers
+    # choice serialization + websocket send that happens after this point.
+    # First decision exempt: it runs on the server's grace window.
+    if "blitz" in (FoulPlayConfig.pokemon_format or "") and not _is_first:
+        _rem = _allot - _elapsed - 0.3
+        FoulPlayConfig.turn_allotment = 15 if _rem >= 6.0 else 10
+        if FoulPlayConfig.turn_allotment < 15:
+            logger.warning(
+                "CLOCK PENALTY: finished with ~{:.1f}s of {}s allotment -> "
+                "next turn 10s".format(max(_rem, 0.0), _allot)
+            )
     logger.info(
         "TurnTiming: elapsed={:.2f}s budget_per_world={}ms worlds={} waves={} "
         "expected_wall={:.2f}s time_remaining_at_start={}".format(

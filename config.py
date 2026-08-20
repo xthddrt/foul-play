@@ -128,9 +128,42 @@ class _FoulPlayConfig:
     turn_overhead_margin_ms: int = 1500
     tera_gate_score_per_mon: float = 0.0
     tera_gate_visit_frac: float = 0.5
+    # RB-SWITCH GATE (Sally 2026-08-19). Switching into a still-unrevealed
+    # Revival Blessing carrier must beat the best alternative holding >=
+    # rb_switch_gate_visit_frac (0.15) pooled visit share by
+    # rb_switch_gate_per_alive x (5 - our_dead) on agg_score, else that
+    # alternative is played instead. See selection._apply_argmax_rb_switch_gate.
+    #
+    # 0.003 -> max margin 0.015 at a full team, 0 when the carrier is our last
+    # mon (switching to it is then forced). For scale: measured argmax-vs-
+    # runner-up Q gaps run ~0.003 median, and the DUEL-TUNED tera gate peaks at
+    # 0.010 (--tera-gate-q-margin 0.01). So this is deliberately 1.5x the tera
+    # gate even though RB is the cheaper action -- switching the carrier in
+    # REVEALS it but does NOT spend Revival Blessing. Chosen for
+    # restrictiveness, not parity: over 33 probe games it gates 14/23
+    # opportunities vs 12/23 at 0.002, the two extra being +0.0065/+0.0069 gaps
+    # at 4 alive -- it overrides modest preferences, not only dead heats. An
+    # earlier 0.005 spec was a near-total ban (max margin 0.025, above nearly
+    # every observed gap) and was walked back. 0.0 disables the gate.
+    #
+    # visit_frac 0.15: at 0.25 several allows were accidents of the threshold
+    # (no alternative cleared the bar, so the score test never ran). 0.15 makes
+    # them decide on the margin instead, and matched 0.10 exactly on 20 games.
+    rb_switch_gate_per_alive: float = 0.003
+    rb_switch_gate_visit_frac: float = 0.15
     # Extra score margin demanded while the OPPONENT still holds their own
     # tera: their comeback potential is higher, so ours is worth more held.
     tera_gate_opp_tera_bonus: float = 0.002
+    # Q-scaled argmax-path tera gate (Sally 2026-08-17, replaces the per-mon
+    # margin when set): margin = tera_gate_q_margin x (4Q(1-Q))^2 with Q = the
+    # best considered non-tera's score, so the knob IS the margin demanded in
+    # a level game (production 0.01 = 1%). Squared: sigmoid compression AND
+    # the held option's remaining relevance both scale with Q(1-Q), so the
+    # rent decays fast once a game tilts either way. Consideration set
+    # unchanged (visit-frac bar).
+    tera_gate_q_margin: float = 0.0
+    # Endgame playout gate (fp/search/epg.py). 0 = off.
+    endgame_playout_gate: int = 0
     losing_upside_threshold: float = 0.15
     losing_upside_displacement_multiplier: float = 2.0
     selection_argmax_only: bool = False
@@ -257,8 +290,9 @@ class _FoulPlayConfig:
             "--tera-gate-visit-frac",
             type=float,
             default=None,
-            help="Fraction of the tera's pooled visit share a non-tera option must "
-            "reach to be considered by --tera-gate-per-mon. Default 0.5.",
+            help="Fraction of the SUMMED pooled visit share of all tera arms a "
+            "non-tera option must reach to be considered by --tera-gate-per-mon. "
+            "Default 0.5.",
         )
         parser.add_argument(
             "--tera-gate-opp-tera-bonus",
@@ -266,6 +300,26 @@ class _FoulPlayConfig:
             default=None,
             help="Extra margin added to the tera gate floor while the opponent "
             "still holds THEIR tera. Default 0.002.",
+        )
+        parser.add_argument(
+            "--tera-gate-q-margin",
+            type=float,
+            default=None,
+            help="Q-scaled argmax-path tera gate; when set (>0) it REPLACES the "
+            "per-mon margin: a tera/mega is spent only if it beats the best "
+            "CONSIDERED non-tera's ave_score by this value x (4Q(1-Q))^2, Q "
+            "being that non-tera's score — i.e. this IS the margin at Q=0.5. "
+            "Consideration still uses --tera-gate-visit-frac. 0 (default) "
+            "keeps the per-mon formula.",
+        )
+        parser.add_argument(
+            "--endgame-playout-gate",
+            type=int,
+            default=None,
+            help="1 = in small-roster positions (total alive <= 6, live Q) the "
+            "final move is decided by forced-arm playouts over the top-4 arms "
+            "(fp/search/epg.py; Sally 2026-08-18 spec: 2.5k iters, n by alive "
+            "2:16/3:24/4:32/5:40/6:48 total, up to 8 worlds, CRN, top-4 worlds). 0 (default) off.",
         )
         parser.add_argument(
             "--search-parallelism",
@@ -480,15 +534,16 @@ class _FoulPlayConfig:
         #       slot keep full Q but get a reduced exploration bonus.
         #     cut: any node where a masked mon is ACTIVE becomes a leaf
         #       (net eval, no expansion). Duel-measured ~+7 Elo vs off.
-        #   PE_PHANTOM_ALPHA       (0.5) exploration mult for THEIR phantom
+        #   PE_PHANTOM_ALPHA       (0)   exploration mult for THEIR phantom
         #       switches — how hard we discount lines about mons we invented.
-        #   PE_PHANTOM_ALPHA_SELF  (0.9) exploration mult for OUR switches into
-        #       mons the opponent has not seen — a mild concealment tax.
-        #   PE_PHANTOM_SELF_AS_SEEN (0.5) what the MODELED OPPONENT believes
-        #       our unrevealed-switch rate to be: their tree statistics skip
-        #       our-hidden-switch samples at 1 - as_seen/alpha_self, so their
-        #       replies stop bracing for arrivals they cannot see and surprise
-        #       value backs up into our lines. Root pair table stays true.
+        #   PE_PHANTOM_SELF_AS_SEEN (0.2) the weight the MODELED OPPONENT puts
+        #       on lines using our not-yet-revealed switches: their tree
+        #       statistics skip those samples with probability 1 - as_seen, so
+        #       their replies stop bracing for arrivals they cannot see and
+        #       surprise value backs up into our lines. Root pair table stays
+        #       true. 1.0 = off. Independent of every other knob.
+        #   (PE_PHANTOM_ALPHA_SELF was REMOVED 2026-08-17 — we know our own
+        #    team, so discounting our own switches had no epistemic basis.)
         #
         # Masks-off / knobs-off is bit-exact with the pre-feature engine
         # (parity-gated 2026-08-17). Launchers (run_game.sh / run_parallel.sh)
@@ -498,7 +553,6 @@ class _FoulPlayConfig:
             for k in (
                 "PE_PHANTOM_MODE",
                 "PE_PHANTOM_ALPHA",
-                "PE_PHANTOM_ALPHA_SELF",
                 "PE_PHANTOM_SELF_AS_SEEN",
             )
         )
@@ -562,6 +616,10 @@ class _FoulPlayConfig:
             self.tera_gate_visit_frac = args.tera_gate_visit_frac
         if args.tera_gate_opp_tera_bonus is not None:
             self.tera_gate_opp_tera_bonus = args.tera_gate_opp_tera_bonus
+        if args.tera_gate_q_margin is not None:
+            self.tera_gate_q_margin = args.tera_gate_q_margin
+        if args.endgame_playout_gate is not None:
+            self.endgame_playout_gate = args.endgame_playout_gate
         self.websocket_uri = args.websocket_uri
         self.username = args.ps_username
         self.password = args.ps_password

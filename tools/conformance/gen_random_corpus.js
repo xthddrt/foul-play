@@ -190,9 +190,17 @@ function teamEntry(set, req, speciesByIdent) {
   const { gender, shiny } = parseDetails(req.details);
   const maxhp = parseInt(req.condition.split('/')[1]);
   return {
-    // End-of-battle species from the battle object (Minior-Meteor, Crowned
-    // formes, transformed Ditto), matching the original sidecars.
-    species: speciesByIdent[req.ident] || Dex.species.get(set.species || set.name).name,
+    // THE IMMUTABLE SET SPECIES, never the live one.  The sidecar contract
+    // (fp/replay/damage_membership.py `_fold_forme_duplicate_rows` docstring)
+    // is "the sidecar's own species, which sim/pokemon.ts never moves": the
+    // checker keys one row per PS roster slot and recomputes a battle forme's
+    // stats from that forme's base stats itself.  Writing the LIVE species
+    // (`speciesByIdent`, a battle-start snapshot) made an Imposter Ditto that
+    // transformed at switch-in collide with a real teammate inside one forme
+    // family -- synthu6256926 recorded p2's Ditto as `Terapagos-Terastal` and
+    // the real Terapagos as `Terapagos`, so the terastallized Terapagos joined
+    // the Ditto row and derived its flat 133 stats (two false damage findings).
+    species: Dex.species.get(set.species || set.name).name,
     level: set.level,
     gender,
     ability: set.ability,

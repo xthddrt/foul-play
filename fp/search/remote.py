@@ -91,7 +91,43 @@ def _trip_breaker(why: str):
     )
 
 
-def remote_mcts_searches(states, search_time_ms: int, threads: int):
+def _post(path: str, obj: dict, timeout_s: float):
+    """One gzip JSON round trip. Returns the decoded payload dict, or None
+    after tripping the breaker -- network failure semantics are identical for
+    every endpoint: the box is gone, stop paying timeouts for it."""
+    url = getattr(FoulPlayConfig, "search_remote_url", None)
+    if not url or _REMOTE_DISABLED:
+        return None
+    body = gzip.compress(json.dumps(obj).encode(), 1)
+    req = urllib.request.Request(
+        url.rstrip("/") + path,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+            "Accept-Encoding": "gzip",
+        },
+    )
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip":
+                data = gzip.decompress(data)
+            return json.loads(data.decode())
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
+        logger.warning(
+            "Remote {} failed after {:.2f}s ({!r}) - falling back local".format(
+                path, time.time() - t0, e
+            )
+        )
+        _trip_breaker(repr(e)[:120])
+        return None
+
+
+def remote_mcts_searches(
+    states, search_time_ms: int, threads: int, phantom_masks=None, iterations: int = 0
+):
     """Return [(RemoteMctsResult, chance, index)] or None to fall back.
 
     Returning None (not raising) is deliberate: the caller treats a remote
@@ -105,8 +141,14 @@ def remote_mcts_searches(states, search_time_ms: int, threads: int):
     # The remote runs every world concurrently, so the wall floor is one
     # world's search time; the margin covers transfer plus its fan-out.
     # 4000 -> 2000: this is dead time paid out of the turn budget on failure.
+    # Fixed-iteration screening searches have no time dimension; at 5k
+    # iterations the box answers in well under a second, so the margin plus a
+    # small compute allowance bounds the whole trip.
     margin_ms = getattr(FoulPlayConfig, "search_remote_timeout_margin_ms", 2000)
-    timeout_s = (search_time_ms + margin_ms) / 1000.0
+    if iterations:
+        timeout_s = margin_ms / 1000.0 + 2.0
+    else:
+        timeout_s = (search_time_ms + margin_ms) / 1000.0
 
     # CLOCK GUARD. On a miss we pay timeout_s AND then a full local search. Only
     # attempt remote if the worst case still leaves headroom, otherwise go
@@ -123,42 +165,28 @@ def remote_mcts_searches(states, search_time_ms: int, threads: int):
             )
             return None
 
-    # gzip: the world states are highly repetitive text -- 217KB -> 19KB (11.6x)
-    # for 64 worlds. At the ~410KB/s upload measured from here that is 0.53s of
-    # dead transfer per request, which is most of the variance that tripped the
-    # 7.5s timeout on w64_r6 while the worker itself took a steady 4.8s.
-    raw = json.dumps(
+    # gzip (in _post): the world states are highly repetitive text -- 217KB ->
+    # 19KB (11.6x) for 64 worlds. At the ~410KB/s upload measured from here
+    # that is 0.53s of dead transfer per request, which is most of the variance
+    # that tripped the 7.5s timeout on w64_r6 while the worker took a steady
+    # 4.8s. masks/iterations MUST travel with the states: a remote search
+    # without the phantom masks or the screening iteration cap is a silently
+    # different production config, not a slower one.
+    t0 = time.time()
+    payload = _post(
+        "/search",
         {
             "states": [s for s, _ in states],
             "search_time_ms": search_time_ms,
             "threads": threads,
-        }
-    ).encode()
-    body = gzip.compress(raw, 1)
-    req = urllib.request.Request(
-        url.rstrip("/") + "/search",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Content-Encoding": "gzip",
-            "Accept-Encoding": "gzip",
+            "iterations": iterations,
+            "masks": (
+                [phantom_masks.get(s) for s, _ in states] if phantom_masks else None
+            ),
         },
+        timeout_s,
     )
-
-    t0 = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            data = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip":
-                data = gzip.decompress(data)
-            payload = json.loads(data.decode())
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
-        logger.warning(
-            "Remote search failed after {:.2f}s ({!r}) - falling back to local pool".format(
-                time.time() - t0, e
-            )
-        )
-        _trip_breaker(repr(e)[:120])
+    if payload is None:
         return None
 
     raw = payload.get("results")
@@ -197,8 +225,47 @@ def remote_mcts_searches(states, search_time_ms: int, threads: int):
         )
 
     logger.info(
-        "RemoteSearch: {} worlds, {}ms each, round trip {:.2f}s".format(
-            len(states), search_time_ms, time.time() - t0
+        "RemoteSearch: {} worlds, {} each, round trip {:.2f}s".format(
+            len(states),
+            "{} iters".format(iterations) if iterations else "{}ms".format(search_time_ms),
+            time.time() - t0,
         )
     )
     return results
+
+
+def remote_epg_playouts(
+    uniq_states, jobs, iters: int, max_steps: int, wall_s: float, timeout_s: float
+):
+    """One batched round trip for the endgame playout gate.
+
+    jobs is [[state_idx, arm, seed], ...] in the caller's k-major order; the
+    server runs them through its pool with the same budget-truncated
+    FIRST_COMPLETED collection the local gate uses, so a wall hit returns a
+    balanced CRN prefix per arm. Returns a list aligned with jobs (None =
+    playout not run/died), or None on transport failure -- the CALLER must
+    then keep the incumbent rather than re-running locally, because the
+    timeout already spent the turn's playout budget.
+    """
+    payload = _post(
+        "/playouts",
+        {
+            "states": list(uniq_states),
+            "jobs": jobs,
+            "iters": iters,
+            "max_steps": max_steps,
+            "wall_s": wall_s,
+        },
+        timeout_s,
+    )
+    if payload is None:
+        return None
+    outcomes = payload.get("outcomes")
+    if not isinstance(outcomes, list) or len(outcomes) != len(jobs):
+        logger.warning(
+            "Remote playouts returned {} outcomes for {} jobs - keeping incumbent".format(
+                len(outcomes) if isinstance(outcomes, list) else "?", len(jobs)
+            )
+        )
+        return None
+    return outcomes

@@ -354,10 +354,11 @@ def _apply_argmax_tera_gate(
     by a hair should not spend it. The rule, in order:
 
       1. Only applies when the argmax IS a tera/mega spend.
-      2. Non-tera options are "considered" only if their pooled visit share is at
-         least tera_gate_visit_frac (0.5) of the tera's. A move the search barely
-         looked at does not get to veto a resource the search overwhelmingly
-         wants.
+      2. Non-tera options are "considered" only if their pooled visit share is
+         at least tera_gate_visit_frac (0.5) of the SUMMED share of ALL tera
+         arms (Sally 2026-08-18) -- the search's total tera appetite, not the
+         argmax tera alone. A move the search barely looked at does not get to
+         veto a resource the search overwhelmingly wants.
       3. No considered non-tera => allow the tera. A tera at 79% share with the
          next non-tera at 5% is not a close call.
       4. Otherwise the tera must beat EVERY considered non-tera on ave_score by
@@ -378,13 +379,23 @@ def _apply_argmax_tera_gate(
     unseen mon is the thing tera is most often held for.
     """
     per_mon = getattr(FoulPlayConfig, "tera_gate_score_per_mon", 0.0)
-    if per_mon <= 0 or not _is_resource_spend(choice):
+    q_margin = getattr(FoulPlayConfig, "tera_gate_q_margin", 0.0)
+    if (per_mon <= 0 and q_margin <= 0) or not _is_resource_spend(choice):
         return choice
     tera_share = pooled_share.get(choice, 0.0)
     if tera_share <= 0:
         return choice
+    # Sally 2026-08-18: the consideration bar is set by the search's TOTAL
+    # tera appetite -- the summed pooled share of every tera arm -- not the
+    # argmax tera's share alone. Splitting visits across tera variants
+    # (dragonascent-tera vs outrage-tera vs ...) dilutes each arm's share but
+    # not the intent: 38+18+5+0.3 is a 61% tera preference, and a non-tera
+    # option must clear frac of THAT to earn veto rights.
+    tera_total = sum(
+        s for c, s in pooled_share.items() if _is_resource_spend(c)
+    )
     frac = getattr(FoulPlayConfig, "tera_gate_visit_frac", 0.5)
-    bar = tera_share * frac
+    bar = tera_total * frac
     considered = [
         c
         for c in pooled_share
@@ -392,19 +403,37 @@ def _apply_argmax_tera_gate(
     ]
     if not considered:
         logger.info(
-            "Tera gate: allowed {} (share {}%, no non-tera reaches the {}% bar)".format(
-                choice, round(100 * tera_share, 1), round(100 * bar, 1)
+            "Tera gate: allowed {} (share {}%, all-tera {}%, no non-tera reaches "
+            "the {}% bar)".format(
+                choice,
+                round(100 * tera_share, 1),
+                round(100 * tera_total, 1),
+                round(100 * bar, 1),
             )
         )
         return choice
-    margin = per_mon * (opp_alive + opp_unrevealed)
-    opp_tera_bonus = getattr(FoulPlayConfig, "tera_gate_opp_tera_bonus", 0.0)
-    if not opp_tera_used:
-        margin += opp_tera_bonus
-    margin_desc = "{}x{} mons".format(per_mon, opp_alive + opp_unrevealed) + (
-        " + {} opp-tera-held".format(opp_tera_bonus) if not opp_tera_used else ""
-    )
     best = max(considered, key=lambda c: agg_score.get(c, 0.0))
+    if q_margin > 0:
+        # Sally 2026-08-17: margin = q_margin x (4Q(1-Q))^2, Q = the best
+        # considered non-tera's score, so q_margin IS the margin demanded in a
+        # level game (0.01 = 1%). Squared because two effects both scale with
+        # Q(1-Q): the sigmoid compresses probability gaps at extreme Q, AND a
+        # held tera's remaining relevance shrinks with how decided the game is
+        # (it only pays off in futures that are still contested). Level games
+        # pay full option-rent; at Q=0.2/0.8 teras are ~60% cheaper than the
+        # old linear form.
+        q = agg_score.get(best, 0.0)
+        shape = 4.0 * q * (1.0 - q)
+        margin = q_margin * shape * shape
+        margin_desc = "{}x(4Q(1-Q))^2, Q={}".format(q_margin, round(q, 4))
+    else:
+        margin = per_mon * (opp_alive + opp_unrevealed)
+        opp_tera_bonus = getattr(FoulPlayConfig, "tera_gate_opp_tera_bonus", 0.0)
+        if not opp_tera_used:
+            margin += opp_tera_bonus
+        margin_desc = "{}x{} mons".format(per_mon, opp_alive + opp_unrevealed) + (
+            " + {} opp-tera-held".format(opp_tera_bonus) if not opp_tera_used else ""
+        )
     floor = agg_score.get(best, 0.0) + margin
     if agg_score.get(choice, 0.0) >= floor:
         logger.info(
@@ -417,7 +446,15 @@ def _apply_argmax_tera_gate(
             )
         )
         return choice
-    fallback = max(considered, key=lambda c: pooled_share[c])
+    # Sally 2026-08-19: play the arm the gate actually JUDGED against, not a
+    # different one. This used to return max(considered, key=pooled_share) --
+    # `best` is chosen by agg_score at the top of this function and the veto at
+    # `floor` is computed against `best`, so falling back to the visit argmax
+    # meant "tera is not worth it versus X" followed by playing Y. Measured over
+    # the archive: 18 production blocks, 6 where the two disagreed, and 5 of
+    # those played a move scoring BELOW the tera that was just blocked. Gate
+    # strength is unchanged -- only which move a block falls back to.
+    fallback = best
     logger.info(
         "Tera gate: BLOCKED {} (score {} < floor {} from {}); "
         "falling back to non-tera visit argmax {} ({}%)".format(
@@ -584,6 +621,69 @@ def _apply_losing_fallback(ranked, agg_score, pooled_share, upside_fired):
     return None
 
 
+def _apply_argmax_rb_switch_gate(choice, pooled_share, agg_score, our_alive,
+                                 rb_switch_arms):
+    """Gate on switching into a still-UNREVEALED Revival Blessing carrier.
+
+    Spec (Sally 2026-08-19). Revealing the RB carrier spends a hidden asset and
+    risks the mon that has to survive to cast the move, and the value net prices
+    RB FLAT -- an ablation over 720 corpus positions put holding it at +2.6pp,
+    ~0.16 of headroom, whether 0 or 4 of our mons are down. So the net supplies
+    no pressure to keep the carrier back; this gate is that prior, applied at
+    SELECTION rather than in search. (An earlier attempt taxed the arm's UCB
+    exploration instead: with FPU=+inf the arm got exactly one forced visit and
+    could never be revisited, so one unlucky rollout banned it outright. Gating
+    the DECISION leaves the Q estimate honest.)
+
+    In order:
+      1. Only fires when the argmax IS a switch into an unrevealed RB carrier.
+      2. Alternatives are "considered" only at >= rb_switch_gate_visit_frac
+         (0.15) pooled visit share, and never a resource spend (tera) -- a strong alternative, not a stray arm.
+      3. No considered alternative => allow the switch. Nothing credible to
+         prefer over it.
+      4. Otherwise the switch must beat the BEST considered alternative on
+         agg_score by rb_switch_gate_per_alive x (5 - our_dead). The margin shrinks
+         as we lose mons: hiding is worth most with a full team, and hits
+         EXACTLY ZERO when the carrier is our last mon (switching to it is then
+         the only legal choice, so there is nothing to gate).
+      5. Fail => take the best considered alternative.
+    """
+    per_alive = getattr(FoulPlayConfig, "rb_switch_gate_per_alive", 0.0)
+    if per_alive <= 0 or choice not in rb_switch_arms:
+        return choice
+    frac = getattr(FoulPlayConfig, "rb_switch_gate_visit_frac", 0.25)
+    total = sum(pooled_share.values()) or 1.0
+    # EXCLUDE RESOURCE SPENDS (Sally 2026-08-19): this gate runs AFTER the tera
+    # gate, and when the argmax is a switch the tera gate returns early without
+    # judging anything. Without this filter the RB gate could install a tera arm
+    # that has never faced its own gate.
+    considered = [
+        c for c in pooled_share
+        if c != choice
+        and not _is_resource_spend(c)
+        and pooled_share.get(c, 0.0) / total >= frac
+    ]
+    if not considered:
+        return choice
+    best = max(considered, key=lambda c: agg_score.get(c, 0.0))
+    # (5 - our_dead) == our_alive - 1: ZERO margin when the carrier is our
+    # last mon, i.e. switching to it is the only choice -- never gate that.
+    margin = per_alive * max(0, our_alive - 1)
+    if margin <= 0:
+        # ZERO GATE (Sally 2026-08-19): at our_alive <= 1 the carrier is our last
+        # mon, so switching to it is forced. Return unchanged rather than fall
+        # through to a >= comparison, which could still displace the argmax.
+        return choice
+    if agg_score.get(choice, 0.0) >= agg_score.get(best, 0.0) + margin:
+        return choice
+    logger.info(
+        "RB-SWITCH GATE: {} (score {:.4f}) fails margin {:.4f} = {} x {} alive "
+        "vs {} (score {:.4f}); playing {}".format(
+            choice, agg_score.get(choice, 0.0), margin, per_alive, our_alive,
+            best, agg_score.get(best, 0.0), best))
+    return best
+
+
 def select_move_from_mcts_results(
     mcts_results: list[(MctsResult, float, int)],
     revealed_opponent_names: set[str] | None = None,
@@ -592,6 +692,8 @@ def select_move_from_mcts_results(
     opp_alive: int = 0,
     opp_unrevealed: int = 0,
     opp_tera_used: bool = False,
+    our_alive: int = 6,
+    rb_switch_arms: frozenset | None = None,
 ) -> str:
     """With candidates_margin set, returns (choice, close_candidates) where
     close_candidates are the post-gate options whose agg score sits within
@@ -677,6 +779,9 @@ def select_move_from_mcts_results(
         choice = max(pooled_share, key=pooled_share.get)
         choice = _apply_argmax_tera_gate(
             choice, pooled_share, agg_score, opp_alive, opp_unrevealed, opp_tera_used
+        )
+        choice = _apply_argmax_rb_switch_gate(
+            choice, pooled_share, agg_score, our_alive, rb_switch_arms or frozenset()
         )
         total = sum(pooled_share.values()) or 1.0
         logger.info(

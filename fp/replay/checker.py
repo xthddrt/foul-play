@@ -32,6 +32,7 @@ pivot the protocol never performed is deliberately NOT continued.
 """
 
 import json
+import math
 import os
 import re
 from copy import deepcopy
@@ -2081,16 +2082,28 @@ def _infer_illusion_spans(reveals: dict, exact_teams, hptruth=None) -> None:
         # damaging hit with no |replace| cannot have been a disguise).
         entry_pct = occ.get("entry_pct")
         turn_truth = (hptruth or {}).get(str(occ["start_turn"]), {}).get(occ["pid"], {})
-        # OPT-IN, default OFF.  The evidence is sound (probe:
-        # scratchpad/probe_illusion_hptruth.py) but enabling it moves coverage
-        # by +31 turns on the four exam exemplars alone and re-decides
-        # occupancies the undecidability tagger currently refuses -- one of them
-        # (synthu6024342 T25) flips from a tagged soft to a hard.  That is a
-        # gate-level change, not a bug fix, so it ships behind a flag until it
-        # has been swept.
-        if entry_pct and turn_truth and os.environ.get("FP_CONTROL_HPTRUTH_ILLUSION"):
+        # Default ON (was opt-in via FP_CONTROL_HPTRUTH_ILLUSION).  NOTE: the
+        # flag's earlier probe results were invalid -- `math` was never imported,
+        # so `_pct` raised NameError and the caller's except-arm wiped
+        # `illusion_unresolved` wholesale; the "synthu6024342 T25 flips
+        # soft->hard" prediction was an artifact of that crash, not of this arm.
+        # With the arm actually running, 6024342's T24 stay is proven the bearer
+        # (entry 81 = Zoroark's 81, Glalie's is 52) and the finding resolves.
+        if entry_pct and turn_truth:
             def _pct(key):
                 pair = turn_truth.get(key)
+                if pair is None:
+                    # forme drift: the generator's hptruth rows are keyed by the
+                    # LIVE name (e.g. 'zoroark') while the teams sidecar keys the
+                    # set species ('zoroarkhisui'); a UNIQUE prefix-family hit is
+                    # the same mon, anything ambiguous stays a refusal
+                    hits = [
+                        v
+                        for k, v in turn_truth.items()
+                        if k.startswith(key) or key.startswith(k)
+                    ]
+                    if len(hits) == 1:
+                        pair = hits[0]
                 try:
                     hp, mx = int(pair[0]), int(pair[1])
                 except (TypeError, ValueError, IndexError):
@@ -2704,7 +2717,8 @@ def _seed_inferred_entrant_hp(battler, pid, reveals, turn, block_lines) -> None:
                 continue
             if sp[2].split(":")[0].strip() != pid + "a":
                 continue
-            cond = sp[4].strip().split()[0] if sp[4].strip() else ""
+            cond_parts = sp[4].strip().split()
+            cond = cond_parts[0] if cond_parts else ""
             if "/" not in cond:
                 return
             try:
@@ -2718,6 +2732,22 @@ def _seed_inferred_entrant_hp(battler, pid, reveals, turn, block_lines) -> None:
                         _reserve.hp = min(
                             _reserve.max_hp, round(frac * _reserve.max_hp)
                         )
+                    # ...and the STATUS off the same line, same object-identity
+                    # reason: `getHealth` renders the ENTRANT's own condition
+                    # (`${hp}/${maxhp}${status ? ' ' + status : ''}`,
+                    # sim/pokemon.ts), so a bare `25/100` certifies the bearer
+                    # entered status-FREE while the reconstruction's reserve
+                    # entry can hold a stale one -- a cure printed under the
+                    # disguise's name while the bearer was BENCHED is booked to
+                    # the disguise species' object (synthu6383541 T64:
+                    # `|-curestatus|p2: Zapdos|tox` was Heal Bell curing the
+                    # bearer, so its stale tox made the engine's T65 switch-in
+                    # unable to re-apply the Toxic Spikes tox PS showed).
+                    _status_tok = cond_parts[1] if len(cond_parts) > 1 else None
+                    if _status_tok in ("brn", "par", "slp", "frz", "psn", "tox"):
+                        _reserve.status = _status_tok
+                    elif _status_tok is None:
+                        _reserve.status = None
                     return
             return
         return

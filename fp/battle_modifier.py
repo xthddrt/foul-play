@@ -633,6 +633,22 @@ def inactive(battle, split_msg):
         try:
             time_left = int(capture.group(1))
             battle.time_remaining = time_left
+            # "X sec this turn" IS the current turn allotment under the blitz
+            # quantized-timer model (Sally 2026-08-19). These messages are too
+            # sparse to budget from alone, so they only ever TIGHTEN the
+            # locally tracked allotment (fp/search/main.py tracks it on
+            # FoulPlayConfig -- battle objects are copied per decision), never
+            # loosen it. >15 values (the first-turn grace window) are ignored.
+            from config import FoulPlayConfig
+
+            cur = getattr(FoulPlayConfig, "turn_allotment", None) or 15
+            if time_left < cur:
+                FoulPlayConfig.turn_allotment = time_left
+                logger.warning(
+                    "Allotment tightened by server: {}s -> {}s".format(
+                        cur, time_left
+                    )
+                )
             logger.debug("Time left: {}".format(time_left))
         except ValueError:
             logger.warning("{} is not a valid int".format(capture.group(1)))
@@ -2102,6 +2118,40 @@ def fail(battle, split_msg):
         ability_side.active.ability = ability
 
 
+def _move_block_dealt_damage(split_msg, msg_lines, msg_index):
+    """Did this |move| line's resolution block actually land damage?
+
+    Used by the Life Orb exclusion: LO recoil is only ever printed off a hit, so
+    "the item will reveal itself" is only true when the move connected. Returns
+    True when we see positive evidence of damage in the block, and False on the
+    explicit non-connect markers. Defaults to True when we have no lines to scan
+    (msg_lines absent), preserving the pre-2026-08-19 behaviour for any caller
+    that does not pass them.
+
+    `-miss` is already in _MOVE_BLOCK_END_STRINGS, so a miss ends the block and
+    falls through to the no-damage return.
+    """
+    if msg_lines is None or msg_index is None:
+        return True
+    # a move that never executed prints `[still]` in the flags field
+    if len(split_msg) > 4 and "still" in split_msg[4]:
+        return False
+    for line in msg_lines[msg_index + 1:]:
+        parts = line.split("|")
+        if len(parts) < 2 or parts[1] in _MOVE_BLOCK_END_STRINGS:
+            break
+        tag = parts[1]
+        if tag in ("-immune", "-fail", "-block"):
+            return False
+        if tag in ("-damage", "-crit", "-supereffective", "-resisted",
+                   "-endure", "-hitcount"):
+            return True
+        # Protect and friends are announced as an activation on the DEFENDER
+        if tag == "-activate" and len(parts) > 3 and "protect" in normalize_name(parts[3]):
+            return False
+    return False
+
+
 def move(battle, split_msg, msg_lines=None, msg_index=None):
     """`msg_lines`/`msg_index` are this line's position in the resolution block.
 
@@ -2805,7 +2855,24 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
 
     # if this pokemon used a damaging move, eliminate the possibility of guessing a lifeorb
     # the lifeorb will reveal itself if it has it
-    if category in constants.DAMAGING_CATEGORIES and not any(
+    #
+    # ONLY IF THE MOVE ACTUALLY CONNECTED (Sally 2026-08-19). The justification
+    # above -- "it'll reveal itself" -- holds only when damage is dealt, because
+    # Life Orb recoil is emitted off the hit. On a miss / immunity / Protect /
+    # fail / `[still]` no recoil is EVER printed, so excluding LO there discards
+    # a live possibility on no evidence. `impossible_items` is a hard filter
+    # (data/pkmn_sets.py) and item is only relaxed at ladder depth 2, unreachable
+    # while any non-LO set survives -- so a false exclusion is permanent for the
+    # rest of the game and under-prices that mon's damage by ~1.3x in every
+    # sampled world. Measured ~0.15 opponent mons/game with mean LO set mass 58%,
+    # i.e. roughly one game in seven.
+    #
+    # Strictly information-preserving: this can only STOP us discarding true
+    # possibilities, never add a false one. Uses the same forward-scan shape as
+    # `check_choicescarf` / `get_damage_dealt`, terminating on
+    # _MOVE_BLOCK_END_STRINGS.
+    _lo_connected = _move_block_dealt_damage(split_msg, msg_lines, msg_index)
+    if _lo_connected and category in constants.DAMAGING_CATEGORIES and not any(
         [
             normalize_name(a) in ["sheerforce", "magicguard"]
             for a in pokedex[pkmn.name][constants.ABILITIES].values()
@@ -6598,14 +6665,35 @@ def transform(battle, split_msg):
         and other_side is battle.user
         and battle.request_json
     ):
+        # Select the entry for the mon that was TRANSFORMED INTO, not the one the
+        # request marks `active`. The transform is resolved against the log's active
+        # mon, which need not be the request's active mon: an opponent Imposter Ditto
+        # copies our Terapagos-Terastal, we switch to Carbink, and the request in hand
+        # is the post-switch one -- keying off `active` stamped the transformed Ditto
+        # with Carbink's Clear Body. Match on species (`details`) first since a
+        # forme-changed mon keeps its base-forme `ident` (`p1: Terapagos` /
+        # `Terapagos-Terastal, L77, F`), with `ident` as the nickname-side fallback.
         for request_pkmn in battle.request_json.get(constants.SIDE, {}).get(
             constants.POKEMON, []
         ):
-            if request_pkmn.get(constants.ACTIVE):
+            if transformed_into_name in (
+                normalize_name(
+                    (request_pkmn.get(constants.DETAILS) or "").split(",")[0]
+                ),
+                normalize_name(
+                    (request_pkmn.get(constants.IDENT) or "").split(":")[-1]
+                ),
+            ):
                 transformed_into_ability = normalize_name(
                     request_pkmn.get(constants.REQUEST_DICT_ABILITY) or ""
                 ) or None
                 break
+        if transformed_into_ability is None:
+            transformed_into_ability = normalize_name(
+                pokedex.get(transformed_into_name, {})
+                .get(constants.ABILITIES, {})
+                .get("0", "")
+            ) or None
         if transformed_into_ability is not None:
             logger.info(
                 "Filling transform-copied ability for {} from the request JSON: {}".format(
