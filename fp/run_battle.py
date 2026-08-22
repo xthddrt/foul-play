@@ -765,9 +765,15 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type, team_dict):
         # ladder game 2668326719: 207 errors, 68 replacements, stored real
         # choices clobbered by defaults, timer loss. Only a REJECTED-current-
         # choice error gets corrected, exactly once per rqid.
+        # "There's nothing to choose" is the server saying NO request is
+        # pending (the turn already resolved) -- a correction can only target
+        # a dead rqid, so it is benign residue exactly like "too late"
+        # (observed 2668823567: it downgraded an already-executed choice to
+        # /choose default, harmless but pure noise).
         if (
             "[Invalid choice]" in msg
             and "too late to make a different move" not in msg
+            and "nothing to choose" not in msg
             and getattr(battle, "last_choice_sent", None)
         ):
             _lc = battle.last_choice_sent

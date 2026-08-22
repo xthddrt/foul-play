@@ -617,6 +617,15 @@ def request(battle, split_msg):
     if len(split_msg) >= 2:
         battle_json = json.loads(split_msg[2].strip("'"))
         logger.debug("Received battle JSON from server: {}".format(battle_json))
+        # A request for a NEW rqid invalidates the stored resend-net choice:
+        # the previous turn is over, so a timer warning arriving mid-search
+        # must not resend the old choice (that stale resend is what produced
+        # the "too late"/"nothing to choose" chatter on 2668823567). Same
+        # rqid re-delivered keeps the net armed -- the 2026-08-09 blackhole
+        # case (choice sent, silently dropped, PS still waiting) depends on it.
+        _lc = getattr(battle, "last_choice_sent", None)
+        if _lc and str(_lc[1]) != str(battle_json[constants.RQID]):
+            battle.last_choice_sent = None
         battle.rqid = battle_json[constants.RQID]
 
         if battle_json.get(constants.FORCE_SWITCH):
