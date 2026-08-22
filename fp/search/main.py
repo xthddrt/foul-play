@@ -384,6 +384,17 @@ def find_best_move(battle: Battle) -> str:
         )
     except Exception:
         opp_tera_used = False
+    # Same derivation for OUR side (see selection.py: engine re-offers our
+    # tera after Revival Blessing revives the fainted carrier slot).
+    try:
+        user_tera_used = bool(
+            getattr(battle.user, "tera_spent", False)
+        ) or any(
+            p is not None and p.terastallized
+            for p in [battle.user.active] + list(battle.user.reserve)
+        )
+    except Exception:
+        user_tera_used = False
 
     if battle.battle_type == BattleType.RANDOM_BATTLE:
         # PKNN v7 reveal masks: stamped on the ROOT battle BEFORE
@@ -634,6 +645,7 @@ def find_best_move(battle: Battle) -> str:
             opp_alive=opp_alive,
             opp_unrevealed=opp_unrevealed,
             opp_tera_used=opp_tera_used,
+            user_tera_used=user_tera_used,
             our_alive=our_alive,
             rb_switch_arms=rb_switch_arms,
         )
@@ -646,6 +658,7 @@ def find_best_move(battle: Battle) -> str:
             opp_alive=opp_alive,
             opp_unrevealed=opp_unrevealed,
             opp_tera_used=opp_tera_used,
+            user_tera_used=user_tera_used,
             our_alive=our_alive,
             rb_switch_arms=rb_switch_arms,
         )

@@ -261,6 +261,12 @@ def _side_of_of_tag(battle, split_msg):
     return None
 
 
+# Moves whose |-immune| can fire from a non-type onTryImmunity clause: the
+# immunity is a property of the GAME STATE, not the defender's typing, so it
+# must never feed the Zoroark/Illusion inference.
+_NON_TYPE_IMMUNITY_MOVES = {"endeavor", "dreameater", "synchronoise"}
+
+
 def zoroark_inference_allowed(battle) -> bool:
     """Whether the live-play "the thing in front of me must secretly be a
     Zoroark" heuristics may fire.
@@ -1691,6 +1697,40 @@ def heal_or_damage(battle, split_msg):
     bare_damage = split_msg[1] == "-damage" and not any(
         m.startswith("[from]") for m in split_msg[4:]
     )
+    if split_msg[1] == "-heal" and any(
+        m.startswith("[from] item:") for m in split_msg[4:]
+    ):
+        _healed = (
+            battle.opponent.active
+            if is_opponent(battle, split_msg)
+            else battle.user.active
+        )
+        if _healed is not None:
+            _healed._saw_item_heal_this_residual = True
+    elif split_msg[1] == "-heal":
+        # A residual heal ordered BEFORE items (Wish is onResidualOrder 4,
+        # Leftovers 5; Grassy Terrain/Aqua Ring/Ingrain likewise) can fill the
+        # mon to max, after which Leftovers legitimately prints nothing.
+        # Re-stamp the snapshot so the upkeep rule sees pre==max and does not
+        # read the silence as "has no healing item". run1000 grp3/g234: a
+        # Wish-healed Florges lost Leftovers -- both PS Florges sets carry
+        # Leftovers, so the candidate list emptied and 5/8 worlds went to the
+        # unfiltered fallback with an illegal moveset.
+        _healed = (
+            battle.opponent.active
+            if is_opponent(battle, split_msg)
+            else battle.user.active
+        )
+        # None, not a re-parse: the line's HP is protocol-scale (percent for
+        # the opponent) while max_hp is internal-scale, so a numeric re-stamp
+        # can still compare wrong. None makes the upkeep rule skip this
+        # residual entirely, which loses nothing: if the heal left the mon
+        # BELOW max, Leftovers still prints and saw_item_heal covers it; only
+        # the healed-to-full case reaches the rule, and there the silence
+        # genuinely proves nothing.
+        if _healed is not None and getattr(_healed, "_pre_residual_hp", None) is not None:
+            _healed._pre_residual_hp = None
+
     if is_opponent(battle, split_msg):
         side = battle.opponent
         other_side = battle.user
@@ -2136,6 +2176,23 @@ def _move_block_dealt_damage(split_msg, msg_lines, msg_index):
     # a move that never executed prints `[still]` in the flags field
     if len(split_msg) > 4 and "still" in split_msg[4]:
         return False
+    # ...and the ATTACKER must SURVIVE the block (Sally 2026-08-20). Life Orb's
+    # hook is AfterMoveSecondarySelf (pokemon-showdown/data/items.ts), which PS
+    # runs AFTER the attacker-faint check in sim/battle-actions.ts -- and its
+    # `this.damage()` on a fainted source is a silent no-op that prints no line
+    # at all (sim/battle.ts). So an attacker that dies inside its own move
+    # block -- recoil, Explosion, Struggle, or a Rocky Helmet / Rough Skin /
+    # Iron Barbs contact chip -- can NEVER print a Life Orb line, and its
+    # absence proves nothing.
+    #
+    # Measured in batch 20260820-181748 game g45: a Kingdra whose Wave Crash
+    # recoil killed it. Its only Rain Dance set is the Life Orb one, so the
+    # exclusion took the candidate list 1 -> 0 and the fallback ran 72 times.
+    # Its TRUE item was the Life Orb. Occurs in ~10% of games; strictly
+    # information-preserving, since it can only stop a discard.
+    # `faint` is not in _MOVE_BLOCK_END_STRINGS, so this scan already reaches it.
+    attacker = split_msg[2] if len(split_msg) > 2 else None
+    saw_damage = False
     for line in msg_lines[msg_index + 1:]:
         parts = line.split("|")
         if len(parts) < 2 or parts[1] in _MOVE_BLOCK_END_STRINGS:
@@ -2143,13 +2200,15 @@ def _move_block_dealt_damage(split_msg, msg_lines, msg_index):
         tag = parts[1]
         if tag in ("-immune", "-fail", "-block"):
             return False
+        if tag == "faint" and attacker and len(parts) > 2 and parts[2] == attacker:
+            return False
         if tag in ("-damage", "-crit", "-supereffective", "-resisted",
                    "-endure", "-hitcount"):
-            return True
+            saw_damage = True
         # Protect and friends are announced as an activation on the DEFENDER
         if tag == "-activate" and len(parts) > 3 and "protect" in normalize_name(parts[3]):
             return False
-    return False
+    return saw_damage
 
 
 def move(battle, split_msg, msg_lines=None, msg_index=None):
@@ -2299,7 +2358,7 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
         and zoroark_from_reserves is not None
         and pkmn is not zoroark_from_reserves
         and "transform" not in pkmn.volatile_statuses
-        and "from" not in split_msg[-1]
+        and not any(p.startswith("[from]") for p in split_msg)
     ):
         shown_moves = _sidecar_moveset(battle, side, pkmn)
         bearer_moves = _sidecar_moveset(battle, side, zoroark_from_reserves)
@@ -2343,7 +2402,7 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
         and pkmn.name not in ("zoroark", "zoroarkhisui")
         and not getattr(pkmn, "transformed_into", None)
         and "transform" not in pkmn.volatile_statuses
-        and "from" not in split_msg[-1]
+        and not any(p.startswith("[from]") for p in split_msg)
     ):
         shown_moves = _sidecar_moveset(battle, side, pkmn)
         if shown_moves is not None and move_name not in shown_moves:
@@ -2381,7 +2440,7 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
         in [BattleType.BATTLE_FACTORY, BattleType.STANDARD_BATTLE]
         and move_name not in TeamDatasets.get_all_possible_moves(pkmn)
         and move_name in TeamDatasets.get_all_possible_moves(zoroark_from_reserves)
-        and "from" not in split_msg[-1]
+        and not any(p.startswith("[from]") for p in split_msg)
     ):
         logger.info(
             "{} using {} means it is {}".format(
@@ -2402,7 +2461,7 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
         and battle.battle_type == BattleType.RANDOM_BATTLE
         and "transform" not in pkmn.volatile_statuses
         and move_name not in RandomBattleTeamDatasets.get_all_possible_moves(pkmn)
-        and "from" not in split_msg[-1]
+        and not any(p.startswith("[from]") for p in split_msg)
     ):
         actual_zoroark = None
         zoroark_hisui = Pokemon("zoroarkhisui", 100)
@@ -2419,8 +2478,10 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
             and zoroark_from_reserves is None
             and move_name
             in RandomBattleTeamDatasets.get_all_possible_moves(zoroark_hisui)
+            and _zoroark_forme_fits_tera(zoroark_hisui, pkmn)
         ):
             actual_zoroark = zoroark_hisui
+            actual_zoroark._forme_guessed = True
             actual_zoroark.level = RandomBattleTeamDatasets.predict_set(
                 actual_zoroark
             ).pkmn_set.level
@@ -2431,8 +2492,10 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
             and zoroark_from_reserves is None
             and move_name
             in RandomBattleTeamDatasets.get_all_possible_moves(zoroark_regular)
+            and _zoroark_forme_fits_tera(zoroark_regular, pkmn)
         ):
             actual_zoroark = zoroark_regular
+            actual_zoroark._forme_guessed = True
             actual_zoroark.level = RandomBattleTeamDatasets.predict_set(
                 actual_zoroark
             ).pkmn_set.level
@@ -2772,10 +2835,24 @@ def move(battle, split_msg, msg_lines=None, msg_index=None):
 
     # if this pokemon used two different moves without switching,
     # set a flag to signify that it cannot have a choice item
+    #
+    # KEYED ON THE CURRENT STAY (Sally 2026-08-20). A Choice lock RESETS on
+    # switch-out, so "two different moves" only disproves a Choice item when
+    # both were used in the SAME stay -- which is what this comment always
+    # claimed. `side.last_used_move` survives switches, so a mon that clicked
+    # Psychic, got Roared out, came back and clicked Dazzling Gleam was ruled
+    # Choice-less on a perfectly legal sequence.
+    #
+    # Measured: validation batch 20260820-174544 game g6, an Indeedee-F whose
+    # TRUE item was Choice Specs. Its species has exactly three items
+    # (choicescarf, choicespecs, lifeorb); this rule killed the two Choice ones
+    # and the Life Orb rule correctly killed the third, so EVERY candidate set
+    # died and the empty-candidate fallback ran 88 times in that one game.
+    # `moves_used_since_switch_in` is cleared on switch-out (battle_modifier.py
+    # ~996) and already contains the current move by this point (~2679).
     if (
         is_opponent(battle, split_msg)
-        and side.last_used_move.pokemon_name == side.active.name
-        and side.last_used_move.move != move_name
+        and len(pkmn.moves_used_since_switch_in) > 1
     ):
         logger.info(
             "{} used two different moves - it cannot have a choice item".format(
@@ -3769,6 +3846,34 @@ def terastallize(battle, split_msg):
             pkmn.name, pkmn.tera_type, pkmn.types
         )
     )
+    # A tera type is a FORME FINGERPRINT for zoroark (base teras only
+    # Poison; hisui only Normal/Fighting in the reference). If this mon is
+    # an inference-conjured guess and the observed tera fits only the
+    # SIBLING forme, the guess was wrong -- rebuild as the sibling now
+    # rather than sampling PS-impossible (forme, tera) joints until a
+    # |replace| corrects it (run25k hariyama-disguise d3, 8 illegal_tera).
+    if (
+        getattr(pkmn, "_forme_guessed", False)
+        and pkmn.name in ("zoroark", "zoroarkhisui")
+        and not _zoroark_forme_fits_tera(pkmn, pkmn)
+    ):
+        _sib_name = (
+            "zoroarkhisui" if pkmn.name == "zoroark" else "zoroark"
+        )
+        _sib = Pokemon(_sib_name, 100)
+        if _zoroark_forme_fits_tera(_sib, pkmn):
+            _side = battle.opponent if is_opponent(battle, split_msg) \
+                else battle.user
+            _ps = RandomBattleTeamDatasets.predict_set(_sib)
+            if _ps is not None:
+                _sib.level = _ps.pkmn_set.level
+            _sib._forme_guessed = True
+            logger.info(
+                "tera {} does not fit guessed {} -- rebuilding as {}"
+                .format(pkmn.tera_type, pkmn.name, _sib_name)
+            )
+            _side.reserve.append(_sib)
+            _switch_active_with_zoroark_from_reserves(_side, _sib)
 
 
 def start_volatile_status(battle, split_msg):
@@ -4096,6 +4201,17 @@ def end_volatile_status(battle, split_msg):
         logger.info(
             "Removing the volatile status {} from {}".format(volatile_status, pkmn.name)
         )
+        if volatile_status == constants.HEAL_BLOCK:
+            # PS emits this `-end` DURING the residual block, before |upkeep|
+            # (the same ordering this file already documents for the duration
+            # counter), so by the time `upkeep` reads volatile_statuses the
+            # volatile is gone -- and the Heal Block guard there reads False on
+            # the one turn it is most needed. Heal Block still suppressed the
+            # heal on its expiry turn: the healblock condition is
+            # onResidualOrder 20 (pokemon-showdown/data/moves.ts) while
+            # Leftovers is order 5, so the item is evaluated while the block is
+            # still up. Stamp the turn so the guard can see it.
+            pkmn._healblock_ended_turn = battle.turn
         remove_volatile(pkmn, volatile_status)
         if volatile_status in pkmn.volatile_status_durations:
             pkmn.volatile_status_durations[volatile_status] = 0
@@ -4904,9 +5020,68 @@ def immune(battle, split_msg):
     if not zoroark_inference_allowed(battle):
         return
 
+    # A REFLECTED move (Magic Bounce / Magic Coat) is re-issued as a `|move|`
+    # line from OUR side carrying `[from] ability: ...`, and the `|-immune|`
+    # that follows is about THAT move -- not about the move we selected. The
+    # The [from] guards here and in move() scan EVERY field now: a trailing
+    # [miss] tag displaced "[from] ability: Magic Bounce" from last position
+    # (run10k afd3f0ad) and a bounced Will-O-Wisp read as Espeon's own move --
+    # invented zoroarkhisui on a fully-revealed team, OverlongPartyError, and
+    # ~30 turns of fallback choices. The old last-field guard inspected,
+    # which carries no tag, so the immunity was blamed on our own move and the
+    # mon "could not" have been immune to it -> invent a Zoroark.
+    #
+    # Measured: validation batch 20260820-180520 game g6. Espeon bounced an
+    # Arboliva's own Leech Seed back at it; Arboliva is GRASS and so immune,
+    # which is entirely normal. The bot invented a zoroark, transferred
+    # Arboliva's whole moveset onto it, then invented a zoroarkhisui on top of
+    # THAT -- against an opponent with no Zoroark on the team at all -- and the
+    # empty-candidate fallback ran 1064 times across that one game.
+    if any(
+        line.startswith("|move|")
+        and "[from]" in line
+        and "{}a:".format(side.name) in line
+        for line in (getattr(battle, "msg_list", None) or [])
+    ):
+        return
+
+    # A |-immune| whose cause is NOT the type chart proves nothing about the
+    # defender's species. PS implements these via onTryImmunity -- Endeavor's
+    # is "fails when attacker HP >= target HP". run1000 grp0/g222: Endeavor
+    # EQUALIZED the HP the turn before, so its second use legally printed
+    # |-immune| on the real Girafarig; the heuristic invented a zoroarkhisui,
+    # stripped Girafarig's four genuinely revealed moves, and the emptied
+    # candidate list fired the fallback 153 times.
+    if battle.user.last_used_move.move in _NON_TYPE_IMMUNITY_MOVES:
+        return
+
+    # CAUSALITY: the inference blames `battle.user.last_used_move`, so it must
+    # only fire when the action that PRODUCED this |-immune| was our move. A
+    # Synchronize paralysis-bounce off an Electric-type prints |-immune| during
+    # the OPPONENT's move step, and the stale last_used_move (Psychic, vs a
+    # Dark-type Sandy Shocks) "proved" a Zoroark -- run10k a3e4b7cb: phantom
+    # Zoroark, thunderwave stripped, 161 violations. Require the last |move|
+    # line preceding this -immune in the block to be ours.
+    _lines = getattr(battle, "msg_list", None) or []
+    _cur = "|".join(split_msg)
+    _idx = next((i for i, ln in enumerate(_lines) if ln == _cur), len(_lines))
+    _last_move = next(
+        (ln for ln in reversed(_lines[:_idx]) if ln.startswith("|move|")), None
+    )
+    if _last_move is not None and not _last_move.startswith(
+        "|move|{}a:".format(battle.user.name)
+    ):
+        return
+
     zoroark_from_reserves = side.find_pokemon_in_reserves(
         "zoroark"
     ) or side.find_pokemon_in_reserves("zoroarkhisui")
+    # A fainted Zoroark cannot be the active illusionist, and a randbats team
+    # holds at most one -- once this side's has publicly fainted, any further
+    # zoroark inference is spurious (grp0/g222: the real Zoroark fainted 10
+    # turns before the misfire, and the fainted reserve was happily returned).
+    if zoroark_from_reserves is not None and zoroark_from_reserves.hp <= 0:
+        return
 
     expected_damage_rolls, _ = poke_engine_get_damage_rolls(
         deepcopy(battle), battle.user.last_used_move.move, "none", True
@@ -4924,7 +5099,7 @@ def immune(battle, split_msg):
             side.active.types,
         )
         != 0
-        and "from" not in split_msg[-1]
+        and not any(p.startswith("[from]") for p in split_msg)
         and not all(x == 0 for x in expected_damage_rolls)
         and battle.user.future_sight[0] != 1
         and not (
@@ -5055,6 +5230,21 @@ def _purge_live_illusion_moves(battle, disguise: Pokemon, zoroark: Pokemon):
             zoroark.add_move(mv)
 
 
+def _zoroark_forme_fits_tera(forme: Pokemon, disguise) -> bool:
+    """Can this zoroark forme carry the tera the disguised mon showed?
+
+    PS's reference: base zoroark teras only Poison, zoroarkhisui only
+    Normal/Fighting -- an observed tera is a unique forme fingerprint, and the
+    fixed hisui-first movepool ordering ignored it (run10kb g445: 200 sampled
+    worlds carrying a PS-impossible zoroarkhisui/poison joint, empty-candidate
+    fallbacks throughout)."""
+    if not (disguise.terastallized and disguise.tera_type):
+        return True
+    sets = RandomBattleTeamDatasets.pkmn_sets.get(forme.name) or []
+    teras = {st.pkmn_set.tera_type for st in sets if st.pkmn_set.tera_type}
+    return not teras or disguise.tera_type in teras
+
+
 def _switch_active_with_zoroark_from_reserves(
     opponent_side: Battler, zoroark_from_reserves: Pokemon
 ):
@@ -5142,8 +5332,34 @@ def _switch_active_with_zoroark_from_reserves(
 
     zoroark_from_reserves.zoroark_disguised_as = pkmn.name
 
+    # When the DEMOTED object is itself a zoroark-forme guess (forme
+    # correction, not a disguise reveal), everything it accumulated belongs to
+    # the real zoroark -- including its ITEM state, which the block above never
+    # transfers: run10kb Knock-Off game, the corrected forme re-filled its
+    # "unknown" item with the very Specs that had been knocked off, 152 flags.
+    # And the wrong-forme object is NOT a party member: appending it to the
+    # reserve mints a phantom 7th mon.
+    _demoted_is_forme_guess = pkmn.name in ("zoroark", "zoroarkhisui")
+    if _demoted_is_forme_guess:
+        # same mon, corrected identity: EVERY known move carries over (the
+        # loop above moves only moves_used_since_switch_in, which is right for
+        # a disguise reveal but strips a forme correction bare)
+        for _mv in pkmn.moves:
+            if zoroark_from_reserves.get_move(_mv.name) is None:
+                zoroark_from_reserves.add_move(_mv.name)
+        zoroark_from_reserves.item = pkmn.item
+        for _attr in ("item_inferred", "removed_item", "knocked_off",
+                      "can_have_choice_item"):
+            if hasattr(pkmn, _attr):
+                setattr(zoroark_from_reserves, _attr, getattr(pkmn, _attr))
+        zoroark_from_reserves.impossible_items |= getattr(
+            pkmn, "impossible_items", set())
+        zoroark_from_reserves.zoroark_disguised_as = getattr(
+            pkmn, "zoroark_disguised_as", None)
+
     # swap the pkmn places
-    opponent_side.reserve.append(pkmn)
+    if not _demoted_is_forme_guess:
+        opponent_side.reserve.append(pkmn)
     opponent_side.active = zoroark_from_reserves
     opponent_side.reserve.remove(zoroark_from_reserves)
 
@@ -5242,6 +5458,32 @@ def illusion_end(battle, split_msg):
     # the rest of the battle).  The swap is identical on both sides -- the only
     # asymmetry, the opponent's percentage HP, is handled by the hp FRACTION
     # below, which is exact either way.
+    # The active may ALREADY be a zoroark forme from the impossible-move
+    # inference -- whose hisui-first ordering can pick the WRONG forme. This
+    # |replace| line carries the authoritative species+level; skipping the
+    # reconcile because "we already know it is a zoroark" preserved the wrong
+    # forme (level, max HP, typing) all game and stamped later tera/item
+    # events onto it: 343 flags across three run10kb games. Rebuild in place
+    # via the same swap helper (its forme-guess branch carries item state and
+    # discards the phantom).
+    if side.active.name in ["zoroark", "zoroarkhisui"]:
+        _real = Pokemon.from_switch_string(split_msg[3])
+        if (_real.name in ["zoroark", "zoroarkhisui"]
+                and (_real.name != side.active.name
+                     or _real.level != side.active.level)):
+            logger.info(
+                "Replace reveals {} L{} -- correcting the {} L{} guess".format(
+                    _real.name, _real.level, side.active.name,
+                    side.active.level))
+            side.reserve.append(_real)
+            _switch_active_with_zoroark_from_reserves(side, _real)
+            side.active._forme_guessed = False
+            # any OTHER zoroark-forme phantom minted by the earlier guess is
+            # not a party member (a randbats team holds at most one)
+            side.reserve[:] = [
+                r for r in side.reserve
+                if r.name not in ["zoroark", "zoroarkhisui"] or r is side.active
+            ]
     if (
         side.active.name not in ["zoroark", "zoroarkhisui"]
         and side.active.zoroark_disguised_as is None
@@ -6440,13 +6682,41 @@ def upkeep(battle, _):
     # the empty-candidate fallback ran 112 times in that game, writing merged
     # movesets the generator never produces (112/184/48 in g6/g9/g7).
     alive = opp_pkmn.hp > 0
+    # OBSERVE THE RESIDUAL PHASE, do not difference upkeeps (Sally 2026-08-20).
+    # `hp <= prev_hp` across two upkeeps is not "it failed to heal": residual
+    # effects RESOLVE IN ORDER, and Leftovers is onResidualOrder 5 while burn is
+    # 10, Leech Seed 8, Curse/Salt Cure later still. A mon that entered the
+    # residual at FULL HP had nothing for Leftovers to heal and was then chipped
+    # by a later effect, so it ends the turn below max having "not healed" --
+    # and the rule fired on the most ordinary line of play there is.
+    # Measured in batch 20260820-181748: gastrodoneast/g20, dondozo/g48 and
+    # camerupt/g48 all lost their ONLY item this way (16+8+8 fallbacks), and
+    # dondozo logged "without healing" on a turn Leftovers visibly healed it.
+    # `_pre_residual_hp` is stamped when the residual block opens, so this now
+    # asks the question the comment always claimed: was there anything to heal,
+    # and did an item heal appear?
+    pre_residual_hp = getattr(opp_pkmn, "_pre_residual_hp", None)
+    saw_item_heal = getattr(opp_pkmn, "_saw_item_heal_this_residual", False)
     saw_residual_without_heal = (
-        alive and below_max and prev_hp is not None and opp_pkmn.hp <= prev_hp
+        alive
+        and pre_residual_hp is not None
+        and pre_residual_hp < opp_pkmn.max_hp
+        and not saw_item_heal
     )
     if alive:
         opp_pkmn._last_upkeep_hp = opp_pkmn.hp
 
-    if below_max and saw_residual_without_heal:
+    # HEAL BLOCK suppresses Leftovers/Black Sludge entirely, so a residual
+    # phase spent below max HP without healing proves nothing while it is up.
+    # Measured: validation batch 20260820-175736 game g18, an Arboliva under
+    # Heal Block. Its species has exactly two items -- Leftovers and Sitrus
+    # Berry -- and this rule plus the Sitrus rule below (same blind spot) took
+    # both, so EVERY candidate set died and the empty-candidate fallback ran 88
+    # times in that game. Its TRUE item was the Sitrus Berry.
+    healblocked = constants.HEAL_BLOCK in (
+        getattr(opp_pkmn, "volatile_statuses", None) or []
+    ) or getattr(opp_pkmn, "_healblock_ended_turn", None) == battle.turn
+    if saw_residual_without_heal and not healblocked:
         logger.info(
             "{} completed a residual phase below maxhp without healing - "
             "leftovers/blacksludge ruled out".format(opp_pkmn.name)
@@ -6454,7 +6724,12 @@ def upkeep(battle, _):
         opp_pkmn.impossible_items.add(constants.LEFTOVERS)
         opp_pkmn.impossible_items.add(constants.BLACK_SLUDGE)
 
-    if opp_pkmn.status is None:
+    # ...and `alive` here too, for the same reason as the Leftovers rule ten
+    # lines above: a mon KO'd before the residual phase never got the chance to
+    # burn or poison itself, so its lack of status proves nothing about a Flame
+    # or Toxic Orb. Identical defect, left in the sibling rule when the
+    # Leftovers one was fixed. 4/509 species carry an orb at ~0.49 set mass.
+    if alive and opp_pkmn.status is None:
         opp_pkmn.impossible_items.add("flameorb")
         opp_pkmn.impossible_items.add("toxicorb")
 
@@ -6463,7 +6738,8 @@ def upkeep(battle, _):
     # holding one (a consumed berry prints `-enditem`, which clears `item`
     # away from UNKNOWN_ITEM). Unnerve on our side suppresses berries entirely.
     if (
-        opp_pkmn.item == constants.UNKNOWN_ITEM
+        not healblocked          # ...and Heal Block stops a Sitrus Berry too
+        and opp_pkmn.item == constants.UNKNOWN_ITEM
         and 0 < opp_pkmn.hp < opp_pkmn.max_hp * 0.5
         and battle.user.active is not None
         and battle.user.active.ability not in UNNERVE_ABILITIES
@@ -6954,6 +7230,17 @@ def _process_battle_updates(battle: Battle):
             continue
 
         action = split_msg[1].strip()
+
+        # A BARE `|` opens the residual block. Snapshot the opponent active's HP
+        # here so `upkeep` can ask "was there anything for Leftovers to heal?"
+        # instead of differencing two upkeeps across an ordered residual phase
+        # (see the comment in `upkeep`).
+        if action == "":
+            _opp = battle.opponent.active
+            if _opp is not None:
+                _opp._pre_residual_hp = _opp.hp
+                _opp._saw_item_heal_this_residual = False
+            continue
 
         battle_modifiers_lookup = {
             "switch": switch,

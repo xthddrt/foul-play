@@ -5,8 +5,8 @@ from unittest import mock
 
 import constants
 from constants import BattleType
-from data.pkmn_sets import RandomBattleTeamDatasets
-from fp.battle import Battle, Move, Pokemon
+from data.pkmn_sets import COSMETIC_FORME_TO_BASE, RandomBattleTeamDatasets
+from fp.battle import Battle, Move, Pokemon, StatRange
 from fp.helpers import normalize_name
 from fp.search import random_battles
 from fp.search.random_battles import (
@@ -1059,4 +1059,211 @@ class TestMegaLookupDoesNotLeakSiblingFormeSets(unittest.TestCase):
             got = RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(
                 Pokemon(name, 80)
             )
+            if name in COSMETIC_FORME_TO_BASE:
+                # a forme PS never generates separately DELIBERATELY merges its
+                # base species' sets (see _build_forme_alias_to_base) -- this
+                # guard is about the MEGA lookup, so it must not forbid that.
+                continue
             self.assertEqual(len(own), len(got), name)
+
+    def test_forme_ps_never_generates_gets_its_base_species_sets(self):
+        # Magearna-Original owns a thin observed entry and is absent from
+        # `cosmeticFormes`, so the lookup used to return that entry alone and
+        # shadow all 12 of Magearna's movesets. Greninja-Bond looks identical by
+        # stats and types but HAS its own sets.json role, so it must stay on its
+        # own single moveset -- merging Greninja's 16 in would be the same bug
+        # inverted.
+        def movesets(name):
+            return {
+                frozenset(s.pkmn_moveset.moves)
+                for s in RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(
+                    Pokemon(name, 80)
+                )
+            }
+
+        self.assertEqual(movesets("magearnaoriginal"), movesets("magearna"))
+        self.assertEqual(len(movesets("greninjabond")), 1)
+        self.assertNotEqual(movesets("greninjabond"), movesets("greninja"))
+
+
+class TestTeamLockNeverBlocksAConfirmedMove(unittest.TestCase):
+    """REGRESSION (finding #13, second gap).
+
+    The team-aware draw locks hazard/removal moves a teammate already carries.
+    But PS's culls are SOFT -- 0.8% of real teams run two Rapid Spinners -- so
+    a mon that has ITSELF been seen using the locked move must not be filtered
+    by it. Forretress (Rapid Spin revealed) alongside a Hitmontop (Rapid Spin
+    revealed) had every one of its 10 candidate sets removed, fell through to
+    the unfiltered draw, and lost the STEALTH ROCK constraint with it: 26.6% of
+    worlds ended up with two Stealth Rock users, of which 0 of 100,000 real PS
+    teams have any.
+
+    Caught by validation batch 20260820-164300 game g3 after the first #13 fix
+    had already been verified on a scenario with no confirmed-move collision.
+    """
+
+    def setUp(self):
+        RandomBattleTeamDatasets.initialize("gen9randombattleblitz", set())
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
+
+    @staticmethod
+    def _battle():
+        battle = Battle("battle-tag")
+        battle.battle_type = BattleType.RANDOM_BATTLE
+        active = Pokemon("stonjourner", 84)
+        active.item = constants.UNKNOWN_ITEM
+        battle.opponent.active = active
+        for name, level, moves in (
+            ("forretress", 84, ("ironhead", "rapidspin")),
+            ("hitmontop", 88, ("rapidspin", "suckerpunch")),
+        ):
+            p = Pokemon(name, level)
+            p.item = constants.UNKNOWN_ITEM
+            for mv in moves:
+                p.add_move(mv)
+            battle.opponent.reserve.append(p)
+        battle.user.active = Pokemon("gallade", 80)
+        for _ in range(5):
+            f = Pokemon("caterpie", 80)
+            f.hp = 0
+            battle.user.reserve.append(f)
+        return battle
+
+    def test_no_two_stealth_rock_users_despite_a_shared_rapid_spin(self):
+        random.seed(11)
+        for _ in range(25):
+            for world, _chance in prepare_random_battles(self._battle(), 8):
+                team = [world.opponent.active] + list(world.opponent.reserve)
+                holders = [
+                    p.name for p in team
+                    if any(m.name == "stealthrock" for m in p.moves)
+                ]
+                self.assertLessEqual(len(holders), 1, holders)
+
+    def test_a_confirmed_shared_move_is_kept_on_both(self):
+        # the fix must not suppress a move BOTH mons demonstrably have
+        random.seed(12)
+        for world, _chance in prepare_random_battles(self._battle(), 8):
+            by_name = {p.name: p for p in world.opponent.reserve}
+            for name in ("forretress", "hitmontop"):
+                self.assertIn(
+                    "rapidspin", [m.name for m in by_name[name].moves],
+                    "%s lost its own confirmed Rapid Spin" % name,
+                )
+
+
+class TestItemInferenceRespectsFormeLockedItems(unittest.TestCase):
+    """REGRESSION (required-item guard).
+
+    fp/inference.py infers Choice Scarf from turn order and Heavy-Duty Boots
+    from dodged hazards, both by writing pkmn.item directly. Neither checked
+    whether the mon CAN hold that item: Arceus-Psychic IS Arceus holding a Mind
+    Plate, Zacian-Crowned holds the Rusted Sword, the Ogerpon masks define
+    their formes. Writing a Choice Scarf there describes a mon that cannot
+    exist, and since each of these species has exactly ONE candidate set
+    carrying its required item, the inferred value then contradicts the only
+    set the sampler can draw.
+
+    Live: validation batch 20260820-164300 game g17 inferred choicescarf onto
+    an Arceus-Psychic in all 8 sampled worlds. Eight species in the gen9
+    randbats pool are locked this way.
+    """
+
+    def test_forme_locked_species_are_detected(self):
+        from fp.inference import forme_requires_its_item
+
+        for name in ("arceuspsychic", "zaciancrowned", "zamazentacrowned",
+                     "ogerponcornerstone", "ogerponwellspring",
+                     "ogerponhearthflame", "palkiaorigin", "giratinaorigin",
+                     "dialgaorigin"):
+            with self.subTest(name=name):
+                self.assertTrue(forme_requires_its_item(Pokemon(name, 80)))
+
+    def test_ordinary_species_are_not(self):
+        from fp.inference import forme_requires_its_item
+
+        for name in ("pikachu", "dragapult", "gliscor", "corviknight"):
+            with self.subTest(name=name):
+                self.assertFalse(forme_requires_its_item(Pokemon(name, 80)))
+
+    def test_every_item_inference_site_is_guarded(self):
+        # the guard must cover BOTH inferences and all four hazard variants --
+        # a new unguarded `active.item = "..."` would reintroduce the defect
+        import inspect
+        from fp import inference
+
+        src = inspect.getsource(inference)
+        writes = src.count('active.item = "')
+        guards = src.count("forme_requires_its_item(")
+        self.assertGreaterEqual(
+            guards, writes + 1,  # +1 for the definition itself
+            "an item-inference site is missing the forme-locked guard",
+        )
+
+
+class TestCorrectnessFixesFromCoverageAudit(unittest.TestCase):
+    """REGRESSION for the correctness class of the set-identification audit.
+
+    Each of these is a state the sampler could previously produce that
+    contradicts an established fact or that Showdown can never generate.
+    """
+
+    def setUp(self):
+        RandomBattleTeamDatasets.initialize("gen9randombattleblitz", set())
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
+
+    def test_announced_tera_survives_every_relaxation_rung(self):
+        # #1: rungs 2 and 3 used to pass tera_check=False, handing back the
+        # single largest certainty the protocol gives (0.462 of set mass).
+        sets = RandomBattleTeamDatasets.pkmn_sets["dragapult"]
+        teras = sorted({s.pkmn_set.tera_type for s in sets})
+        self.assertGreater(len(teras), 1, "fixture needs a multi-tera species")
+        pkmn = Pokemon("dragapult", 80)
+        pkmn.item = constants.UNKNOWN_ITEM
+        pkmn.terastallized = True
+        pkmn.tera_type = teras[0]
+        pkmn.speed_range = StatRange(min=9999, max=9999)   # force a deep rung
+        remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+        self.assertTrue(remaining)
+        for s in remaining:
+            self.assertEqual(teras[0], s.pkmn_set.tera_type)
+
+    def test_observed_item_survives_every_relaxation_rung(self):
+        # #2: item_impossible held only NEGATIVE clauses, so a mon we watched
+        # use an item could still be handed another item's role-set.
+        sets = RandomBattleTeamDatasets.pkmn_sets["dragapult"]
+        items = sorted({s.pkmn_set.item for s in sets})
+        self.assertGreater(len(items), 1, "fixture needs a multi-item species")
+        pkmn = Pokemon("dragapult", 80)
+        pkmn.item = items[0]
+        pkmn.speed_range = StatRange(min=9999, max=9999)
+        remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
+        self.assertTrue(remaining)
+        for s in remaining:
+            self.assertEqual(items[0], s.pkmn_set.item)
+
+    def test_an_INFERRED_item_stays_relaxable(self):
+        # #13: the same clause must NOT fire on a guess. check_choicescarf and
+        # check_heavydutyboots write pkmn.item too, and neither checks that the
+        # species even has such a set -- promoting a guess to ladder-proof is
+        # the failure the ladder exists to absorb.
+        pkmn = Pokemon("dragapult", 80)
+        pkmn.item = "heavydutyboots"
+        pkmn.item_inferred = True
+        pkmn.speed_range = StatRange(min=9999, max=9999)
+        self.assertTrue(RandomBattleTeamDatasets.get_all_remaining_sets(pkmn))
+
+    def test_toxic_debris_locks_toxic_spikes_with_no_move(self):
+        # #15: Glimmora sets teamDetails.toxicSpikes via its ABILITY in 100% of
+        # its sets while P(toxicspikes move) is 0.000.
+        g = Pokemon("glimmora", 75)
+        g.ability = "toxicdebris"
+        self.assertIn("toxicspikes", random_battles._team_locked_moves([g]))
+
+    def test_tera_blast_is_team_exclusive(self):
+        # #7: teams.ts:1490-1492 rejects a second Tera Blast user with a hard
+        # `continue` and no size bail -- absolute, unlike the hazard culls.
+        t = Pokemon("dragapult", 80)
+        t.moves = []
+        t.add_move("terablast")
+        self.assertIn("terablast", random_battles._team_locked_moves([t]))

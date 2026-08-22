@@ -756,6 +756,40 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type, team_dict):
         # throttling ("typing too quickly") — treat it as a NAK and resend the
         # last choice (paced by send_message, so the resend can't be dropped
         # the same way; a stale rqid resend is a harmless no-op error).
+        # An |error|[Invalid choice] needs SCOPING, not a blanket NAK. The
+        # "Sorry, too late to make a different move" variant is the BENIGN
+        # by-product of the resend safety nets below (a stale-rqid duplicate
+        # arriving after the turn resolved -- the throttle-notice comment says
+        # so in as many words) and must be ignored: treating it as a NAK and
+        # resending /choose default re-triggered the same error in a loop --
+        # ladder game 2668326719: 207 errors, 68 replacements, stored real
+        # choices clobbered by defaults, timer loss. Only a REJECTED-current-
+        # choice error gets corrected, exactly once per rqid.
+        if (
+            "[Invalid choice]" in msg
+            and "too late to make a different move" not in msg
+            and getattr(battle, "last_choice_sent", None)
+        ):
+            _lc = battle.last_choice_sent
+            _naks = getattr(battle, "_nak_corrected_rqids", None)
+            if _naks is None:
+                _naks = battle._nak_corrected_rqids = set()
+            if _lc[1] not in _naks:
+                _naks.add(_lc[1])
+                if "Terastallize" in msg and " terastallize" in _lc[0]:
+                    # sent format is "/choose move X terastallize" -- keep the
+                    # move, drop the illegal rider (run10k a06b8dc2/a72515e3)
+                    battle.last_choice_sent = [
+                        _lc[0].replace(" terastallize", ""), _lc[1]]
+                else:
+                    battle.last_choice_sent = ["/choose default", _lc[1]]
+                logger.warning(
+                    "Invalid choice NAK -- replacing stored choice {} -> {}"
+                    .format(_lc, battle.last_choice_sent)
+                )
+                await ps_websocket_client.send_message(
+                    battle.battle_tag, battle.last_choice_sent
+                )
         if "message-throttle-notice" in msg and getattr(
             battle, "last_choice_sent", None
         ):

@@ -2349,6 +2349,10 @@ class TestMove(unittest.TestCase):
         self.battle.opponent.active.item_inferred = True
         split_msg = ["", "move", "p2a: Caterpie", "String Shot"]
         self.battle.opponent.last_used_move = LastUsedMove("caterpie", "tackle", 0)
+        # the rule is keyed on the CURRENT STAY now, because a Choice lock
+        # resets on switch-out -- so the earlier move has to be in
+        # moves_used_since_switch_in, not merely in last_used_move
+        self.battle.opponent.active.moves_used_since_switch_in.add("tackle")
 
         move(self.battle, split_msg)
 
@@ -2362,6 +2366,10 @@ class TestMove(unittest.TestCase):
         self.battle.opponent.active.item_inferred = False
         split_msg = ["", "move", "p2a: Caterpie", "String Shot"]
         self.battle.opponent.last_used_move = LastUsedMove("caterpie", "tackle", 0)
+        # the rule is keyed on the CURRENT STAY now, because a Choice lock
+        # resets on switch-out -- so the earlier move has to be in
+        # moves_used_since_switch_in, not merely in last_used_move
+        self.battle.opponent.active.moves_used_since_switch_in.add("tackle")
 
         move(self.battle, split_msg)
 
@@ -5677,10 +5685,16 @@ class TestUpkeep(unittest.TestCase):
         self.assertEqual(self.battle.user.future_sight, (0, "pokemon_name"))
 
     def test_adds_leftovers_blacksludge_to_impossible_items_at_end_of_turn(self):
-        # Leftovers fires once per residual phase, so ruling it out needs TWO
-        # upkeeps below max HP with no gain. One is not evidence.
+        # RESIDUAL-OBSERVATION CONTRACT (Sally 2026-08-20). The rule no longer
+        # differences two upkeeps -- residual effects resolve IN ORDER, and
+        # Leftovers (order 5) fires before burn (10) / Leech Seed (8), so a mon
+        # that ENTERED the residual at full HP and was chipped afterwards ends
+        # below max having "not healed" without that proving anything. What it
+        # now asks is: was the mon below max when the residual OPENED, and did
+        # an item heal appear? `_pre_residual_hp` is stamped on the bare `|`
+        # separator by _process_battle_updates.
         self.battle.opponent.active.hp = 50
-        upkeep(self.battle, "")
+        self.battle.opponent.active._pre_residual_hp = 50
         upkeep(self.battle, "")
         self.assertIn(constants.LEFTOVERS, self.battle.opponent.active.impossible_items)
         self.assertIn(
@@ -6479,6 +6493,14 @@ class TestCheckSpeedRanges(unittest.TestCase):
 
 class TestGuessChoiceScarf(unittest.TestCase):
     def setUp(self):
+        # These fixtures use Caterpie as a generic stand-in, but the item
+        # inferences now refuse to guess an item no set of the species carries
+        # (fp/inference.py species_can_hold) and Caterpie has neither Boots nor
+        # a Choice Scarf. Clear the dataset so the guard no-ops and these tests
+        # keep testing the INFERENCE MECHANICS they are about; a species-pool
+        # test would be a different test.
+        RandomBattleTeamDatasets.__init__()
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
         self.battle = Battle(None)
         self.battle.user.name = "p1"
         self.battle.opponent.name = "p2"
@@ -6722,7 +6744,18 @@ class TestGuessChoiceScarf(unittest.TestCase):
 
         self.assertEqual(constants.UNKNOWN_ITEM, self.battle.opponent.active.item)
 
-    def test_guesses_scarf_in_trickroom_when_opponent_cannot_be_slower(self):
+    def test_never_guesses_scarf_in_trickroom(self):
+        # INVERTED 2026-08-20. This used to assert a scarf GUESS here.
+        #
+        # Trick Room reverses the order, so the SLOWER mon moves first, and
+        # check_choicescarf is only reached when the OPPONENT moved first. A
+        # Choice Scarf makes a mon FASTER, which under Trick Room makes it move
+        # LATER -- so moving first is evidence AGAINST a scarf and can never be
+        # evidence for one. The old branch fired when the opponent could not be
+        # slower than us, i.e. on a contradiction with our own speed model, and
+        # resolved it by hard-writing item="choicescarf" -- a conclusion that
+        # then survived to rung 1 of the relaxation ladder as if observed.
+        # The sound response to that contradiction is to conclude nothing.
         self.battle.trick_room = True
         self.battle.user.active.stats[constants.SPEED] = (
             110  # opponent caterpie speed is 113 - 207
@@ -6735,7 +6768,9 @@ class TestGuessChoiceScarf(unittest.TestCase):
 
         check_choicescarf(self.battle, messages)
 
-        self.assertEqual("choicescarf", self.battle.opponent.active.item)
+        self.assertEqual(
+            constants.UNKNOWN_ITEM, self.battle.opponent.active.item
+        )
 
     def test_unknown_moves_defaults_to_0_priority(self):
         self.battle.user.active.stats[constants.SPEED] = (
@@ -7008,6 +7043,14 @@ class TestGuessChoiceScarf(unittest.TestCase):
 
 class TestCheckHeavyDutyBoots(unittest.TestCase):
     def setUp(self):
+        # These fixtures use Caterpie as a generic stand-in, but the item
+        # inferences now refuse to guess an item no set of the species carries
+        # (fp/inference.py species_can_hold) and Caterpie has neither Boots nor
+        # a Choice Scarf. Clear the dataset so the guard no-ops and these tests
+        # keep testing the INFERENCE MECHANICS they are about; a species-pool
+        # test would be a different test.
+        RandomBattleTeamDatasets.__init__()
+        self.addCleanup(RandomBattleTeamDatasets.__init__)
         self.battle = Battle(None)
         self.battle.user.name = "p1"
         self.battle.opponent.name = "p2"
@@ -8940,9 +8983,94 @@ class TestLeftoversRuleOutRequiresSurvival(unittest.TestCase):
         self.assertNotIn(constants.BLACK_SLUDGE, opp.impossible_items)
 
     def test_surviving_below_max_without_healing_still_rules_it_out(self):
-        # the real inference must keep working
+        # the real inference must keep working -- now expressed as "the mon was
+        # below max when the residual phase OPENED and no item heal appeared"
         opp = self.battle.opponent.active
         opp.hp = opp.max_hp - 50
-        upkeep(self.battle, "")
+        opp._pre_residual_hp = opp.hp
         upkeep(self.battle, "")
         self.assertIn(constants.LEFTOVERS, opp.impossible_items)
+
+
+class TestChoiceLockResetsOnSwitchOut(unittest.TestCase):
+    """REGRESSION (choice-item inference keyed on the current stay).
+
+    A Choice lock RESETS when the holder switches out, so "used two different
+    moves" only disproves a Choice item when both were used in the SAME stay.
+    The rule read `side.last_used_move`, which survives switches, so a mon that
+    clicked one move, was forced out by Roar, came back and clicked another was
+    ruled Choice-less on a perfectly legal sequence.
+
+    Measured in validation batch 20260820-174544 game g6: an Indeedee-F whose
+    TRUE item was Choice Specs. Its species has exactly three items
+    (choicescarf, choicespecs, lifeorb); this rule killed both Choice ones and
+    the Life Orb rule soundly killed the third, so EVERY candidate set died and
+    the empty-candidate fallback ran 88 times in that single game.
+    """
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.user.name = "p1"
+        self.battle.opponent.name = "p2"
+        self.battle.opponent.active = Pokemon("caterpie", 80)
+        self.battle.user.active = Pokemon("pikachu", 80)
+
+    def test_two_moves_in_one_stay_still_rules_out_a_choice_item(self):
+        # both DAMAGING: a status move with a stat drop trips the separate
+        # `unlikely_to_have_choice_item` heuristic and would mask this rule
+        self.battle.opponent.active.moves_used_since_switch_in.add("tackle")
+        self.battle.opponent.last_used_move = LastUsedMove("caterpie", "tackle", 0)
+        move(self.battle, ["", "move", "p2a: Caterpie", "Bug Bite"])
+        self.assertFalse(self.battle.opponent.active.can_have_choice_item)
+
+    def test_two_moves_across_a_switch_does_not(self):
+        # the per-stay set was cleared by the switch-out; last_used_move still
+        # remembers the pre-switch move, which is exactly the stale signal
+        self.battle.opponent.last_used_move = LastUsedMove("caterpie", "tackle", 0)
+        move(self.battle, ["", "move", "p2a: Caterpie", "Bug Bite"])
+        self.assertTrue(
+            self.battle.opponent.active.can_have_choice_item,
+            "a Choice lock resets on switch-out",
+        )
+
+
+class TestHealBlockSuppressesItemEliminations(unittest.TestCase):
+    """REGRESSION (Heal Block blind spot in the residual item rules).
+
+    Heal Block stops Leftovers/Black Sludge healing AND stops a Sitrus Berry
+    firing at 50%. Both `upkeep` rules read the absence of healing as proof the
+    mon lacks the item, with no check for it.
+
+    Measured: validation batch 20260820-175736 game g18, an Arboliva under Heal
+    Block. Its species has exactly two items -- Leftovers and Sitrus Berry --
+    so the two rules together took every candidate set and the empty-candidate
+    fallback ran 88 times in that one game. Its TRUE item was the Sitrus Berry.
+    """
+
+    def setUp(self):
+        self.battle = Battle(None)
+        self.battle.opponent.active = Pokemon("arboliva", 91)
+        self.battle.user.active = Pokemon("pikachu", 80)
+        self.opp = self.battle.opponent.active
+        self.opp.item = constants.UNKNOWN_ITEM
+
+    def test_heal_block_blocks_the_leftovers_elimination(self):
+        self.opp.hp = self.opp.max_hp - 40
+        self.opp._pre_residual_hp = self.opp.hp
+        self.opp.volatile_statuses.append(constants.HEAL_BLOCK)
+        upkeep(self.battle, "")
+        self.assertNotIn(constants.LEFTOVERS, self.opp.impossible_items)
+
+    def test_heal_block_blocks_the_sitrus_elimination(self):
+        self.opp.hp = int(self.opp.max_hp * 0.4)
+        self.opp._pre_residual_hp = self.opp.hp
+        self.opp.volatile_statuses.append(constants.HEAL_BLOCK)
+        upkeep(self.battle, "")
+        self.assertNotIn("sitrusberry", self.opp.impossible_items)
+
+    def test_without_heal_block_both_still_fire(self):
+        self.opp.hp = int(self.opp.max_hp * 0.4)
+        self.opp._pre_residual_hp = self.opp.hp
+        upkeep(self.battle, "")
+        self.assertIn(constants.LEFTOVERS, self.opp.impossible_items)
+        self.assertIn("sitrusberry", self.opp.impossible_items)

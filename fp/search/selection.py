@@ -694,6 +694,7 @@ def select_move_from_mcts_results(
     opp_tera_used: bool = False,
     our_alive: int = 6,
     rb_switch_arms: frozenset | None = None,
+    user_tera_used: bool = False,
 ) -> str:
     """With candidates_margin set, returns (choice, close_candidates) where
     close_candidates are the post-gate options whose agg score sits within
@@ -714,6 +715,21 @@ def select_move_from_mcts_results(
         pair_stats,
         opp_dist,
     ) = _aggregate_results(mcts_results)
+
+    # OUR tera is spent, so a "-tera" arm is an ILLEGAL choice: the engine has
+    # no side-level tera flag and foul-play smuggles tera_spent in by
+    # re-flagging a FAINTED slot -- when Revival Blessing revives the only
+    # fainted mon the carrier vanishes and the engine re-offers tera arms.
+    # run10k: 5 games, 904 offered arms, TWO LOST GAMES (the bot then resent
+    # the invalid choice verbatim until the blitz timer expired). Strip the
+    # arms at the pool, so every gate below sees only legal options.
+    if user_tera_used:
+        for _d in (pooled_share, blend_sum, agg_score, score_sd, score_min,
+                   world_scores):
+            for _k in [k for k in _d if k.endswith("-tera")]:
+                _d.pop(_k, None)
+        for _k in [k for k in pair_stats if k[0].endswith("-tera")]:
+            pair_stats.pop(_k, None)
 
     # PAIR TABLE: our arm x their reply -> (chance-weighted visits, total score).
     # This is the ONLY input _apply_losing_upside_tiebreak scores candidates on,
@@ -777,6 +793,52 @@ def select_move_from_mcts_results(
         if not pooled_share:
             raise ValueError("argmax-only selection: no options in pooled_share")
         choice = max(pooled_share, key=pooled_share.get)
+        # MIXING (Sally 2026-08-21): a deterministic argmax is readable -- two
+        # ladder losses in a row were 7- and 15-turn loops of one move into an
+        # opponent line the model itself predicted at 80%+. When enabled,
+        # sample among near-equal candidates instead: visit share >= 25% of
+        # the argmax's AND average score >= the argmax's, weighted by
+        # visit_share * avg_score. The argmax always qualifies (its score
+        # equals itself), so the candidate set is never empty; with a single
+        # candidate this reduces exactly to argmax. Runs BEFORE the tera/
+        # switch gates so a mixed -tera pick still faces the gate.
+        if (
+            getattr(FoulPlayConfig, "selection_mix", False)
+            and len(pooled_share) > 1
+            # an ARGMAX resource spend is never mixed away either -- with
+            # -tera/-mega excluded from candidates below, mixing here would
+            # systematically SUPPRESS argmax teras, the opposite distortion
+            and not (choice.endswith("-tera") or choice.endswith("-mega"))
+        ):
+            _vmax = pooled_share[choice]
+            _smax = agg_score.get(choice, 0.0)
+            _cands = [
+                c for c, v in pooled_share.items()
+                if v >= 0.25 * _vmax and agg_score.get(c, -1.0) >= _smax
+                # resource spends stay ARGMAX-ONLY: the score filter favors
+                # low-visit score-inflated arms, which is exactly the -tera
+                # profile the tera gate exists to distrust -- and the gate's
+                # 0.01 q-margin was sized for argmax-vetted arrivals. A tera
+                # can still be PLAYED, but only by winning the visit argmax,
+                # i.e. the measured champion policy.
+                and not (c.endswith("-tera") or c.endswith("-mega"))
+            ]
+            if len(_cands) > 1:
+                _tot = sum(pooled_share.values()) or 1.0
+                _w = [
+                    (pooled_share[c] / _tot) * max(agg_score.get(c, 0.0), 0.0)
+                    for c in _cands
+                ]
+                if sum(_w) > 0:
+                    _mixed = random.choices(_cands, weights=_w)[0]
+                    logger.info(
+                        "MIX selection: {} from {} (weights {})".format(
+                            _mixed,
+                            _cands,
+                            [round(x, 4) for x in _w],
+                        )
+                    )
+                    choice = _mixed
         choice = _apply_argmax_tera_gate(
             choice, pooled_share, agg_score, opp_alive, opp_unrevealed, opp_tera_used
         )

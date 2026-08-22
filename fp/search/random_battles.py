@@ -297,10 +297,131 @@ _TEAM_EXCLUSIVE = (
     (("toxicspikes",), ("toxicspikes",)),
     (("defog", "rapidspin", "mortalspin"), ("defog", "rapidspin")),
     (("healbell",), ("healbell",)),
+    # Tera Blast: teams.ts:1922 sets teamDetails.teraBlast, and :1490-1492
+    # rejects a second Tera Blast user with a hard `continue` and no size bail,
+    # so unlike the hazard culls this one is absolute. Applied on the fill path
+    # (_ps_team_loop.py:595) but never to revealed mons. 3.38% of slots carry
+    # it; within the 38 capable species the Tera Blast set is 42% of mass.
+    (("terablast",), ("terablast",)),
 )
 # spikes is a COUNTER in PS, not a flag: only the THIRD user is culled
 # (teams.ts:529 `teamDetails.spikes >= 2`).
 _SPIKES_SETTERS = ("spikes", "ceaselessedge")
+
+
+# Team-exclusive moves PS NEVER doubles. The culls in _TEAM_EXCLUSIVE are
+# mostly SOFT -- PS bails out of them rather than empty a movepool, and 0.8% of
+# real teams really do carry two Rapid Spins -- but Stealth Rock appears twice
+# in 0 of 1,050,000 generated teams. _draw_set_respecting_team has to fall back
+# to an unfiltered draw when every surviving candidate carries the locked move,
+# which silently drops that constraint, and the active and the fill-ins are not
+# drawn by that function at all -- so the guarantee is enforced by repairing the
+# finished team instead (_repair_hard_exclusives).
+_HARD_EXCLUSIVE = frozenset({"stealthrock"})
+
+
+# ABILITIES that set a teamDetails flag without any move doing so. Glimmora's
+# Toxic Debris sets teamDetails.toxicSpikes in 100% of its sets while its
+# P(toxicspikes MOVE) is 0.000, so a moves-only lock can never catch it and a
+# world could hold Glimmora plus a second Toxic Spikes setter -- a team PS
+# cannot build. Keyed on the ability, checked on species reveal alone.
+_ABILITY_TEAM_FLAGS = {"toxicdebris": ("toxicspikes",)}
+
+
+def _repair_hard_exclusives(battle, revealed_pkmn_sets, confirmed_moves):
+    """Force the ABSOLUTE team-exclusive moves down to one carrier per team.
+
+    The per-draw lock cannot guarantee this. The active is drawn on its own path
+    BEFORE the reserve loop, fill-ins are generated AFTER it, and
+    _draw_set_respecting_team falls through to an unfiltered draw whenever every
+    surviving candidate carries the locked move -- so a duplicate can enter from
+    three directions. Ordering the reserve draw does not help either: the case
+    that produced this needed neither mon to be forced (batch-20260820-213330 g1
+    d7, Smeargle P(stealthrock)=0.225 and Clefable P=0.213, Clefable active).
+
+    So repair the finished team instead. A mon that has genuinely REVEALED the
+    move keeps it; among the rest, re-draw every carrier that has a candidate
+    set without it, leaving exactly one. Real PS: two Stealth Rock setters in 0
+    of 1,050,000 generated teams.
+    """
+    team = [p for p in ([battle.opponent.active] + list(battle.opponent.reserve))
+            if p is not None]
+    for move in _HARD_EXCLUSIVE:
+        # A Transform/Imposter COPY of a Stealth Rock user is battle state,
+        # not a generated set (PS builds Ditto with only Transform) -- counting
+        # it as a carrier fired this repair spuriously in 6 of the 13 flagged
+        # run25k games, and because the copied moves also sit in
+        # confirmed_moves the Ditto got elected KEEPER while the genuinely
+        # revealed real carrier had its protocol-revealed moves redrawn away
+        # (82 viol_missing_revealed_move). Same exemption _team_locked_moves
+        # and _ps_fill_ins already carry.
+        carriers = [p for p in team
+                    if not getattr(p, "transformed_into", None)
+                    and any(m.name == move
+                            for m in (getattr(p, "moves", None) or []))]
+        if len(carriers) < 2:
+            continue
+        # TWO passes. Electing a keeper greedily (carriers[0]) before knowing
+        # who is FORCED to hold the move re-creates the duplicate: run1000
+        # grp3/g77 d11 had Forretress (every candidate carries SR) walked
+        # AFTER the already-elected keeper, hit the empty free-list, and both
+        # kept Stealth Rock in 5/8 worlds. So: compute every carrier's
+        # move-free candidates first, then keeper priority is
+        # confirmed-by-reveal > forced (no free candidates) > first carrier.
+        free_by_id = {}
+        for pkmn in carriers:
+            sets = revealed_pkmn_sets.get(pkmn.name) or []
+            free_by_id[id(pkmn)] = [
+                st for st in sets if move not in st.pkmn_moveset.moves
+            ]
+        confirmed = [p for p in carriers
+                     if move in confirmed_moves.get(id(p), ())]
+        forced = [p for p in carriers if not free_by_id[id(p)]]
+        keep = (confirmed or forced or carriers)[0]
+        for pkmn in carriers:
+            if pkmn is keep:
+                continue
+            free = free_by_id[id(pkmn)]
+            _conf = set(confirmed_moves.get(id(pkmn), ()))
+            if not free:
+                # a FALLBACK-populated carrier has an empty candidate list by
+                # construction, not by evidence -- redraw it from the species'
+                # unfiltered exclusive-free sets rather than declaring it
+                # forced (run10kb g558). Restricted to sets carrying every
+                # CONFIRMED move: the unrestricted redraw stripped
+                # protocol-revealed Stone Edge from a pinned Krookodile
+                # (run25k, 3 games).
+                raw = RandomBattleTeamDatasets.get_pkmn_sets_from_pkmn_name(pkmn)
+                raw_free = [st for st in raw
+                            if move not in st.pkmn_moveset.moves
+                            and _conf <= set(st.pkmn_moveset.moves)]
+                if raw_free:
+                    weights = entry_weighted_counts(pkmn, raw_free)
+                    _repopulate_whole(pkmn, random.choices(
+                        raw_free, weights=weights)[0], _conf)
+                continue
+            weights = entry_weighted_counts(pkmn, free)
+            _repopulate_whole(
+                pkmn, random.choices(free, weights=weights)[0], _conf)
+
+
+def _repopulate_whole(pkmn, chosen_set, confirmed_moves):
+    """Re-populate a carrier so the drawn set applies WHOLE.
+
+    populate_pkmn_from_set keeps an already-set ability/item/tera -- right
+    for protocol facts, wrong when re-drawing SPECULATION: the first draw's
+    ability/item/tera stayed welded to the second draw's moves, producing
+    joint sets found in 0 of 1.05M real PS teams (run25k
+    illegal_joint_signature, 4 games). Only a mon with NO confirmed moves
+    (i.e. fully invented) gets its speculative fields cleared -- a
+    protocol-revealed mon's item/ability may be real evidence.
+    """
+    if not confirmed_moves:
+        pkmn.ability = None
+        pkmn.item = constants.UNKNOWN_ITEM
+        if not pkmn.terastallized:
+            pkmn.tera_type = None
+    populate_pkmn_from_set(pkmn, chosen_set)
 
 
 def _team_locked_moves(pkmn_list):
@@ -314,6 +435,16 @@ def _team_locked_moves(pkmn_list):
     """
     locked, spikes_users = set(), 0
     for pkmn in pkmn_list:
+        # transform copies are not this team's moves (see _ps_fill_ins)
+        if getattr(pkmn, "transformed_into", None):
+            continue
+        # ABILITY flags first: they must not sit behind the no-moves guard
+        # below, because the whole point of Toxic Debris is that it sets the
+        # flag with NO move -- and a Glimmora is usually locked in on species
+        # reveal alone, before it has shown a single move.
+        locked.update(
+            _ABILITY_TEAM_FLAGS.get(getattr(pkmn, "ability", None) or "", ())
+        )
         names = {m.name for m in getattr(pkmn, "moves", None) or []}
         if not names:
             continue
@@ -328,6 +459,15 @@ def _team_locked_moves(pkmn_list):
 
 
 def _draw_set_respecting_team(pkmn, candidate_sets, weights, locked):
+    # A move this mon has itself CONFIRMED can never be locked against it. Two
+    # teammates may both legitimately carry Rapid Spin -- PS's cull is soft and
+    # 0.8% of real teams do -- so a Hitmontop that has used it must not filter
+    # a Forretress that has ALSO used it. Without this the filter emptied
+    # Forretress's candidate list, fell through to the unfiltered draw, and the
+    # Stealth Rock constraint was lost with it: 26.6% of worlds ended up with
+    # two Stealth Rock users, which is what validation batch 20260820-164300
+    # game g3 caught.
+    locked = set(locked) - {m.name for m in getattr(pkmn, "moves", None) or []}
     """`random.choices` over the candidates, preferring ones that do not
     duplicate an already-locked team move. Falls back to the unfiltered draw
     when every candidate carries it -- which is PS's own behaviour, and is also
@@ -387,7 +527,7 @@ def _datasets_for(battle: Battle):
     raise ValueError("Only random battles are supported")
 
 
-def populate_pkmn_from_fallback_set(pkmn: Pokemon, datasets) -> bool:
+def populate_pkmn_from_fallback_set(pkmn: Pokemon, datasets, locked=()) -> bool:
     """Last resort when the evidence eliminated EVERY candidate set.
 
     Leaving the mon un-populated is the worst possible answer: it reaches the
@@ -404,6 +544,17 @@ def populate_pkmn_from_fallback_set(pkmn: Pokemon, datasets) -> bool:
     unfiltered = datasets.get_pkmn_sets_from_pkmn_name(pkmn)
     if not unfiltered:
         return False
+    # SOFT team-exclusive filter, same semantics as _draw_set_respecting_team:
+    # prefer sets free of an already-taken exclusive move, fall through when
+    # none exist. The fallback bypassed the lock entirely and
+    # _repair_hard_exclusives then read its empty candidate list as "forced",
+    # so two Stealth Rock carriers survived (run10kb g558, d20-24).
+    locked = set(locked) - {m.name for m in (getattr(pkmn, "moves", None) or [])}
+    if locked:
+        free = [st for st in unfiltered
+                if not locked.intersection(st.pkmn_moveset.moves)]
+        if free:
+            unfiltered = free
 
     known_moves = list(pkmn.moves)
     # HARD NEGATIVE EVIDENCE still applies (Sally 2026-08-20). The list above is
@@ -421,7 +572,16 @@ def populate_pkmn_from_fallback_set(pkmn: Pokemon, datasets) -> bool:
     # function is that a live threat must never reach the engine un-populated.
     plausible = [
         s for s in unfiltered
-        if s.pkmn_set.item not in pkmn.impossible_items
+        # the same POSITIVE item evidence the candidate filter now enforces --
+        # this comprehension consulted only the negative ledgers, so the
+        # fallback could still hand an observed-item mon a different item
+        if not (
+            not getattr(pkmn, "item_inferred", False)
+            and pkmn.item not in (None, constants.UNKNOWN_ITEM)
+            and pkmn.removed_item is None
+            and s.pkmn_set.item != pkmn.item
+        )
+        and s.pkmn_set.item not in pkmn.impossible_items
         and not (
             s.pkmn_set.item in constants.CHOICE_ITEMS
             and not pkmn.can_have_choice_item
@@ -442,6 +602,27 @@ def populate_pkmn_from_fallback_set(pkmn: Pokemon, datasets) -> bool:
     sampled = random.choices(
         pool, weights=[s.pkmn_set.count for s in pool]
     )[0]
+    # Dump the FULL evidence ledger, not just moves/item/ability. Every time
+    # this fired the question was "which single elimination emptied the list?",
+    # and answering it meant reconstructing state offline from scattered log
+    # lines -- which failed for the cases whose culprit was an unlogged
+    # rejected_set_signature. Print the ledger so the next occurrence is
+    # traceable from this one line.
+    logger.warning(
+        "  ...ledger for {}: impossible_items={} impossible_abilities={} "
+        "can_have_choice_item={} tera={}/{} level={} speed={} "
+        "rejected_signatures={}".format(
+            pkmn.name,
+            sorted(pkmn.impossible_items),
+            sorted(pkmn.impossible_abilities),
+            pkmn.can_have_choice_item,
+            pkmn.tera_type,
+            pkmn.terastallized,
+            pkmn.level,
+            getattr(pkmn, "speed_range", None),
+            len(getattr(pkmn, "rejected_set_signatures", None) or ()),
+        )
+    )
     logger.warning(
         "No candidate set survived the evidence for {} - falling back to an "
         "unfiltered set. revealed_moves={} item={} ability={}".format(
@@ -594,6 +775,8 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
         # Plan around what the REST of the team is already forced to hold, so
         # the active cannot duplicate a hazard/removal move PS would have culled.
         forced = _forced_exclusive_moves(battle, revealed_pkmn_sets, skip=root_active)
+        # ...minus anything the active has itself already shown
+        forced -= {m.name for m in getattr(root_active, "moves", None) or []}
         if forced:
             keep = [
                 (s_, w) for s_, w in zip(plan_sets, plan_weights)
@@ -608,6 +791,16 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
     for index in range(num_battles):
         logger.info("Sampling battle {}".format(index))
         battle_copy = deepcopy(battle)
+        # Confirmed moves, snapshotted BEFORE any set is populated: afterwards
+        # pkmn.moves holds the full sampled set and a genuinely revealed move is
+        # indistinguishable from a guessed one. _repair_hard_exclusives needs
+        # the difference -- a mon that has actually SHOWN Stealth Rock keeps it.
+        _confirmed_moves = {
+            id(p): {m.name for m in (getattr(p, "moves", None) or [])}
+            for p in ([battle_copy.opponent.active]
+                      + list(battle_copy.opponent.reserve))
+            if p is not None
+        }
 
         sample_chance = 1 / num_battles
         active = battle_copy.opponent.active
@@ -643,7 +836,10 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
             else:
                 populate_pkmn_from_set(active, pkmn_full_set)
         elif not getattr(active, "transformed_into", None):
-            populate_pkmn_from_fallback_set(active, datasets)
+            populate_pkmn_from_fallback_set(
+                active, datasets,
+                _forced_exclusive_moves(battle, revealed_pkmn_sets,
+                                        skip=active))
 
         # Seeded with every mon's CONFIRMED moves so a mon that has actually
         # been seen using Stealth Rock locks it for the others, whatever order
@@ -660,16 +856,27 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
         for pkmn in battle_copy.opponent.reserve:
             if not revealed_pkmn_sets[pkmn.name]:
                 if not getattr(pkmn, "transformed_into", None):
-                    populate_pkmn_from_fallback_set(pkmn, datasets)
+                    populate_pkmn_from_fallback_set(
+                        pkmn, datasets,
+                        _team_locked_moves(
+                            [p for p in fixed_so_far if p is not pkmn])
+                        | _forced_exclusive_moves(battle, revealed_pkmn_sets,
+                                                  skip=pkmn))
                 continue
             # TEAM-AWARE draw: everything already fixed in THIS world (the
             # active's sampled set, earlier reserves, and every mon's genuinely
             # revealed moves) locks out the hazard/removal/screen moves PS
             # would have culled. Drawn independently, these produced teams the
             # generator cannot build.
+            # ...unioned with what the REST of the team is FORCED into by its
+            # own evidence, not just what it has already been dealt in this
+            # world. This is the other half of the g15 defect: it was fixed for
+            # the active (via _forced_exclusive_moves before the world loop)
+            # and never for the reserves, which saw only `pkmn.moves`. ~0.90
+            # exclusive-move users per generated team, so ~60% of teams.
             locked = _team_locked_moves(
                 [p for p in fixed_so_far if p is not pkmn]
-            )
+            ) | _forced_exclusive_moves(battle, revealed_pkmn_sets, skip=pkmn)
             pkmn_full_set = _draw_set_respecting_team(
                 pkmn,
                 revealed_pkmn_sets[pkmn.name],
@@ -679,6 +886,7 @@ def prepare_random_battles(battle: Battle, num_battles: int) -> list[(Battle, fl
             populate_pkmn_from_set(pkmn, pkmn_full_set)
 
         populate_randombattle_unrevealed_pkmn(battle_copy)
+        _repair_hard_exclusives(battle_copy, revealed_pkmn_sets, _confirmed_moves)
         battle_copy.opponent.lock_moves()
         sampled_battles.append((battle_copy, sample_chance))
 
@@ -1008,11 +1216,23 @@ def _pokemon_from_ps_set(ps_set: dict) -> Pokemon:
 def _ps_fill_ins(existing_pkmn: list[Pokemon], n_missing: int) -> list[Pokemon]:
     from fp.search import ps_teams
 
+    # A transformed mon's live moves are COPIES of the copy-target's -- they
+    # say nothing about what this team's builder drew, and feeding them into
+    # PS's sequential team state poisons every fill-in. run10k a71f5e6a: an
+    # Imposter Ditto carrying our Araquanid's Sticky Web set
+    # teamDetails.stickyWeb, PS's cull then stripped webs from EVERY invented
+    # mon, and the worlds held webs-less Choice-Specs Galvantula -- a set the
+    # generator only builds when a REAL teammate has webs. Emit the base mon
+    # with no move claims instead.
     existing = [
         {
             "speciesId": pkmn.name,
             "ability": pkmn.ability or "",
-            "moves": [m.name for m in pkmn.moves],
+            "moves": (
+                []
+                if getattr(pkmn, "transformed_into", None)
+                else [m.name for m in pkmn.moves]
+            ),
             "level": pkmn.level,
         }
         for pkmn in existing_pkmn

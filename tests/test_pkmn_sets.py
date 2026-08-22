@@ -1,6 +1,8 @@
 import logging
 import os
 import unittest
+
+import constants
 from copy import deepcopy
 from unittest import mock
 
@@ -691,8 +693,13 @@ class TestGradedRandomBattleEvidenceRelaxation(unittest.TestCase):
         ):
             remaining = RandomBattleTeamDatasets.get_all_remaining_sets(pkmn)
 
+        # TERA IS NOW UNRELAXABLE (2026-08-20). This used to expect BOTH sets.
+        # The fixture mon is terastallized ELECTRIC, so the water-tera set
+        # contradicts a fact the server printed in plain text and must not come
+        # back even on the legacy all-at-once path -- the same treatment items
+        # already had via `item_impossible`.
         self.assertEqual(
-            self._signatures(RandomBattleTeamDatasets.pkmn_sets["pikachu"]),
+            {RandomBattleTeamDatasets.pkmn_sets["pikachu"][0].mechanics_signature()},
             self._signatures(remaining),
         )
 
@@ -715,8 +722,12 @@ class TestGradedRandomBattleEvidenceRelaxation(unittest.TestCase):
     def test_second_rung_retains_ability(self):
         pkmn = self._observed_pikachu()
         pkmn.level = 90
-        pkmn.item = "leftovers"
-        pkmn.tera_type = "water"
+        # Driven by LEVEL alone. This used to set tera_type="water" and
+        # item="leftovers" as the relaxation levers; both are now hard once
+        # OBSERVED (an announced tera type, and a seen item), so neither can be
+        # relaxed at any rung. Level is what rung 2 still gives up, and the
+        # point of the test -- that rung 2 keeps matching on ABILITY -- is
+        # unchanged.
         matching_signature = RandomBattleTeamDatasets.pkmn_sets["pikachu"][
             0
         ].mechanics_signature()
@@ -729,11 +740,20 @@ class TestGradedRandomBattleEvidenceRelaxation(unittest.TestCase):
 
         self.assertEqual({matching_signature}, self._signatures(remaining))
         self.assertIn("depth=2", logs.output[0])
-        self.assertIn("relaxing=speed,level,tera,item", logs.output[0])
+        self.assertIn("relaxing=speed,level,item", logs.output[0])
 
     def test_final_rung_matches_all_at_once_without_reviving_rejected_sets(self):
         pkmn = self._observed_pikachu()
         pkmn.ability = "overgrow"
+        # the expected survivor is the WATER-tera set, so the mon must actually
+        # have terastallized water -- otherwise tera (now unrelaxable) excludes
+        # it at every rung and the rejected-set behaviour under test is never
+        # reached.
+        pkmn.tera_type = "water"
+        # ...and the item must be UNKNOWN: the expected survivor holds a Choice
+        # Scarf while the fixture mon is holding a Light Ball, and a SEEN item
+        # now excludes every set carrying a different one, at every rung.
+        pkmn.item = constants.UNKNOWN_ITEM
         rejected = RandomBattleTeamDatasets.pkmn_sets["pikachu"][0]
         pkmn.rejected_set_signatures.add(rejected.mechanics_signature())
         expected = RandomBattleTeamDatasets.pkmn_sets["pikachu"][1]
@@ -749,7 +769,7 @@ class TestGradedRandomBattleEvidenceRelaxation(unittest.TestCase):
         )
         self.assertIn("depth=3", logs.output[0])
         self.assertIn(
-            "relaxing=speed,level,tera,item,ability", logs.output[0]
+            "relaxing=speed,level,item,ability-reveal", logs.output[0]
         )
 
 

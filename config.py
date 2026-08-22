@@ -167,6 +167,9 @@ class _FoulPlayConfig:
     losing_upside_threshold: float = 0.15
     losing_upside_displacement_multiplier: float = 2.0
     selection_argmax_only: bool = False
+    # sample among near-equal argmax candidates (visit >= 25% of argmax, score
+    # >= argmax's) weighted by visit_share * avg_score -- anti-readability mix
+    selection_mix: bool = False
     reuse_search_pool: bool = True
     never_start_timer: bool = False
     user_to_challenge: str
@@ -512,6 +515,16 @@ class _FoulPlayConfig:
         )
         parser.add_argument("--log-level", default="DEBUG", help="Python logging level")
         parser.add_argument(
+            "--selection-mix",
+            action="store_true",
+            help="With --selection-argmax-only: sample among near-equal candidates "
+            "(pooled visit share >= 25%% of the argmax's AND average score >= the "
+            "argmax's) weighted by visit_share * avg_score, instead of the "
+            "deterministic argmax. Anti-readability: two 2026-08-21 ladder losses "
+            "were multi-turn single-move loops into opponent lines the model itself "
+            "predicted at 80%%+. Gates (tera, rb-switch) still vet the mixed pick.",
+        )
+        parser.add_argument(
             "--log-to-file",
             action="store_true",
             help="When enabled, DEBUG logs will be written to a file in the logs/ directory",
@@ -610,6 +623,7 @@ class _FoulPlayConfig:
         self.opponent_phantom_switch_keep = args.opponent_phantom_switch_keep
         self.nn_weights = os.environ.get("PE_NN_WEIGHTS")
         self.selection_argmax_only = args.selection_argmax_only
+        self.selection_mix = args.selection_mix
         if args.tera_gate_per_mon is not None:
             self.tera_gate_score_per_mon = args.tera_gate_per_mon
         if args.tera_gate_visit_frac is not None:

@@ -119,7 +119,7 @@ def crit(battle, split_msg):
         pkmn.crit_this_turn = True
 
 
-def hitcount(battle, split_msg):
+def hitcount(battle, split_msg, defender_fainted=False):
     """`|-hitcount|<defender>|<n>` -- stamp how many strikes landed."""
     if len(split_msg) < 4:
         return
@@ -129,6 +129,17 @@ def hitcount(battle, split_msg):
     try:
         pkmn.hitcount_this_turn = int(split_msg[3].strip())
     except ValueError:
+        return
+    # A KO mid-sequence cuts the multi-hit short, so the count proves nothing
+    # about Loaded Dice. The hp<=0 guard inside _rule_out_loaded_dice cannot
+    # see this: stamp_hit_flags runs at the |move| line BEFORE the block's
+    # -damage/|faint| lines are dispatched, so the defender's hp is still its
+    # PRE-move value there. That false "loadeddice impossible" is UNRELAXABLE
+    # by design, killed 100% of candidates carrying the revealed multi-hit
+    # move, and every world went to the fallback: the Bayes-ceiling-1.00
+    # truth orphans on Rayquaza/Scale Shot (g53) and Lapras/Icicle Spear
+    # (g209, live again as run10kb g814).
+    if defender_fainted:
         return
     _rule_out_loaded_dice(battle, split_msg[2], pkmn.hitcount_this_turn)
 
@@ -178,6 +189,19 @@ def stamp_hit_flags(battle, lines):
     `lines` are the protocol lines following the context's opener; the scan
     stops at the same `MOVE_END_STRINGS` boundary every other consumer uses.
     """
+    # prescan the same slice for defenders KO'd inside this hit context --
+    # hitcount() needs to know, and the live battle state cannot tell it (see
+    # the comment there)
+    fainted_idents = set()
+    for line in lines or ():
+        split_line = line.split("|")
+        if len(split_line) < 2 or split_line[1] in MOVE_END_STRINGS:
+            break
+        if split_line[1] == "faint" and len(split_line) >= 3:
+            fainted_idents.add(split_line[2].strip())
+        elif (split_line[1] == "-damage" and len(split_line) >= 4
+                and split_line[3].strip().endswith("fnt")):
+            fainted_idents.add(split_line[2].strip())
     for line in lines or ():
         split_line = line.split("|")
         if len(split_line) < 2 or split_line[1] in MOVE_END_STRINGS:
@@ -186,7 +210,8 @@ def stamp_hit_flags(battle, lines):
         if action == "-crit":
             crit(battle, split_line)
         elif action == "-hitcount":
-            hitcount(battle, split_line)
+            hitcount(battle, split_line,
+                     defender_fainted=split_line[2].strip() in fainted_idents)
 
 
 def can_have_priority_modified(battle, pokemon, move_name):
@@ -453,7 +478,16 @@ def check_speed_ranges(battle, msg_lines):
         moves.append(
             (
                 "{}a: {}".format(battle.opponent.name, battle.user.active.name),
-                all_move_json[normalize_name(battle.user.last_selected_move.move)],
+                # .get, NOT []: a recharge turn stores the "No Move"
+                # placeholder, and a KeyError here makes
+                # process_battle_updates discard the whole unapplied protocol
+                # block, opponent reveals included (run10k a8bebbbc/a9e01900,
+                # 43 violations). Unknown selections stay priority-0 actions -
+                # this check's documented semantics for them.
+                all_move_json.get(
+                    normalize_name(battle.user.last_selected_move.move),
+                    {constants.ID: "unknown", constants.PRIORITY: 0},
+                ),
             )
         )
 
@@ -664,7 +698,16 @@ def check_choicescarf(battle, msg_lines):
         moves.append(
             (
                 "{}a: {}".format(battle.opponent.name, battle.user.active.name),
-                all_move_json[normalize_name(battle.user.last_selected_move.move)],
+                # .get, NOT []: a recharge turn stores the "No Move"
+                # placeholder, and a KeyError here makes
+                # process_battle_updates discard the whole unapplied protocol
+                # block, opponent reveals included (run10k a8bebbbc/a9e01900,
+                # 43 violations). Unknown selections stay priority-0 actions -
+                # this check's documented semantics for them.
+                all_move_json.get(
+                    normalize_name(battle.user.last_selected_move.move),
+                    {constants.ID: "unknown", constants.PRIORITY: 0},
+                ),
             )
         )
 
@@ -723,11 +766,28 @@ def check_choicescarf(battle, msg_lines):
         return
 
     if battle.trick_room:
-        has_scarf = opponent_effective_speed > bot_effective_speed
-    else:
-        has_scarf = bot_effective_speed > opponent_effective_speed
+        # Under Trick Room the SLOWER mon moves first, and this function is only
+        # ever reached when the OPPONENT moved first (see the positional scan
+        # above) -- so moving first under TR is evidence AGAINST a Choice Scarf,
+        # never for it. The old branch asserted the opposite
+        # (`opponent_effective_speed > bot_effective_speed`) and then hard-wrote
+        # item="choicescarf", a conclusion that survives to rung 1 of the
+        # relaxation ladder as if it had been observed. Unreachable under a
+        # correct speed model, but a wrong write when it does fire.
+        return
+    has_scarf = bot_effective_speed > opponent_effective_speed
 
-    if has_scarf:
+    if has_scarf and not species_can_hold(battle.opponent.active, "choicescarf"):
+        logger.info(
+            "Opponent {} outsped us but no set of its species holds a "
+            "choicescarf - NOT inferring it".format(battle.opponent.active.name)
+        )
+    elif has_scarf and forme_requires_its_item(battle.opponent.active):
+        logger.info(
+            "Opponent {} outsped us but its forme requires its own item - "
+            "NOT inferring choicescarf".format(battle.opponent.active.name)
+        )
+    elif has_scarf:
         logger.info(
             "Opponent {} could not have gone first - setting it's item to choicescarf".format(
                 battle.opponent.active.name
@@ -738,6 +798,50 @@ def check_choicescarf(battle, msg_lines):
 
 
 _DAMAGE_CAP_MARKERS = ("focus sash", "ability: sturdy", "move: endure")
+
+
+
+
+def species_can_hold(pkmn, item) -> bool:
+    """Does ANY randbats set for this species carry `item`?
+
+    Both item inferences write `pkmn.item` directly, and neither checked that
+    the species can hold what they guessed -- 377/509 species have no
+    Heavy-Duty Boots set and 440/509 no Choice Scarf set. A guess outside the
+    species' pool cannot be right, and once written it survives to the
+    candidate filter as evidence: batch 20260820-194228 game g17 gave a
+    Garganacl (whose ONLY item is Leftovers) inferred Heavy-Duty Boots in 8
+    sampled worlds. Unknown species fall through as True so this can only ever
+    STOP a guess, never invent one.
+    """
+    try:
+        sets = RandomBattleTeamDatasets.pkmn_sets.get(pkmn.name)
+    except Exception:
+        return True
+    if not sets:
+        return True
+    return any(s.pkmn_set.item == item for s in sets)
+
+
+def forme_requires_its_item(pkmn) -> bool:
+    """True when the species' FORME is defined by the item it holds.
+
+    Arceus-Psychic IS Arceus holding a Mind Plate; Ogerpon-Cornerstone holds
+    the Cornerstone Mask; Zacian-Crowned holds the Rusted Sword. Inferring a
+    Choice Scarf or Heavy-Duty Boots onto one of these does not merely guess
+    wrong -- it describes a mon that cannot exist, because the item IS the
+    forme. Every such species also has exactly one candidate set, carrying its
+    required item, so the inferred value then contradicts the only set the
+    sampler can draw.
+
+    Measured live: validation batch 20260820-164300 game g17 inferred
+    choicescarf onto an Arceus-Psychic whose only set is mindplate, in all 8
+    sampled worlds. Eight species in the gen9 randbats pool are locked this
+    way: dialgaorigin, giratinaorigin, ogerpon{cornerstone,hearthflame,
+    wellspring}, palkiaorigin, zaciancrowned, zamazentacrowned.
+    """
+    entry = pokedex.get(pkmn.name) or {}
+    return bool(entry.get("requiredItem") or entry.get("requiredItems"))
 
 
 def _damage_was_capped(lines, defender_name):
@@ -1242,7 +1346,15 @@ def check_heavydutyboots(battle, msg_lines):
             ):
                 pkmn_took_stealthrock_damage = True
 
-        if not pkmn_took_stealthrock_damage:
+        if not pkmn_took_stealthrock_damage and (
+            forme_requires_its_item(side_to_check.active)
+            or not species_can_hold(side_to_check.active, "heavydutyboots")
+        ):
+            logger.info(
+                "{} avoided hazard damage but its forme requires its own item "
+                "- NOT inferring heavydutyboots".format(side_to_check.active.name)
+            )
+        elif not pkmn_took_stealthrock_damage:
             logger.info("{} has heavydutyboots".format(side_to_check.active.name))
             side_to_check.active.item = "heavydutyboots"
             side_to_check.active.item_inferred = True
@@ -1277,7 +1389,15 @@ def check_heavydutyboots(battle, msg_lines):
             ):
                 pkmn_took_spikes_damage = True
 
-        if not pkmn_took_spikes_damage:
+        if not pkmn_took_spikes_damage and (
+            forme_requires_its_item(side_to_check.active)
+            or not species_can_hold(side_to_check.active, "heavydutyboots")
+        ):
+            logger.info(
+                "{} avoided hazard damage but its forme requires its own item "
+                "- NOT inferring heavydutyboots".format(side_to_check.active.name)
+            )
+        elif not pkmn_took_spikes_damage:
             logger.info("{} has heavydutyboots".format(side_to_check.active.name))
             side_to_check.active.item = "heavydutyboots"
             side_to_check.active.item_inferred = True
@@ -1322,7 +1442,15 @@ def check_heavydutyboots(battle, msg_lines):
             ):
                 pkmn_took_toxicspikes_poison = True
 
-        if not pkmn_took_toxicspikes_poison:
+        if not pkmn_took_toxicspikes_poison and (
+            forme_requires_its_item(side_to_check.active)
+            or not species_can_hold(side_to_check.active, "heavydutyboots")
+        ):
+            logger.info(
+                "{} avoided hazard damage but its forme requires its own item "
+                "- NOT inferring heavydutyboots".format(side_to_check.active.name)
+            )
+        elif not pkmn_took_toxicspikes_poison:
             logger.info("{} has heavydutyboots".format(side_to_check.active.name))
             side_to_check.active.item = "heavydutyboots"
             side_to_check.active.item_inferred = True
@@ -1356,7 +1484,15 @@ def check_heavydutyboots(battle, msg_lines):
             ):
                 pkmn_was_affected_by_stickyweb = True
 
-        if not pkmn_was_affected_by_stickyweb:
+        if not pkmn_was_affected_by_stickyweb and (
+            forme_requires_its_item(side_to_check.active)
+            or not species_can_hold(side_to_check.active, "heavydutyboots")
+        ):
+            logger.info(
+                "{} avoided hazard damage but its forme requires its own item "
+                "- NOT inferring heavydutyboots".format(side_to_check.active.name)
+            )
+        elif not pkmn_was_affected_by_stickyweb:
             logger.info("{} has heavydutyboots".format(side_to_check.active.name))
             side_to_check.active.item = "heavydutyboots"
             side_to_check.active.item_inferred = True

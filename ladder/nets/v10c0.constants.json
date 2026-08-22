@@ -1,0 +1,60 @@
+{
+ "_doc": "MCTS constants that ship WITH v10c0.bin. Same consumption contract as v9c0.constants.json: foul-play (config.py, search_server.py) and valuenet/sprt/run_duels.py:_sidecar_constants copy every PE_* key here into the engine environment when --nn-weights / PE_NN_WEIGHTS points at the matching .bin; explicit PE_* already in the environment wins.",
+ "PE_NN_REWARD": "absolute",
+ "PE_NN_TAU": 1.0,
+ "PE_TUNE_UCB_EXPLORATION": 0.02,
+ "PE_TUNE_OPPONENT_UCB_EXPLORATION": 0.02,
+ "_measurement": {
+  "what": "EMPIRICAL c-response curve (48,384 games, 2026-08-20) + lnN transfer to ladder budget. The sigma_R ratio transfer that set v8/v9 is RETIRED -- see valuenet/sigma_tune.py.",
+  "response_curve_at_12k_iters": {
+   "protocol": "v10c0 (A) vs v9c0 (B), DUEL_ITERS=12000, MIRROR=1, PE_PHANTOM_MODE=off, paired on identical teams + chance seeds",
+   "below_0.019": "COLLAPSE. c=0.005 is -51.5 Elo vs c=0.0345 (z=-3.50, p=0.0005, survives Bonferroni); c=0.010 is -38.0 Elo (p=0.0099).",
+   "0.019_to_0.042": "FLAT PLATEAU. All 10 pairwise paired comparisons n.s.; largest |d| 4.7 Elo at p=0.57.",
+   "above_0.042": "mild decline: 0.0515 -> +2.4, 0.0650 -> -6.5, vs 0.0422 -> +16.9 (earlier 250ms sweep, less controlled)."
+  },
+  "why_0.02": "The plateau above was measured at 12,000 iterations. The ladder searches 4500ms, ~10x more, and the explore/exploit ratio is k = sqrt(c*lnN)/sigma -- the n cancels but lnN does not. lnN goes 9.39 -> ~11.81, ratio 1.258, so c=X on the LADDER behaves like c=1.258X did in the test. The measured plateau [0.019, 0.042] therefore maps to a ladder-equivalent plateau of about [0.015, 0.033]. c=0.02 sits inside it (equivalent to 0.0252 at 12k); c=0.0345 would sit just ABOVE its top (equivalent to 0.0434 at 12k), in the region where decline was measured. Sally's call, 2026-08-20.",
+  "caveats": "(1) The lnN transfer assumes optimal k is N-invariant. That is the same FORM of assumption that broke the sigma transfer, though better founded -- lnN is structurally in the bonus formula, whereas the sigma^2 scaling was an interpretation of what sigma_R means. (2) Ladder runs PHANTOM_MODE=cut with ALPHA=0 / SELF_AS_SEEN=0.2, and phantom_mult multiplies exploration (mcts.rs:764), so phantom arms get zero or reduced bonus. That suppression is selective, not global, so it does not cleanly offset (1). (3) No c value has ever been measured AT ladder settings; that run remains the open item. My analysis favoured 0.025 as robust under both readings; 0.02 is the chosen value.",
+  "superseded_values": {
+   "0.0515": "sigma_R transfer, 2026-08-20 -- inverted a duel result, cost ~15-25 Elo, never laddered",
+   "0.0422": "v9's constant, interim after retiring the transfer",
+   "0.0345": "12k-plateau interior, before applying the lnN transfer to ladder budget"
+  }
+ },
+ "_tau_note": "PE_NN_TAU = 1.0 unchanged: terminals still enter the accumulator as hard 1.0/0.0, and the net is calibrated to label_p on the same absolute scale (v10 holdout Brier 0.023935). (UCB constant no longer derived from sigma; see _measurement.)",
+ "derived_from": "v10_v10s1.pt (single-trunk, seed 1; chosen over seed 0 by best holdout Brier 0.023935 vs 0.023944)",
+ "weights_sha256": "8259a84a0c1b24fc650257a925de4a29dd4aa08e1ab6960a1f60feb56a51e2ab",
+ "ckpt": {
+  "name": "v10c0",
+  "arch": "single (v8 layout, exported via export_v8.py)",
+  "training": "corrections/v10_train.py: 3,995,769 rows fresh v10 corpus (1,367,256 games), full-coverage corpus+mirror epochs, batch 4096, lr 3e-4, wd 0.01, best-holdout checkpoint @ step 60000 (~epoch 31.4)",
+  "holdout_brier_all": 0.023935,
+  "holdout_slices": {
+   "early": 0.027877,
+   "mid": 0.025157,
+   "late": 0.018326
+  },
+  "cross_gen_shared_holdout": {
+   "_note": "all three scored on the SAME v10 holdout (79,867 rows / 27,345 games)",
+   "v8c_s1": 0.033267,
+   "v9c0": 0.024546,
+   "v10c0": 0.023935
+  }
+ },
+ "iters": 12000,
+ "tau": 1.0,
+ "strength": {
+  "measured": "round-robin 2026-08-20, 39 arms / 39,312 games, DUEL_ITERS=12000, transitivity checked (gap -3.5 Elo)",
+  "elo_vs_v9c0": 12.1,
+  "elo_vs_v8c_s1": 45.8,
+  "ladder_scale": {
+   "v8c_s1": 0.0,
+   "v9c0": 33.7,
+   "v10c0": 45.8
+  },
+  "evaluator": {
+   "shared_v10_holdout_brier": 0.023935,
+   "bench_v1_brier": 0.02709,
+   "bench_v1_note": "neutral benchmark no net trained toward; v9c0=0.02942, v8c_s1=0.03678"
+  }
+ }
+}

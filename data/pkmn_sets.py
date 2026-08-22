@@ -89,7 +89,62 @@ def _build_cosmetic_forme_to_base() -> dict[str, str]:
     return mapping
 
 
+def _build_forme_alias_to_base() -> dict[str, str]:
+    """Maps formes PS's randbats generator never emits onto the species it does.
+
+    `cosmeticFormes` is not the whole story. Magearna-Original is a full pokedex
+    ENTRY with baseSpecies "Magearna" and identical stats/types/abilities, and it
+    is absent from Magearna's `cosmeticFormes` list -- so
+    _build_cosmetic_forme_to_base misses it, and because the forme still owns a
+    thin observed entry, the `pkmn_name in d` early return in
+    get_key_in_dict_from_pkmn_name SHADOWS the base species' full set list.
+    Measured in validation batch-20260820-203128 g7: the opponent's true
+    Magearna-Original ran Volt Switch (PS "Bulky Attacker"), the forme's lone
+    inherited set was the "Bulky Setup" Calm Mind one, no candidate survived,
+    and the fallback merged the two into calmmind/flashcannon/fleurcannon/
+    voltswitch -- a moveset that crosses two PS roles and appears 0 times in
+    1.05M real teams. 120 sampled worlds carried it.
+
+    The discriminator is the GENERATOR, not the pokedex: Greninja-Bond has the
+    same stats and types as Greninja and would look equally "cosmetic", but PS
+    gives it its own sets.json entry with a single 4-move role, so folding
+    Greninja's 16 movesets into it would be exactly the same defect in reverse.
+    A forme is the same mon for set purposes iff its stats AND types match its
+    baseSpecies AND real PS output never lists it as its own species.
+
+    Unreadable distribution file => empty map, i.e. today's behaviour.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "ps",
+        "gen9randombattle_set_dist.json",
+    )
+    try:
+        with open(path) as f:
+            generated = set(json.load(f)["dist"])
+    except (OSError, ValueError, KeyError):
+        return {}
+
+    mapping = {}
+    for forme_id, entry in pokedex.items():
+        if forme_id in generated or not entry:
+            continue
+        base_id = normalize_name(entry.get("baseSpecies") or "")
+        if not base_id or base_id not in generated:
+            continue
+        base = pokedex.get(base_id) or {}
+        if (
+            entry.get("baseStats") == base.get("baseStats")
+            and entry.get("types") == base.get("types")
+        ):
+            mapping[forme_id] = base_id
+    return mapping
+
+
 COSMETIC_FORME_TO_BASE = _build_cosmetic_forme_to_base()
+# generator-derived aliases never override an explicit cosmeticFormes mapping
+for _forme, _base in _build_forme_alias_to_base().items():
+    COSMETIC_FORME_TO_BASE.setdefault(_forme, _base)
 
 
 def _read_sets_cache_file(cache_path: str) -> Optional[dict]:
@@ -541,6 +596,25 @@ class PokemonSet:
             return True
         if self.item in constants.CHOICE_ITEMS and not pkmn.can_have_choice_item:
             return True
+        # POSITIVE evidence is hard too. Knowing the item is not merely "this
+        # one set survives" -- it makes every OTHER item impossible, and since
+        # PS derives the item from the role, it prunes the correlated
+        # moves/ability/tera with it. The two clauses above only ever EXEMPT a
+        # known item from rejection; nothing marked the other ~60 impossible,
+        # so rungs 2/3 could hand a mon we watched eat a Sitrus Berry the
+        # Choice Band role's moveset.
+        #
+        # Gated on `item_inferred` (fp/inference.py sets it at the choicescarf
+        # and heavydutyboots guesses): promoting a GUESS to ladder-proof
+        # evidence is precisely the failure the ladder exists to absorb, and
+        # neither guesser checks the species even has such a set.
+        if (
+            not getattr(pkmn, "item_inferred", False)
+            and pkmn.item not in (None, constants.UNKNOWN_ITEM)
+            and pkmn.removed_item is None
+            and self.item != pkmn.item
+        ):
+            return True
         return False
 
     def item_check(self, pkmn: Pokemon) -> bool:
@@ -556,6 +630,46 @@ class PokemonSet:
             return False
         else:
             return pkmn.item == constants.UNKNOWN_ITEM
+
+    def ability_impossible(self, pkmn: Pokemon) -> bool:
+        """HARD negative ability evidence -- never relaxable by the ladder.
+
+        `impossible_abilities` holds only things we PROVED: an ability in
+        ABILITIES_REVEALED_ON_SWITCH_IN that did not announce itself on the
+        switch-in (Intimidate, Pressure, Neutralizing Gas, Drizzle, Drought,
+        Sand Stream, Snow Warning), and abilities ruled out by a refused
+        trapping switch. Rung 3 passed match_ability=False and threw those away
+        along with the soft "we do not know it yet" half.
+
+        Only the NEGATIVE half is hardened. A REVEALED ability stays relaxable
+        on purpose: Trace / Skill Swap / Imposter can put an ability on a mon
+        that no set of its species ever rolls -- and an ability we have SEEN
+        beats the impossible list outright, which is why the exemption comes
+        first, exactly as it does in `item_impossible`.
+        """
+        if self.ability == pkmn.ability:
+            return False
+        return self.ability in pkmn.impossible_abilities
+
+    def tera_impossible(self, pkmn: Pokemon) -> bool:
+        """HARD tera evidence -- never relaxable by the ladder.
+
+        Once `|-terastallize|` has been printed the tera type is a fact stated
+        in plain text, and it is the SECOND-largest axis of the candidate space
+        after moves: 402/509 species carry more than one tera type across their
+        sets, and pinning it removes 0.462 of a species' set mass on average
+        (0.207 of it moveset mass, since tera correlates with the role).
+
+        Rungs 2 and 3 passed tera_check=False and handed all of that back on a
+        certainty. The tell was an internal contradiction: the empty-candidate
+        fallback in fp/search/random_battles.py filters tera UNCONDITIONALLY,
+        so the ladder output preferred over it was looser than the last resort.
+        """
+        return (
+            self.tera_type is not None
+            and pkmn.terastallized
+            and self.tera_type != pkmn.tera_type
+        )
 
     def ability_check(self, pkmn: Pokemon) -> bool:
         if self.ability == pkmn.ability:
@@ -574,7 +688,9 @@ class PokemonSet:
         level_check=False,
         match_tera=True,
     ):
-        ability_check = not match_ability or self.ability_check(pkmn)
+        ability_check = not self.ability_impossible(pkmn) and (
+            not match_ability or self.ability_check(pkmn)
+        )
         # HARD impossibility applies at EVERY relaxation depth -- the ladder
         # may relax "we do not know the item", never "we proved it is not this
         # one". No-op while match_item=True (item_check already rejects those);
@@ -584,14 +700,9 @@ class PokemonSet:
         )
         level_check = not level_check or pkmn.level == self.level
         speed_check = not speed_check or self.speed_check(pkmn)
-        tera_check = True
-        if (
-            match_tera
-            and self.tera_type is not None
-            and pkmn.terastallized
-            and self.tera_type != pkmn.tera_type
-        ):
-            tera_check = False
+        # HARD tera impossibility applies at EVERY depth, exactly like the item
+        # one above; `match_tera` now gates only soft/pre-tera uses.
+        tera_check = not self.tera_impossible(pkmn)
 
         return (
             ability_check and item_check and speed_check and level_check and tera_check
@@ -781,7 +892,27 @@ class _RandomBattleSets(PokemonSets):
         for pkmn_name, observed_sets in overlay.items():
             if pkmn_name.startswith("_") or not isinstance(observed_sets, dict):
                 continue
-            existing_sets = self.raw_pkmn_sets.setdefault(pkmn_name, {})
+            # Resolve to the key the dataset ALREADY holds before minting a
+            # new one. The overlay is written under the battle-time forme name,
+            # so the first time the bot plays a forme PS never generates
+            # separately (Magearna-Original, Mimikyu-Busted, Ogerpon-*-Tera)
+            # this used to mint a shadow species carrying that ONE observed set.
+            # get_key_in_dict_from_pkmn_name then returns the shadow on its
+            # exact-name rung, and the species also enters
+            # species_sample_names/_weights as a bogus weight-1 species.
+            # Batch-20260820-203128 g7 is the failure: magearnaoriginal held a
+            # single Calm Mind set, the opponent's real Magearna-Original had
+            # Volt Switch, no candidate survived any rung of the relaxation
+            # ladder, and the fallback spliced the two into a moveset crossing
+            # two PS roles across 120 sampled worlds.
+            key = pkmn_name
+            if key not in self.raw_pkmn_sets:
+                base = COSMETIC_FORME_TO_BASE.get(key) or normalize_name(
+                    (pokedex.get(key) or {}).get("baseSpecies") or ""
+                )
+                if base and base in self.raw_pkmn_sets:
+                    key = base
+            existing_sets = self.raw_pkmn_sets.setdefault(key, {})
             for set_key, count in observed_sets.items():
                 existing_sets[set_key] = existing_sets.get(set_key, 0) + count
 
@@ -1054,7 +1185,7 @@ class _RandomBattleSets(PokemonSets):
             ),
             (
                 2,
-                "speed,level,tera,item",
+                "speed,level,item (tera+proven-ability now unrelaxable)",
                 dict(
                     match_ability=True,
                     match_item=False,
@@ -1065,7 +1196,7 @@ class _RandomBattleSets(PokemonSets):
             ),
             (
                 3,
-                "speed,level,tera,item,ability",
+                "speed,level,item,ability-reveal (tera+proven-ability unrelaxable)",
                 dict(
                     match_ability=False,
                     match_item=False,
